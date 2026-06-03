@@ -1,0 +1,119 @@
+{
+  "llm": {
+    "base_url": "https://api.deepseek.com",
+    "model_name": "deepseek-v4-pro",
+    "api_key": "sk-170ca9aab9684a41bf9c93a0c3f95f26",
+    "max_retries": 3,
+    "temperature": 0.0,
+    "max_tokens": 4000,
+    "enforce_json_retry": true,
+    "enable_cache": true,
+    "trace_cache_hits": true,
+    "request_timeout_seconds": 180.0,
+    "max_concurrent_requests": 4
+  },
+  "switches": {
+    "run_data_cognition": true,
+    "run_task_definition": true,
+    "run_data_cleaning": false,
+    "enable_contract_check": true,
+    "enable_constraint_engine": true,
+    "constraint_fail_on_unknown_rule": false,
+    "enable_rule_monitor": true,
+    "enable_progressive_sampling": true,
+    "enable_confidence_early_stop": true,
+    "enable_checker_agent": true,
+    "enable_fewshot": true,
+    "allow_llm_generated_script": true,
+    "auto_mode": true
+  },
+  "orchestrator": {
+    "auto_enable_weighted_routing": true,
+    "weight_data_cognition": 1.0,
+    "weight_task_definition": 1.0,
+    "weight_data_cleaning": 1.0,
+    "base_min_activation_score": 0.4,
+    "always_run_task_definition": true
+  },
+  "sampling": {
+    "xs_rows": 10,
+    "s_rows": 100,
+    "m_rows": 1000,
+    "max_refine_per_level": 3,
+    "phase_backtrack_escalate_threshold": 2,
+    "global_backtrack_max": 8,
+    "confidence_commit_threshold": 0.92,
+    "mcts_max_depth": 6,
+    "uct_c": 1.4142
+  },
+  "data": {
+    "preview_rows": 20,
+    "preview_cell_budget": 2000,
+    "category_top_k": 12,
+    "outlier_z_threshold": 4.0,
+    "mostly_null_threshold": 0.98,
+    "extract_image_metadata": true,
+    "enable_archive_extraction": true,
+    "archive_extract_file_limit": 50000,
+    "keep_archive_after_extract": true,
+    "image_dir_compact_threshold": 80,
+    "image_dir_sample_file_count": 2,
+    "filename_pattern_min_group": 20,
+    "pattern_sample_file_count": 3,
+    "text_encodings": [
+      "utf-8",
+      "utf-8-sig",
+      "gb18030"
+    ],
+    "enable_json_cleaning": false,
+    "json_flatten_sep": "__",
+    "json_flatten_max_level": null,
+    "json_keep_raw_nested_columns": false,
+    "auto_generate_predict_split": false,
+    "generated_predict_split_ratio": 0.2,
+    "generated_predict_horizon_days": 30
+  },
+  "vllm": {
+    "enabled": true,
+    "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+    "api_key": "0b88bd66cfaa4544ab2790b9f3366c84.SmTVkjhVl30IQzjk",
+    "model_name": "glm-4.6v-flashx",
+    "max_images_per_dir": 2,
+    "fail_silently": true
+  },
+  "prompt": {
+    "prompt_token_budget": 12000,
+    "prompt_budget_warn_ratio": 0.8,
+    "wide_table_column_threshold": 30,
+    "traceback_tail_chars": 3000,
+    "description_quality_max_retries": 3,
+    "enforce_description_real_file_refs": true
+  },
+  "parallel": {
+    "enable_parallel_cognition": true,
+    "cognition_max_workers": 4,
+    "enable_parallel_relations": true,
+    "relations_max_workers": 8,
+    "enable_parallel_probe_actions": true,
+    "probe_max_workers": 4,
+    "enable_parallel_cleaning": true,
+    "cleaning_max_workers": 2
+  },
+  "knowledge": {
+    "enabled": true,
+    "store_filename": "knowledge_store.jsonl",
+    "retrieval_top_k": 24,
+    "max_entry_chars": 2400,
+    "write_rag_manifest": true,
+    "boost_structured_knowledge": true
+  },
+  "telemetry": {
+    "enabled": true,
+    "event_stream_filename": "event_stream.jsonl",
+    "current_state_filename": "current_state.json",
+    "recent_events_limit": 200,
+    "write_config_snapshot": true,
+    "write_config_schema": true
+  },
+  "run_root": "runs"
+}

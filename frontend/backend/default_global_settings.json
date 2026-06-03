@@ -1,0 +1,45 @@
+﻿{
+  "python": {
+    "executable": "python"
+  },
+  "resource": {
+    "cpuLimit": 4,
+    "memoryLimitGb": 8
+  },
+  "llm": {
+    "codeModel": {
+      "model": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "",
+      "enableThinking": null,
+      "reasoningEffort": "high",
+      "structuredDisableThinking": true
+    },
+    "feedbackModel": {
+      "model": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "",
+      "enableThinking": null,
+      "reasoningEffort": "high"
+    },
+    "vllm": {
+      "enabled": true,
+      "model": "glm-4.6v-flashx",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4/",
+      "apiKey": ""
+    }
+  },
+  "coreServices": {
+    "autoRealizeBaseUrl": "http://127.0.0.1:18101",
+    "autoMlBaseUrl": "http://127.0.0.1:18102",
+    "mlevolveBaseUrl": "http://127.0.0.1:18103",
+    "requestTimeoutSecs": 10
+  },
+  "mlevolve": {
+    "torchHubDir": "",
+    "pretrainModelDir": "",
+    "embeddingBaseUrl": "",
+    "embeddingApiKey": "",
+    "embeddingModel": ""
+  }
+}

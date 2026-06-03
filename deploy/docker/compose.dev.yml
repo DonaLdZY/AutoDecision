@@ -1,0 +1,55 @@
+﻿version: '3.9'
+
+services:
+  autorealize-api:
+    image: autodecision/autorealize-api:dev
+    ports:
+      - '18101:18101'
+    command: uvicorn autorealize.service_api:app --host 0.0.0.0 --port 18101
+    working_dir: /app/core/AutoRealize
+    volumes:
+      - ../../:/app
+
+  ml-master-api:
+    image: autodecision/ml-master-api:dev
+    ports:
+      - '18102:18102'
+    command: uvicorn service_api:app --host 0.0.0.0 --port 18102
+    working_dir: /app/core/ML-Master-Alter
+    volumes:
+      - ../../:/app
+
+  mlevolve-api:
+    image: autodecision/mlevolve-api:dev
+    ports:
+      - '18103:18103'
+    command: uvicorn service_api:app --host 0.0.0.0 --port 18103
+    working_dir: /app/core/MLEvolve-Alter
+    volumes:
+      - ../../:/app
+
+  gateway-api:
+    image: autodecision/gateway-api:dev
+    ports:
+      - '18080:18080'
+    command: uvicorn app:app --host 0.0.0.0 --port 18080
+    working_dir: /app/frontend/backend
+    volumes:
+      - ../../:/app
+    environment:
+      PYTHONUNBUFFERED: '1'
+    depends_on:
+      - autorealize-api
+      - ml-master-api
+      - mlevolve-api
+
+  frontend-ui:
+    image: autodecision/frontend-ui:dev
+    ports:
+      - '5173:5173'
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    working_dir: /app/frontend/ui
+    volumes:
+      - ../../:/app
+    depends_on:
+      - gateway-api

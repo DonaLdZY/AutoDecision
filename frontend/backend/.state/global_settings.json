@@ -1,0 +1,45 @@
+{
+  "python": {
+    "executable": "C:\\Users\\donaldzy\\.conda\\envs\\automl\\python.exe"
+  },
+  "resource": {
+    "cpuLimit": 20,
+    "memoryLimitGb": 8
+  },
+  "llm": {
+    "codeModel": {
+      "model": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-170ca9aab9684a41bf9c93a0c3f95f26",
+      "enableThinking": null,
+      "reasoningEffort": "high",
+      "structuredDisableThinking": true
+    },
+    "feedbackModel": {
+      "model": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-170ca9aab9684a41bf9c93a0c3f95f26",
+      "enableThinking": null,
+      "reasoningEffort": "high"
+    },
+    "vllm": {
+      "enabled": true,
+      "model": "glm-4.6v-flashx",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4/",
+      "apiKey": "0b88bd66cfaa4544ab2790b9f3366c84.SmTVkjhVl30IQzjk"
+    }
+  },
+  "coreServices": {
+    "autoRealizeBaseUrl": "http://127.0.0.1:18101",
+    "autoMlBaseUrl": "http://127.0.0.1:18102",
+    "mlevolveBaseUrl": "http://127.0.0.1:18103",
+    "requestTimeoutSecs": 10
+  },
+  "mlevolve": {
+    "torchHubDir": "D:\\\\mlevolve\\\\pytorchhub",
+    "pretrainModelDir": "D:\\\\mlevolve\\\\pretrain",
+    "embeddingBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "embeddingApiKey": "sk-4d15bcf18df74d76a253d8ea662c5a34",
+    "embeddingModel": "text-embedding-v4"
+  }
+}

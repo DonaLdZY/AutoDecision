@@ -1,0 +1,51 @@
+﻿{
+    "root":  "D:\\Files\\项目\\AutoDecision",
+    "processes":  [
+                      {
+                          "port":  18101,
+                          "name":  "autorealize-api",
+                          "cmd":  "C:\\Users\\donaldzy\\.conda\\envs\\automl\\python.exe -m uvicorn autorealize.service_api:app --host 127.0.0.1 --port 18101",
+                          "pid":  13644,
+                          "stderr":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\autorealize-api.stderr.log",
+                          "workdir":  "D:\\Files\\项目\\AutoDecision\\core\\AutoRealize",
+                          "stdout":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\autorealize-api.stdout.log"
+                      },
+                      {
+                          "port":  18102,
+                          "name":  "automl-api",
+                          "cmd":  "C:\\Users\\donaldzy\\.conda\\envs\\automl\\python.exe -m uvicorn service_api:app --host 127.0.0.1 --port 18102",
+                          "pid":  31216,
+                          "stderr":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\automl-api.stderr.log",
+                          "workdir":  "D:\\Files\\项目\\AutoDecision\\core\\ML-Master-Alter",
+                          "stdout":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\automl-api.stdout.log"
+                      },
+                      {
+                          "port":  18103,
+                          "name":  "mlevolve-api",
+                          "cmd":  "C:\\Users\\donaldzy\\.conda\\envs\\automl\\python.exe -m uvicorn service_api:app --host 127.0.0.1 --port 18103",
+                          "pid":  31192,
+                          "stderr":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\mlevolve-api.stderr.log",
+                          "workdir":  "D:\\Files\\项目\\AutoDecision\\core\\MLEvolve-Alter",
+                          "stdout":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\mlevolve-api.stdout.log"
+                      },
+                      {
+                          "port":  18080,
+                          "name":  "gateway-api",
+                          "cmd":  "C:\\Users\\donaldzy\\.conda\\envs\\automl\\python.exe -m uvicorn app:app --host 127.0.0.1 --port 18080",
+                          "pid":  32624,
+                          "stderr":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\gateway-api.stderr.log",
+                          "workdir":  "D:\\Files\\项目\\AutoDecision\\frontend\\backend",
+                          "stdout":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\gateway-api.stdout.log"
+                      },
+                      {
+                          "port":  5173,
+                          "name":  "frontend-ui",
+                          "cmd":  "C:\\Program Files\\nodejs\\npm.cmd run dev -- --host 127.0.0.1 --port 5173",
+                          "pid":  4108,
+                          "stderr":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\frontend-ui.stderr.log",
+                          "workdir":  "D:\\Files\\项目\\AutoDecision\\frontend\\ui",
+                          "stdout":  "D:\\Files\\项目\\AutoDecision\\.dev-state\\logs\\frontend-ui.stdout.log"
+                      }
+                  ],
+    "started_at":  "2026-06-03T01:34:41"
+}
