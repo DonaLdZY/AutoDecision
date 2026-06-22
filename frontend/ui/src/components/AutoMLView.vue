@@ -16,7 +16,7 @@ const nodeH = 72
 const xGap = 56
 const yGap = 40
 
-const engine = computed(() => String(props.snapshot?.auto_ml?.engine ?? 'ml_master'))
+const engine = computed(() => String(props.snapshot?.auto_ml?.engine ?? 'mlevolve'))
 const nodes = computed(() => props.snapshot?.auto_ml?.nodes ?? [])
 const bestNodeId = computed(() => props.snapshot?.auto_ml?.best_node_id ?? null)
 const bestSolutionCode = computed(() => props.snapshot?.auto_ml?.best_solution_code ?? '')
@@ -267,6 +267,8 @@ function shortMetric(value: number | null | undefined): string {
   display: grid;
   grid-template-columns: 1.15fr 0.85fr;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .left,
@@ -276,6 +278,8 @@ function shortMetric(value: number | null | undefined): string {
   background: #fff;
   padding: 10px;
   min-height: 440px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 h4 {
@@ -332,10 +336,19 @@ h4 {
 
 .tree-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
   border: 1px solid #cedcf0;
   border-radius: 8px;
   max-height: 540px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.tree-wrap svg {
+  display: block;
+  max-width: none;
 }
 
 .tree-edge {

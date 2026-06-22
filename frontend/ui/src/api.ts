@@ -12,7 +12,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || `Request failed: ${res.status}`)
+    let message = text
+    try {
+      const payload = JSON.parse(text) as { detail?: unknown }
+      if (typeof payload.detail === 'string') message = payload.detail
+      else if (payload.detail !== undefined) message = JSON.stringify(payload.detail)
+    } catch {
+      // Keep the raw response text when it is not JSON.
+    }
+    throw new Error(message || `Request failed: ${res.status}`)
   }
   return (await res.json()) as T
 }
@@ -23,8 +31,23 @@ export const api = {
   updateTask: (taskId: string, payload: TaskConfig) => request<Task>(`/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteTask: (taskId: string) => request<{ status: string }>(`/tasks/${taskId}`, { method: 'DELETE' }),
   startTask: (taskId: string) => request<{ status: string; task_id: string }>('/tasks/start', { method: 'POST', body: JSON.stringify({ task_id: taskId }) }),
+  rerunAutoRealize: (taskId: string) =>
+    request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-autorealize', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, confirm: true }),
+    }),
   rerunAutoML: (taskId: string) =>
     request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-automl', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, confirm: true }),
+    }),
+  startAutoML: (taskId: string) =>
+    request<{ status: string; task_id: string; mode: string }>('/tasks/start-automl', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, confirm: true }),
+    }),
+  rerunAutoReport: (taskId: string) =>
+    request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-autoreport', {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId, confirm: true }),
     }),

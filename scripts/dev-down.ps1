@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $stateDir = Join-Path $root ".dev-state"
 $pidFile = Join-Path $stateDir "pids.json"
-$knownPorts = @(18101, 18102, 18103, 18080, 5173)
+$knownPorts = @(18101, 18102, 18103, 18104, 18080, 5173)
 
 function Stop-ProcessTree {
   param([int]$ProcId)
@@ -55,7 +55,7 @@ if (-not (Test-Path $pidFile)) {
   Write-Host "State file not found: $pidFile"
   $orphanMap = Get-ListeningPidsByPort -Ports $knownPorts
   if ($orphanMap.Count -eq 0) {
-    Write-Host "No listeners on managed ports (18101/18102/18103/18080/5173)."
+    Write-Host "No listeners on managed ports (18101/18102/18103/18104/18080/5173)."
     exit 0
   }
   Cleanup-ManagedPorts -Ports $knownPorts

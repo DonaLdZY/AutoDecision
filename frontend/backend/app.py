@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import csv
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -22,18 +24,51 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
+BACKEND_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = APP_ROOT / "core"
 AUTOREALIZE_DIR = CORE_DIR / "AutoRealize"
 ML_MASTER_DIR = CORE_DIR / "ML-Master-Alter"
 MLEVOLVE_DIR = CORE_DIR / "MLEvolve-Alter"
-DEFAULT_RUNS_DIR = AUTOREALIZE_DIR / "runs"
+AUTOREPORT_DIR = CORE_DIR / "AutoReport"
 PROJECT_RUNS_DIR = APP_ROOT / "runs"
-STATE_DIR = Path(__file__).resolve().parent / ".state"
+DEFAULT_RUNS_DIR = PROJECT_RUNS_DIR
+LEGACY_AUTOREALIZE_RUNS_DIR = AUTOREALIZE_DIR / "runs"
+LEGACY_BACKEND_RUNS_DIR = BACKEND_DIR / "runs"
+STATE_DIR = BACKEND_DIR / ".state"
 TASKS_FILE = STATE_DIR / "tasks.json"
 GLOBAL_SETTINGS_FILE = STATE_DIR / "global_settings.json"
 DEFAULT_GLOBAL_SETTINGS_FILE = Path(__file__).resolve().parent / "default_global_settings.json"
 NETWORK_RETRY_MAX_ATTEMPTS = 5
+SERVICE_POLL_RECONNECT_MAX_ATTEMPTS = 5
+SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS = 5.0
+SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS = 30.0
+_UNSET = object()
+
+
+def resolve_output_root(value: str | None) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        return PROJECT_RUNS_DIR.resolve()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = APP_ROOT / path
+    return path.resolve()
+
+
+def normalize_output_root(value: str | None) -> str:
+    raw = str(value or "").strip()
+    normalized_raw = raw.replace("\\", "/").rstrip("/")
+    if not raw or normalized_raw in {"runs", "./runs"}:
+        return str(PROJECT_RUNS_DIR.resolve())
+    resolved = resolve_output_root(raw)
+    legacy_defaults = {
+        str(LEGACY_BACKEND_RUNS_DIR.resolve()).lower(),
+        str(LEGACY_AUTOREALIZE_RUNS_DIR.resolve()).lower(),
+    }
+    if str(resolved).lower() in legacy_defaults:
+        return str(PROJECT_RUNS_DIR.resolve())
+    return str(resolved)
 
 
 def now_ts() -> float:
@@ -49,9 +84,39 @@ def safe_read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def safe_read_text_tail(path: Path, limit: int = 60000, *, byte_multiplier: int = 4) -> str:
+    """Read only the tail of a potentially huge UTF-8-ish text file."""
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        byte_limit = max(limit, limit * max(1, byte_multiplier))
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - byte_limit))
+            data = f.read()
+        return data.decode("utf-8", errors="ignore")[-limit:]
+    except Exception:
+        return ""
+
+
+def safe_read_tail_lines(path: Path, limit: int = 400, *, byte_limit: int = 512_000) -> list[str]:
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - byte_limit))
+            data = f.read()
+        return data.decode("utf-8", errors="ignore").splitlines()[-limit:]
+    except Exception:
+        return []
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
 def rel_str(path: Path, base: Path) -> str:
@@ -71,6 +136,11 @@ class AutoRealizeConfigPayload(BaseModel):
     run_data_cognition: bool = True
     run_task_definition: bool = True
     run_data_cleaning: bool = False
+    enable_question_investigator: bool = True
+    enable_fewshot: bool = False
+    generate_sample_submission: bool = True
+    prefer_original_description: bool = True
+    direct_automl_from_description: bool = False
     no_knowledge: bool = False
     no_telemetry: bool = False
     no_llm_cache: bool = False
@@ -89,7 +159,7 @@ class AutoRealizeConfigPayload(BaseModel):
 
 
 class AutoMLConfigPayload(BaseModel):
-    engine: str = "ml_master"
+    engine: str = "mlevolve"
     enabled: bool = True
     steps: int = 50
     time_limit_secs: int = 3600
@@ -97,6 +167,7 @@ class AutoMLConfigPayload(BaseModel):
     k_fold_validation: int = 1
     check_format: bool = False
     expose_prediction: bool = True
+    generate_submission: bool = True
     steerable_reasoning: bool = False
     search_num_drafts: int = 5
     search_num_bugs: int = 1
@@ -128,12 +199,22 @@ class AutoMLConfigPayload(BaseModel):
     exec_timeout_secs: int = 32400
 
 
+class AutoReportConfigPayload(BaseModel):
+    enabled: bool = True
+    audience: str = "technical"
+    language: str = "zh-CN"
+    include_raw_logs: bool = True
+    include_code_excerpt: bool = True
+    use_llm: bool = True
+
+
 class TaskConfigPayload(BaseModel):
     task_name: str = Field(min_length=1)
     input_root: str = ""
     output_root: str = str(PROJECT_RUNS_DIR)
     auto_realize: AutoRealizeConfigPayload = Field(default_factory=AutoRealizeConfigPayload)
     auto_ml: AutoMLConfigPayload = Field(default_factory=AutoMLConfigPayload)
+    auto_report: AutoReportConfigPayload = Field(default_factory=AutoReportConfigPayload)
 
 
 class TaskModel(BaseModel):
@@ -150,6 +231,7 @@ class TaskModel(BaseModel):
     run_started_at: float | None = None
     auto_ml_log_dir: str | None = None
     auto_ml_workspace_dir: str | None = None
+    report_dir: str | None = None
     last_error: str | None = None
 
 
@@ -163,6 +245,21 @@ class StopTaskRequest(BaseModel):
 
 
 class RerunAutoMLRequest(BaseModel):
+    task_id: str
+    confirm: bool = False
+
+
+class StartDirectAutoMLRequest(BaseModel):
+    task_id: str
+    confirm: bool = False
+
+
+class RerunAutoRealizeRequest(BaseModel):
+    task_id: str
+    confirm: bool = False
+
+
+class RerunAutoReportRequest(BaseModel):
     task_id: str
     confirm: bool = False
 
@@ -208,13 +305,22 @@ class TaskStore:
     def _load(self) -> None:
         raw = safe_read_json(TASKS_FILE, {"tasks": []})
         tasks: dict[str, TaskModel] = {}
+        changed = False
         for item in raw.get("tasks", []):
             try:
                 task = TaskModel.model_validate(item)
+                normalized_output_root = normalize_output_root(task.output_root)
+                if task.output_root != normalized_output_root:
+                    task.output_root = normalized_output_root
+                    task.config.output_root = normalized_output_root
+                    task.updated_at = now_ts()
+                    changed = True
                 tasks[task.id] = task
             except Exception:
                 continue
         self._tasks = tasks
+        if changed:
+            self._persist()
 
     def _persist(self) -> None:
         write_json(TASKS_FILE, {"tasks": [t.model_dump() for t in self._tasks.values()]})
@@ -278,8 +384,7 @@ class TaskStore:
 
     def create(self, payload: TaskConfigPayload) -> TaskModel:
         with self._lock:
-            if not payload.output_root.strip():
-                payload.output_root = str(PROJECT_RUNS_DIR)
+            payload.output_root = normalize_output_root(payload.output_root)
             task_id = uuid.uuid4().hex
             ts = now_ts()
             task = TaskModel(
@@ -304,8 +409,7 @@ class TaskStore:
                 raise HTTPException(status_code=404, detail="task not found")
             if task.status == "running":
                 raise HTTPException(status_code=400, detail="running task cannot be edited")
-            if not payload.output_root.strip():
-                payload.output_root = str(PROJECT_RUNS_DIR)
+            payload.output_root = normalize_output_root(payload.output_root)
             task.task_name = payload.task_name
             task.input_root = payload.input_root
             task.output_root = payload.output_root
@@ -335,7 +439,8 @@ class TaskStore:
         run_started_at: float | None = None,
         auto_ml_log_dir: str | None = None,
         auto_ml_workspace_dir: str | None = None,
-        last_error: str | None = None,
+        report_dir: str | None = None,
+        last_error: Any = _UNSET,
     ) -> TaskModel:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -352,7 +457,9 @@ class TaskStore:
                 task.auto_ml_log_dir = auto_ml_log_dir
             if auto_ml_workspace_dir is not None:
                 task.auto_ml_workspace_dir = auto_ml_workspace_dir
-            if last_error is not None:
+            if report_dir is not None:
+                task.report_dir = report_dir
+            if last_error is not _UNSET:
                 task.last_error = last_error
             task.updated_at = now_ts()
             self._tasks[task_id] = task
@@ -370,7 +477,23 @@ class TaskStore:
             task.run_started_at = None
             task.auto_ml_log_dir = None
             task.auto_ml_workspace_dir = None
+            task.report_dir = None
             task.last_error = last_error
+            task.updated_at = now_ts()
+            self._tasks[task_id] = task
+            self._persist()
+            return task
+
+    def clear_output_paths(self, task_id: str, *, auto_ml: bool = False, report: bool = False) -> TaskModel:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            if auto_ml:
+                task.auto_ml_log_dir = None
+                task.auto_ml_workspace_dir = None
+            if report:
+                task.report_dir = None
             task.updated_at = now_ts()
             self._tasks[task_id] = task
             self._persist()
@@ -416,21 +539,310 @@ def ensure_global_settings() -> dict[str, Any]:
     merged["resource"] = {**defaults.get("resource", {}), **current.get("resource", {})}
     llm_defaults = defaults.get("llm", {})
     llm_current = current.get("llm", {})
-    merged["llm"] = {
-        **llm_defaults,
-        **llm_current,
-        "codeModel": {**llm_defaults.get("codeModel", {}), **llm_current.get("codeModel", {})},
-        "feedbackModel": {**llm_defaults.get("feedbackModel", {}), **llm_current.get("feedbackModel", {})},
-        "vllm": {**llm_defaults.get("vllm", {}), **llm_current.get("vllm", {})},
-    }
     core_defaults = defaults.get("coreServices", {})
     core_current = current.get("coreServices", {})
     merged["coreServices"] = {**core_defaults, **core_current}
     mlevolve_defaults = defaults.get("mlevolve", {})
     mlevolve_current = current.get("mlevolve", {})
     merged["mlevolve"] = {**mlevolve_defaults, **mlevolve_current}
+    model_library, role_models = _normalize_model_library(llm_defaults, llm_current, merged["mlevolve"])
+    llm_base = {**llm_defaults, **llm_current}
+    llm_base["modelLibrary"] = model_library
+    llm_base["roleModels"] = role_models
+    auto_ml_code_model = _selected_model(llm_base, "autoMlCode")
+    auto_ml_feedback_model = _selected_model(llm_base, "autoMlFeedback", fallback_role="autoMlCode")
+    autorealize_model = _selected_model(llm_base, "autoRealize", fallback_role="autoMlCode")
+    vllm_model = _selected_model(llm_base, "autoRealizeVision")
+    embedding_model = _selected_model(llm_base, "embedding")
+    llm_base["codeModel"] = _role_model_to_legacy(auto_ml_code_model, structured_disable=True)
+    llm_base["autoRealizeModel"] = _role_model_to_legacy(autorealize_model, structured_disable=True)
+    llm_base["feedbackModel"] = _role_model_to_legacy(auto_ml_feedback_model)
+    llm_base["vllm"] = {
+        "enabled": bool((llm_current.get("vllm") or llm_defaults.get("vllm") or {}).get("enabled", True)),
+        "model": str(vllm_model.get("model") or ""),
+        "baseUrl": str(vllm_model.get("baseUrl") or ""),
+        "apiKey": str(vllm_model.get("apiKey") or ""),
+    }
+    merged["llm"] = llm_base
+    if embedding_model:
+        merged["mlevolve"]["embeddingModel"] = str(embedding_model.get("model") or merged["mlevolve"].get("embeddingModel") or "")
+        merged["mlevolve"]["embeddingBaseUrl"] = str(embedding_model.get("baseUrl") or merged["mlevolve"].get("embeddingBaseUrl") or "")
+        merged["mlevolve"]["embeddingApiKey"] = str(embedding_model.get("apiKey") or merged["mlevolve"].get("embeddingApiKey") or "")
     write_json(GLOBAL_SETTINGS_FILE, merged)
     return merged
+
+
+def _deep_merge_settings(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_settings(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _non_empty_text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _is_generic_python_executable(value: Any) -> bool:
+    text = _non_empty_text(value).lower()
+    return text in {"", "python", "python3", "py"}
+
+
+def _thinking_mode_from_legacy(value: Any) -> str:
+    if value is True:
+        return "enabled"
+    if value is False:
+        return "disabled"
+    text = str(value or "").strip().lower()
+    if text in {"enabled", "disabled"}:
+        return text
+    return "default"
+
+
+def _legacy_enable_thinking(mode: Any) -> bool | None:
+    text = str(mode or "").strip().lower()
+    if text == "enabled":
+        return True
+    if text == "disabled":
+        return False
+    return None
+
+
+def _normal_reasoning_effort(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in {"low", "medium", "high", "xhigh", "max"} else "default"
+
+
+def _normal_max_tokens(value: Any) -> int | None:
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        return None
+    return tokens if tokens > 0 else None
+
+
+def _role_model_to_legacy(model: dict[str, Any], *, structured_disable: bool | None = None) -> dict[str, Any]:
+    out = {
+        "model": str(model.get("model") or ""),
+        "baseUrl": str(model.get("baseUrl") or ""),
+        "apiKey": str(model.get("apiKey") or ""),
+        "enableThinking": _legacy_enable_thinking(model.get("thinkingMode")),
+        "reasoningEffort": None if _normal_reasoning_effort(model.get("reasoningEffort")) == "default" else _normal_reasoning_effort(model.get("reasoningEffort")),
+        "maxTokens": _normal_max_tokens(model.get("maxTokens", model.get("max_tokens"))) or 0,
+    }
+    if structured_disable is not None:
+        out["structuredDisableThinking"] = bool(structured_disable)
+    return out
+
+
+def _legacy_model_to_library_item(
+    *,
+    item_id: str,
+    name: str,
+    model: dict[str, Any] | None,
+    defaults: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    merged = {**(defaults or {}), **(model or {})}
+    return {
+        "id": item_id,
+        "name": name,
+        "model": str(merged.get("model") or ""),
+        "baseUrl": str(merged.get("baseUrl") or ""),
+        "apiKey": str(merged.get("apiKey") or ""),
+        "thinkingMode": _thinking_mode_from_legacy(merged.get("enableThinking")),
+        "reasoningEffort": _normal_reasoning_effort(merged.get("reasoningEffort")),
+        "maxTokens": _normal_max_tokens(merged.get("maxTokens", merged.get("max_tokens"))) or 0,
+    }
+
+
+def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str, Any], mlevolve_merged: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    raw_library: list[Any] = []
+    current_library_explicit = isinstance(llm_current.get("modelLibrary"), list)
+    current_library = llm_current.get("modelLibrary") if current_library_explicit else []
+    has_current_library = any(isinstance(item, dict) for item in current_library)
+    if current_library_explicit:
+        # Once the user has saved a model library, it is the source of truth.
+        # Do not merge defaults back in, otherwise deleted default-* entries
+        # reappear the next time global settings are loaded.
+        raw_library.extend(current_library)
+    elif isinstance(llm_defaults.get("modelLibrary"), list):
+        raw_library.extend(llm_defaults.get("modelLibrary") or [])
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in raw_library:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id") or "").strip()
+        if not item_id:
+            continue
+        by_id[item_id] = {
+            "id": item_id,
+            "name": str(raw.get("name") or raw.get("remark") or raw.get("model") or item_id),
+            "model": str(raw.get("model") or raw.get("modelName") or ""),
+            "baseUrl": str(raw.get("baseUrl") or raw.get("base_url") or ""),
+            "apiKey": str(raw.get("apiKey") or raw.get("api_key") or ""),
+            "thinkingMode": _thinking_mode_from_legacy(raw.get("thinkingMode", raw.get("enableThinking"))),
+            "reasoningEffort": _normal_reasoning_effort(raw.get("reasoningEffort")),
+            "maxTokens": _normal_max_tokens(raw.get("maxTokens", raw.get("max_tokens"))) or 0,
+        }
+
+    legacy_specs = [
+        ("default-code", "默认编码模型", llm_current.get("codeModel"), llm_defaults.get("codeModel")),
+        ("default-autorealize", "默认 AutoRealize 模型", llm_current.get("autoRealizeModel"), llm_defaults.get("autoRealizeModel") or llm_defaults.get("codeModel")),
+        ("default-feedback", "默认反馈模型", llm_current.get("feedbackModel"), llm_defaults.get("feedbackModel")),
+        ("default-vllm", "默认视觉模型", llm_current.get("vllm"), llm_defaults.get("vllm")),
+    ]
+    if not current_library_explicit:
+        for item_id, name, current_model, default_model in legacy_specs:
+            if item_id not in by_id:
+                by_id[item_id] = _legacy_model_to_library_item(
+                    item_id=item_id,
+                    name=name,
+                    model=current_model if isinstance(current_model, dict) else {},
+                    defaults=default_model if isinstance(default_model, dict) else {},
+                )
+            elif not has_current_library and isinstance(current_model, dict):
+                # Old settings files do not have modelLibrary yet. In that case the
+                # default library entry exists, but user-edited legacy fields
+                # (especially API keys/Base URLs) must win during one-time migration.
+                by_id[item_id] = _legacy_model_to_library_item(
+                    item_id=item_id,
+                    name=name,
+                    model=current_model,
+                    defaults=default_model if isinstance(default_model, dict) else {},
+                )
+
+    embedding_defaults = {
+        "model": str(mlevolve_merged.get("embeddingModel") or ""),
+        "baseUrl": str(mlevolve_merged.get("embeddingBaseUrl") or ""),
+        "apiKey": str(mlevolve_merged.get("embeddingApiKey") or ""),
+    }
+    if (not current_library_explicit and "default-embedding" not in by_id) or (
+        not current_library_explicit
+        and not has_current_library
+        and any(str(embedding_defaults.get(key) or "").strip() for key in ("model", "baseUrl", "apiKey"))
+    ):
+        by_id["default-embedding"] = _legacy_model_to_library_item(
+            item_id="default-embedding",
+            name="默认向量化模型",
+            model=embedding_defaults,
+            defaults={},
+        )
+
+    role_defaults = llm_defaults.get("roleModels") if isinstance(llm_defaults.get("roleModels"), dict) else {}
+    role_current = llm_current.get("roleModels") if isinstance(llm_current.get("roleModels"), dict) else {}
+    first_model_id = next(iter(by_id.keys()), "")
+    roles = {
+        "autoRealize": str(role_current.get("autoRealize") or (role_defaults.get("autoRealize") if not current_library_explicit else "") or "default-autorealize"),
+        "autoRealizeVision": str(role_current.get("autoRealizeVision") or (role_defaults.get("autoRealizeVision") if not current_library_explicit else "") or "default-vllm"),
+        "autoMlCode": str(role_current.get("autoMlCode") or (role_defaults.get("autoMlCode") if not current_library_explicit else "") or "default-code"),
+        "autoMlFeedback": str(role_current.get("autoMlFeedback") or (role_defaults.get("autoMlFeedback") if not current_library_explicit else "") or "default-feedback"),
+        "embedding": str(role_current.get("embedding") or (role_defaults.get("embedding") if not current_library_explicit else "") or "default-embedding"),
+    }
+    for role, item_id in list(roles.items()):
+        if item_id not in by_id:
+            fallback = {
+                "autoRealize": "default-autorealize",
+                "autoRealizeVision": "default-vllm",
+                "autoMlCode": "default-code",
+                "autoMlFeedback": "default-feedback",
+                "embedding": "default-embedding",
+            }[role]
+            roles[role] = fallback if fallback in by_id else first_model_id
+
+    return list(by_id.values()), roles
+
+
+def _selected_model(llm: dict[str, Any], role: str, fallback_role: str | None = None) -> dict[str, Any]:
+    library = llm.get("modelLibrary") if isinstance(llm.get("modelLibrary"), list) else []
+    roles = llm.get("roleModels") if isinstance(llm.get("roleModels"), dict) else {}
+    item_id = str(roles.get(role) or (roles.get(fallback_role) if fallback_role else "") or "").strip()
+    for item in library:
+        if isinstance(item, dict) and str(item.get("id") or "") == item_id:
+            return item
+    legacy_key = {
+        "autoRealize": "autoRealizeModel",
+        "autoRealizeVision": "vllm",
+        "autoMlCode": "codeModel",
+        "autoMlFeedback": "feedbackModel",
+        "embedding": "",
+    }.get(role, "")
+    if legacy_key:
+        return llm.get(legacy_key, {}) if isinstance(llm.get(legacy_key), dict) else {}
+    return {}
+
+
+def _model_cli_value(model: dict[str, Any], key: str, default: str = "") -> str:
+    value = model.get(key)
+    if value not in (None, ""):
+        return str(value)
+    return "" if default is None else str(default)
+
+
+def _model_thinking_cli(model: dict[str, Any]) -> str:
+    mode = str(model.get("thinkingMode") or "").strip().lower()
+    if not mode and "enableThinking" in model:
+        mode = _thinking_mode_from_legacy(model.get("enableThinking"))
+    if mode == "enabled":
+        return "true"
+    if mode == "disabled":
+        return "false"
+    return "null"
+
+
+def _model_reasoning_cli(model: dict[str, Any]) -> str:
+    effort = _normal_reasoning_effort(model.get("reasoningEffort"))
+    return "null" if effort == "default" else effort
+
+
+def _model_max_tokens_cli(model: dict[str, Any]) -> str | None:
+    tokens = _normal_max_tokens(model.get("maxTokens", model.get("max_tokens")))
+    return str(tokens) if tokens is not None else None
+
+
+def _preserve_sensitive_settings(merged: dict[str, Any], existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    existing_python = (existing.get("python") or {}) if isinstance(existing.get("python"), dict) else {}
+    incoming_python = (incoming.get("python") or {}) if isinstance(incoming.get("python"), dict) else {}
+    existing_exe = _non_empty_text(existing_python.get("executable"))
+    incoming_exe = _non_empty_text(incoming_python.get("executable"))
+    if existing_exe and not _is_generic_python_executable(existing_exe) and _is_generic_python_executable(incoming_exe):
+        merged.setdefault("python", {})["executable"] = existing_exe
+
+    existing_llm = (existing.get("llm") or {}) if isinstance(existing.get("llm"), dict) else {}
+    incoming_llm = (incoming.get("llm") or {}) if isinstance(incoming.get("llm"), dict) else {}
+    existing_library = {
+        str(item.get("id") or ""): item
+        for item in (existing_llm.get("modelLibrary") or [])
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    merged_library = merged.get("llm", {}).get("modelLibrary") if isinstance(merged.get("llm"), dict) else None
+    if isinstance(merged_library, list):
+        for item in merged_library:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            old_key = _non_empty_text((existing_library.get(item_id) or {}).get("apiKey"))
+            new_key = _non_empty_text(item.get("apiKey"))
+            if old_key and not new_key:
+                item["apiKey"] = old_key
+
+    for model_key in ("codeModel", "autoRealizeModel", "feedbackModel", "vllm"):
+        old_model = existing_llm.get(model_key) if isinstance(existing_llm.get(model_key), dict) else {}
+        new_model = incoming_llm.get(model_key) if isinstance(incoming_llm.get(model_key), dict) else {}
+        old_key = _non_empty_text(old_model.get("apiKey"))
+        new_key = _non_empty_text(new_model.get("apiKey"))
+        if old_key and not new_key:
+            merged.setdefault("llm", {}).setdefault(model_key, {})["apiKey"] = old_key
+
+    existing_mlevolve = existing.get("mlevolve") if isinstance(existing.get("mlevolve"), dict) else {}
+    incoming_mlevolve = incoming.get("mlevolve") if isinstance(incoming.get("mlevolve"), dict) else {}
+    old_embedding_key = _non_empty_text(existing_mlevolve.get("embeddingApiKey"))
+    new_embedding_key = _non_empty_text(incoming_mlevolve.get("embeddingApiKey"))
+    if old_embedding_key and not new_embedding_key:
+        merged.setdefault("mlevolve", {})["embeddingApiKey"] = old_embedding_key
 
 
 def get_global_settings() -> GlobalSettingsModel:
@@ -438,7 +850,10 @@ def get_global_settings() -> GlobalSettingsModel:
 
 
 def save_global_settings(payload: GlobalSettingsModel) -> None:
+    existing = ensure_global_settings()
     raw = payload.model_dump()
+    raw = _deep_merge_settings(existing, raw)
+    _preserve_sensitive_settings(raw, existing, payload.model_dump())
     py = raw.get("python", {}) if isinstance(raw, dict) else {}
     raw["python"] = {"executable": str((py or {}).get("executable", "python"))}
     write_json(GLOBAL_SETTINGS_FILE, raw)
@@ -449,7 +864,7 @@ def _validate_start(task: TaskModel) -> tuple[Path, Path]:
         raise HTTPException(status_code=400, detail="请先配置输入文件夹(input_root)再启动任务")
 
     input_root = Path(task.input_root).expanduser().resolve()
-    output_root = Path(task.output_root).expanduser().resolve()
+    output_root = resolve_output_root(task.output_root)
     run_dir = output_root / task.task_name
 
     if not input_root.exists():
@@ -462,25 +877,419 @@ def _validate_start(task: TaskModel) -> tuple[Path, Path]:
     return input_root, output_root
 
 
+def _find_original_description(input_root: Path) -> Path | None:
+    candidates = [p for p in input_root.rglob("*") if p.is_file() and p.name.lower() == "description.md"]
+    if not candidates:
+        return None
+
+    def _rank(path: Path) -> tuple[int, int, str]:
+        try:
+            rel = path.relative_to(input_root)
+            depth = len(rel.parts)
+        except ValueError:
+            depth = len(path.parts)
+        # Prefer a root-level description.md, then shallower files.
+        return (0 if path.parent.resolve() == input_root.resolve() else 1, depth, str(path).lower())
+
+    return sorted(candidates, key=_rank)[0]
+
+
+def _is_sample_submission_like(path: Path) -> bool:
+    compact = "".join(ch for ch in path.stem.lower() if ch.isalnum())
+    return "samplesubmission" in compact or path.name.lower() == "sample_submission.csv"
+
+
+def _read_csv_header(path: Path) -> list[str]:
+    if not path.exists() or path.suffix.lower() != ".csv":
+        return []
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            with path.open("r", encoding=encoding, newline="") as f:
+                return [str(c).strip() for c in next(csv.reader(f), []) if str(c).strip()]
+        except Exception:
+            continue
+    return []
+
+
+def _direct_mode_enabled(task: TaskModel) -> bool:
+    return bool(getattr(task.config.auto_realize, "direct_automl_from_description", False))
+
+
+def _sample_submission_required(autorealize_dir: Path, configured: bool) -> bool:
+    if not configured:
+        return False
+    context_required = _mlevolve_generate_submission_required(autorealize_dir, configured)
+    if context_required is False:
+        return False
+    report = safe_read_json(autorealize_dir / "realize_report" / "submission_report.json", {})
+    source = str(report.get("source", "") if isinstance(report, dict) else "")
+    if source in {"not_applicable", "skipped_no_authoritative_contract", "disabled_by_config", "skipped_generation_failed"}:
+        return False
+    return True
+
+
+def _prepare_direct_autorealize_output(
+    *,
+    task_id: str,
+    task: TaskModel,
+    input_root: Path,
+    run_dir: Path,
+    autorealize_dir: Path,
+    clean: bool = False,
+) -> bool:
+    desc_src = _find_original_description(input_root)
+    if desc_src is None:
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="prepare_automl_input_failed",
+            last_error="直接启动 AutoML 需要输入目录中存在 description.md；请放入人工确认的赛题说明后重试。",
+        )
+        return False
+
+    try:
+        source = input_root.expanduser().resolve()
+        target = autorealize_dir.expanduser().resolve()
+        if target == source:
+            pass
+        else:
+            try:
+                target.relative_to(source)
+                store.set_status(
+                    task_id,
+                    status="failed",
+                    phase="prepare_automl_input_failed",
+                    last_error=f"拒绝把输入目录复制到其子目录，避免递归复制: input_root={source}, target={target}",
+                )
+                return False
+            except ValueError:
+                pass
+            if clean and target.exists():
+                if not _is_safe_stage_dir(run_dir, target, {"autorealize"}):
+                    store.set_status(
+                        task_id,
+                        status="failed",
+                        phase="prepare_automl_input_failed",
+                        last_error=f"Refused to delete unsafe direct AutoML input directory: {target}",
+                    )
+                    return False
+                _remove_tree_with_retries(target)
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target, dirs_exist_ok=True)
+
+        prepared_desc = target / "description.md"
+        if desc_src.resolve() != prepared_desc.resolve():
+            shutil.copy2(desc_src, prepared_desc)
+        origin_desc = target / "description_origin.md"
+        if desc_src.resolve() != origin_desc.resolve():
+            shutil.copy2(desc_src, origin_desc)
+
+        sample_candidates = [
+            p
+            for p in sorted(target.rglob("*"), key=lambda x: str(x).lower())
+            if p.is_file() and _is_sample_submission_like(p) and "realize_report" not in p.parts
+        ]
+        root_sample = target / "sample_submission.csv"
+        if sample_candidates and sample_candidates[0].resolve() != root_sample.resolve():
+            if sample_candidates[0].suffix.lower() == ".csv":
+                shutil.copy2(sample_candidates[0], root_sample)
+
+        report_dir = target / "realize_report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        desc_text = prepared_desc.read_text(encoding="utf-8", errors="ignore")
+        file_list = []
+        for p in sorted(target.rglob("*"), key=lambda x: str(x).lower()):
+            if p.is_file():
+                try:
+                    rp = str(p.relative_to(target)).replace("\\", "/")
+                except ValueError:
+                    rp = str(p)
+                if not rp.startswith("realize_report/"):
+                    file_list.append(rp)
+
+        sample_files = [x for x in file_list if _is_sample_submission_like(Path(x))]
+        root_sample_rel = "sample_submission.csv" if root_sample.exists() else (sample_files[0] if sample_files else None)
+        description_rel = str(desc_src.relative_to(input_root)).replace("\\", "/")
+        sample_columns = _read_csv_header(root_sample) if root_sample.exists() else []
+        submission_contract = {
+            "is_defined": bool(sample_columns),
+            "is_authoritative": bool(sample_columns),
+            "output_filename": "submission.csv",
+            "sample_filename": Path(root_sample_rel).name if root_sample_rel else "sample_submission.csv",
+            "columns": sample_columns,
+            "column_descriptions": {},
+            "row_unit": "",
+            "row_count_rule": "",
+            "format_description": "",
+            "validation_rules": [],
+            "source": root_sample_rel or "",
+            "evidence": [f"Official sample submission file with columns: {sample_columns}"] if sample_columns else [],
+            "confidence": 0.98 if sample_columns else 0.0,
+            "unresolved_questions": [],
+        }
+        authoritative_memory = {
+            "has_authoritative_sources": True,
+            "summary": "直接使用输入目录中的 description.md 作为任务定义。",
+            "task_goal": task.config.auto_realize.task_hint,
+            "input_requirements": ["以输入目录和原始 description.md 说明为准。"],
+            "output_requirements": (
+                [f"提交列以 `{root_sample_rel}` 为准: {', '.join(sample_columns)}"]
+                if sample_columns
+                else ["未发现可解析的官方 sample_submission；输出协议以原始 description.md 为准。"]
+            ),
+            "evaluation_requirements": ["以原始 description.md 中的评估协议为准。"],
+            "constraints": ["不得由 AutoRealize 重新发明任务定义、提交格式或评估协议。"],
+            "leakage_guards": [],
+            "submission_contract": submission_contract,
+            "evidence_items": [
+                {
+                    "source_path": description_rel,
+                    "source_type": "original_description",
+                    "priority": "high",
+                    "evidence": desc_text[:1000],
+                }
+            ],
+            "source_files": [description_rel, *([root_sample_rel] if root_sample_rel else [])],
+            "unresolved_questions": [],
+            "context_routing_notes": [
+                "Direct AutoML mode skips AutoRealize generation; downstream agents must treat original description.md as canonical."
+            ],
+        }
+        priority_order = [
+            "original description.md / README / official requirement/spec documents",
+            "official sample_submission or explicitly documented output contract",
+            "user task hint",
+            "data field profiles and relation probes",
+        ]
+        do_not_invent = [
+            "Do not invent submission columns or output filenames when no authoritative source defines them.",
+            "Do not invent a primary metric, metric direction, row count rule, or fixed random seed.",
+            "Do not override original description/README/spec constraints with data-profile heuristics.",
+            "For RL or optimization tasks without an official tabular submission contract, keep the output protocol from the original description.",
+        ]
+        route_base = {
+            "priority_order": priority_order,
+            "do_not_invent": do_not_invent,
+        }
+        agent_context_pack = {
+            "schema_version": "autorealize.agent_context_pack.v1",
+            "purpose": "Shared compact memory and routing policy for direct AutoML mode.",
+            "task_hint": task.config.auto_realize.task_hint,
+            "priority_order": priority_order,
+            "do_not_invent": do_not_invent,
+            "authoritative_memory": {
+                "has_authoritative_sources": True,
+                "source_files": authoritative_memory["source_files"],
+                "summary": authoritative_memory["summary"],
+                "task_goal": authoritative_memory["task_goal"],
+                "input_requirements": authoritative_memory["input_requirements"],
+                "output_requirements": authoritative_memory["output_requirements"],
+                "evaluation_requirements": authoritative_memory["evaluation_requirements"],
+                "constraints": authoritative_memory["constraints"],
+                "leakage_guards": [],
+                "unresolved_questions": [],
+                "context_routing_notes": authoritative_memory["context_routing_notes"],
+                "evidence_items": authoritative_memory["evidence_items"],
+            },
+            "submission_contract": submission_contract,
+            "constraint_memory": {"summary": "Direct mode uses the original description as the constraint source.", "items": []},
+            "data_memory": {
+                "tables": [],
+                "documents": [
+                    {
+                        "path": description_rel,
+                        "role": "task_requirement",
+                        "summary": desc_text[:1200],
+                        "columns": [],
+                        "field_descriptions": {},
+                        "field_profiles": [],
+                        "warnings": [],
+                    }
+                ],
+                "relations": [],
+                "sampled_filename_patterns": [],
+                "filename_sample_groups": [],
+                "field_glossary": {},
+                "metric_candidates": [],
+                "time_clues": [],
+            },
+            "context_routes": {
+                "task_classifier": {
+                    **route_base,
+                    "must_read": ["authoritative_memory.task_goal", "submission_contract"],
+                    "allowed_inference": "Infer task type only if original description is silent; never decide submission schema here.",
+                },
+                "description_writer": {
+                    **route_base,
+                    "must_read": ["authoritative_memory", "submission_contract"],
+                    "writing_policy": [
+                        "Do not rewrite the original description in direct mode.",
+                        "No reflection logs, issues/fixes, ambiguity_points, or internal process notes.",
+                    ],
+                },
+                "evaluation_contract_agent": {
+                    **route_base,
+                    "must_read": ["authoritative_memory.evaluation_requirements", "submission_contract.validation_rules"],
+                    "repair_policy": "Prefer original description.md when resolving ambiguity.",
+                },
+                "sample_submission_builder": {
+                    **route_base,
+                    "must_read": ["submission_contract"],
+                    "activation_policy": "Only reuse official sample_submission in direct mode; do not generate a new schema.",
+                },
+                "automl": {
+                    **route_base,
+                    "must_read": ["final description.md", "authoritative_memory", "submission_contract"],
+                    "priority": "When any generated context conflicts with original description.md, prefer original description.md.",
+                },
+            },
+        }
+        data_description = "\n".join(
+            [
+                "# 数据与任务说明",
+                "",
+                "本任务启用了“跳过 AutoRealize，直接启动 AutoML”模式。",
+                "输入目录中的 `description.md` 被视为人工确认的最高优先级任务说明；AutoDecision 未重新生成赛题描述、提交格式或评估协议。",
+                "",
+                "## 原始任务说明",
+                f"- 来源: `{str(desc_src.relative_to(input_root)).replace(chr(92), '/')}`",
+                "",
+                "## 文件清单",
+                *[f"- `{x}`" for x in file_list[:300]],
+            ]
+        )
+        (report_dir / "data_description.md").write_text(data_description, encoding="utf-8")
+        (report_dir / "original_requirements.txt").write_text(desc_text, encoding="utf-8")
+        write_json(report_dir / "authoritative_task_memory.json", authoritative_memory)
+        write_json(report_dir / "agent_context_pack.json", agent_context_pack)
+        write_json(
+            report_dir / "data_cognition_report.json",
+            {
+                "schema_version": "autorealize.data_cognition_report.v1",
+                "mode": "direct_automl_from_description",
+                "description_source": str(desc_src),
+                "files": file_list,
+                "authoritative_memory": authoritative_memory,
+                "agent_context_pack": agent_context_pack,
+                "summary": {
+                    "file_count": len(file_list),
+                    "requirement_doc_count": 1,
+                    "official_sample_submission_count": len(sample_files),
+                },
+            },
+        )
+        write_json(
+            report_dir / "task_definition_report.json",
+            {
+                "schema_version": "autorealize.task_definition_report.v1",
+                "mode": "direct_automl_from_description",
+                "description_source": str(desc_src),
+                "downstream_context": {
+                    "task_hint": task.config.auto_realize.task_hint,
+                    "description_source": str(desc_src),
+                    "generate_sample_submission": bool(sample_files),
+                    "official_sample_submission_files": sample_files,
+                    "authoritative_memory": authoritative_memory,
+                    "authoritative_submission_contract": submission_contract,
+                    "agent_context_pack": agent_context_pack,
+                    "context_routes": agent_context_pack["context_routes"],
+                    "do_not_invent": do_not_invent,
+                },
+                "artifacts": {
+                    "description": "description.md",
+                    "sample_submission": root_sample_rel,
+                },
+            },
+        )
+        write_json(
+            report_dir / "submission_report.json",
+            {
+                "schema_version": "autorealize.submission_report.v1",
+                "passed": True,
+                "source": "official_sample_reused" if root_sample_rel else "not_applicable",
+                "target_file": root_sample_rel,
+                "issues": [],
+                "reason": (
+                    "输入目录已包含 sample_submission 样例。"
+                    if root_sample_rel
+                    else "直接 AutoML 模式未发现官方 sample_submission；提交/评估格式以原始 description.md 为准。"
+                ),
+            },
+        )
+        write_json(
+            report_dir / "current_state.json",
+            {
+                "status": "completed",
+                "phase": "direct_automl_from_description",
+                "message": "AutoRealize skipped; original description.md prepared for AutoML.",
+                "updated_at": now_ts(),
+            },
+        )
+        write_json(
+            report_dir / "run_summary.json",
+            {
+                "schema_version": "autorealize.run_summary.v1",
+                "mode": "direct_automl_from_description",
+                "run_name": "autorealize",
+                "input_root": str(input_root),
+                "run_dir": str(target),
+                "task_hint": task.config.auto_realize.task_hint,
+                "modules": {
+                    "data_cognition": {"enabled": False, "artifact": "data_description.md"},
+                    "task_definition": {"enabled": False, "description": "description.md"},
+                },
+            },
+        )
+        write_json(
+            report_dir / "frontend_manifest.json",
+            {
+                "schema_version": "autorealize.frontend_manifest.v1",
+                "mode": "direct_automl_from_description",
+                "main_artifacts": ["description.md", "realize_report/data_description.md"],
+                "description_source": str(desc_src),
+            },
+        )
+        event = {
+            "ts": now_ts(),
+            "scope": "pipeline.direct_automl_from_description",
+            "status": "COMPLETED",
+            "description_source": str(desc_src),
+        }
+        (report_dir / "event_stream.jsonl").write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl_input_ready",
+            run_dir=str(run_dir),
+            last_error=None,
+        )
+        return True
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="prepare_automl_input_failed", last_error=f"直接准备 AutoML 输入失败: {e}")
+        return False
+
+
 def _task_layout(task: TaskModel, output_root: Path | None = None) -> dict[str, Path]:
-    root_base = output_root if output_root is not None else Path(task.output_root).expanduser().resolve()
+    root_base = output_root if output_root is not None else resolve_output_root(task.output_root)
     task_root = root_base / task.task_name
     ar_dir = task_root / "autorealize"
     automl_root = task_root / "automl"
     automl_logs_root = automl_root / "logs"
     automl_workspaces_root = automl_root / "workspaces"
+    report_dir = task_root / "report"
     return {
         "task_root": task_root,
         "autorealize_dir": ar_dir,
         "automl_root": automl_root,
         "automl_logs_root": automl_logs_root,
         "automl_workspaces_root": automl_workspaces_root,
+        "report_dir": report_dir,
     }
 
 
 def _resolve_autorealize_dir(task: TaskModel) -> Path:
     if not task.run_dir:
-        raise HTTPException(status_code=400, detail="task has no run_dir; cannot rerun AutoML")
+        raise HTTPException(status_code=400, detail="task has no run_dir; cannot resolve AutoRealize output")
     run_dir = Path(task.run_dir).expanduser().resolve()
     ar_dir = run_dir / "autorealize"
     if not ar_dir.exists() or not ar_dir.is_dir():
@@ -491,24 +1300,33 @@ def _resolve_autorealize_dir(task: TaskModel) -> Path:
 def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoML")
-    if task.status != "failed":
-        raise HTTPException(status_code=400, detail="only failed tasks can rerun AutoML")
-    if task.phase not in {"automl_failed", "report_failed", "failed"}:
-        raise HTTPException(status_code=400, detail=f"current phase `{task.phase}` does not support AutoML-only rerun")
     if not task.config.auto_ml.enabled:
         raise HTTPException(status_code=400, detail="AutoML is disabled in task config")
 
-    autorealize_dir = _resolve_autorealize_dir(task)
+    if _direct_mode_enabled(task):
+        run_dir = _resolve_task_run_dir_for_rerun(task)
+        autorealize_dir = run_dir / "autorealize"
+    else:
+        autorealize_dir = _resolve_autorealize_dir(task)
     required_files = [
         autorealize_dir / "description.md",
-        autorealize_dir / "sample_submission.csv",
     ]
+    if _sample_submission_required(autorealize_dir, task.config.auto_realize.generate_sample_submission):
+        required_files.append(autorealize_dir / "sample_submission.csv")
     missing = [str(p) for p in required_files if not p.exists()]
-    if missing:
+    if missing and not _direct_mode_enabled(task):
         raise HTTPException(
             status_code=400,
             detail=f"AutoRealize outputs are incomplete; missing files: {missing}",
         )
+    if missing and _direct_mode_enabled(task):
+        input_root = Path(task.input_root).expanduser().resolve()
+        desc_src = _find_original_description(input_root) if input_root.exists() else None
+        if desc_src is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"直接 AutoML 模式需要 input_root 中存在 description.md；当前 AutoRealize 输出缺失: {missing}",
+            )
 
     layout = _task_layout(task)
     automl_logs_root = layout["automl_logs_root"]
@@ -518,10 +1336,108 @@ def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Pat
     return autorealize_dir, automl_logs_root, automl_workspaces_root, ml_log_dir, ml_ws_dir
 
 
+def _validate_direct_automl_start(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="task is running; cannot start AutoML")
+    if not task.config.auto_ml.enabled:
+        raise HTTPException(status_code=400, detail="AutoML is disabled in task config")
+    if not task.input_root.strip():
+        raise HTTPException(status_code=400, detail="请先配置输入文件夹(input_root)再直接启动 AutoML")
+    if not task.task_name.strip():
+        raise HTTPException(status_code=400, detail="请先配置任务名(task_name)再直接启动 AutoML")
+
+    input_root = Path(task.input_root).expanduser().resolve()
+    if not input_root.exists() or not input_root.is_dir():
+        raise HTTPException(status_code=400, detail=f"input_root does not exist: {input_root}")
+    if _find_original_description(input_root) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="直接启动 AutoML 需要输入目录中存在 description.md；请放入人工确认的赛题说明后重试。",
+        )
+
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    if run_dir.exists() and not _is_safe_task_output_dir(task, run_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refused to write unsafe task directory: {run_dir}",
+        )
+    return (
+        input_root,
+        run_dir,
+        run_dir / "autorealize",
+        run_dir / "automl" / "logs",
+        run_dir / "automl" / "workspaces",
+    )
+
+
+def _resolve_task_run_dir_for_rerun(task: TaskModel) -> Path:
+    if task.run_dir:
+        return Path(task.run_dir).expanduser().resolve()
+    return (resolve_output_root(task.output_root) / task.task_name).resolve()
+
+
+def _validate_autorealize_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoRealize")
+    if not task.input_root.strip():
+        raise HTTPException(status_code=400, detail="请先配置输入文件夹(input_root)再重跑 AutoRealize")
+    if not task.task_name.strip():
+        raise HTTPException(status_code=400, detail="请先配置任务名(task_name)再重跑 AutoRealize")
+
+    input_root = Path(task.input_root).expanduser().resolve()
+    if not input_root.exists():
+        raise HTTPException(status_code=400, detail=f"input_root does not exist: {input_root}")
+
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    if run_dir.exists() and not _is_safe_task_output_dir(task, run_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refused to rewrite unsafe task directory: {run_dir}",
+        )
+    return input_root, run_dir, run_dir / "autorealize", run_dir / "automl", run_dir / "report"
+
+
+def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path | None, Path | None, Path]:
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoReport")
+    if not task.config.auto_report.enabled:
+        raise HTTPException(status_code=400, detail="AutoReport is disabled in task config")
+
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    if run_dir.exists() and not _is_safe_task_output_dir(task, run_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refused to rewrite unsafe task directory: {run_dir}",
+        )
+    autorealize_dir = run_dir / "autorealize"
+    require_sample = _sample_submission_required(
+        autorealize_dir,
+        task.config.auto_realize.generate_sample_submission,
+    )
+    if not _autorealize_outputs_ready(autorealize_dir, require_sample_submission=require_sample):
+        if _direct_mode_enabled(task):
+            input_root = Path(task.input_root).expanduser().resolve()
+            desc_src = _find_original_description(input_root) if input_root.exists() else None
+            if desc_src is not None:
+                automl_root = run_dir / "automl"
+                ml_log_dir = _pick_local_automl_log_dir(task)
+                ml_ws_dir = _pick_local_automl_workspace_dir(task, exp_name=ml_log_dir.name if ml_log_dir else None)
+                return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
+        raise HTTPException(
+            status_code=400,
+            detail=f"AutoRealize outputs are incomplete; cannot rerun AutoReport: {autorealize_dir}",
+        )
+
+    automl_root = run_dir / "automl"
+    ml_log_dir = _pick_local_automl_log_dir(task)
+    ml_ws_dir = _pick_local_automl_workspace_dir(task, exp_name=ml_log_dir.name if ml_log_dir else None)
+    return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
+
+
 def _candidate_full_rerun_dirs(task: TaskModel) -> list[Path]:
     dirs: list[Path] = []
     try:
-        configured_root = Path(task.output_root).expanduser().resolve() / task.task_name
+        configured_root = resolve_output_root(task.output_root) / task.task_name
         dirs.append(configured_root)
     except Exception:
         pass
@@ -543,13 +1459,32 @@ def _candidate_full_rerun_dirs(task: TaskModel) -> list[Path]:
 
 
 def _is_safe_task_output_dir(task: TaskModel, path: Path) -> bool:
+    if not task.task_name.strip():
+        return False
     try:
-        output_root = Path(task.output_root).expanduser().resolve()
         candidate = path.expanduser().resolve()
-        candidate.relative_to(output_root)
     except Exception:
         return False
-    return candidate.name == task.task_name
+
+    allowed_roots: list[Path] = []
+    for root in (
+        resolve_output_root(task.output_root),
+        PROJECT_RUNS_DIR,
+        DEFAULT_RUNS_DIR,
+        LEGACY_BACKEND_RUNS_DIR,
+        LEGACY_AUTOREALIZE_RUNS_DIR,
+    ):
+        try:
+            resolved_root = root.expanduser().resolve()
+        except Exception:
+            continue
+        if str(resolved_root).lower() not in {str(x).lower() for x in allowed_roots}:
+            allowed_roots.append(resolved_root)
+
+    # Only allow deleting/reusing the direct child named exactly as the task.
+    # This keeps old frontend/backend/runs tasks recoverable without opening
+    # the safety gate to arbitrary folders.
+    return any(candidate.parent == root and candidate.name == task.task_name for root in allowed_roots)
 
 
 def _prepare_full_rerun(task: TaskModel) -> None:
@@ -583,6 +1518,49 @@ def _remove_tree_with_retries(target: Path, retries: int = 5, sleep_secs: float 
             time.sleep(sleep_secs)
     if last_error is not None:
         raise last_error
+
+
+def _is_safe_stage_dir(run_dir: Path, target: Path, allowed_names: set[str]) -> bool:
+    try:
+        root = run_dir.expanduser().resolve()
+        candidate = target.expanduser().resolve()
+        candidate.relative_to(root)
+    except Exception:
+        return False
+    return candidate.parent == root and candidate.name in allowed_names
+
+
+def _remove_stage_dirs_for_rerun(
+    *,
+    task_id: str,
+    run_dir: Path,
+    targets: list[Path],
+    allowed_names: set[str],
+    phase: str,
+    label: str,
+) -> bool:
+    for target in targets:
+        if not target.exists():
+            continue
+        if not _is_safe_stage_dir(run_dir, target, allowed_names):
+            store.set_status(
+                task_id,
+                status="failed",
+                phase=phase,
+                last_error=f"Refused to delete unsafe stage directory: {target}",
+            )
+            return False
+        try:
+            _remove_tree_with_retries(target)
+        except Exception as e:
+            store.set_status(
+                task_id,
+                status="failed",
+                phase=phase,
+                last_error=f"{label}前清理旧结果失败: {e}。如果是 Windows 文件占用，请关闭该文件的预览器/PDF阅读器/资源管理器预览后重试。",
+            )
+            return False
+    return True
 
 
 def _full_rerun_task_thread(task_id: str) -> None:
@@ -636,10 +1614,16 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg.setdefault("parallel", {})
     cfg.setdefault("telemetry", {})
     cfg.setdefault("knowledge", {})
+    cfg.setdefault("investigation", {})
+    cfg.setdefault("data", {})
 
     cfg["switches"]["run_data_cognition"] = ar.run_data_cognition
     cfg["switches"]["run_task_definition"] = ar.run_task_definition
     cfg["switches"]["run_data_cleaning"] = ar.run_data_cleaning
+    cfg["switches"]["enable_fewshot"] = ar.enable_fewshot
+    cfg["switches"]["generate_sample_submission"] = ar.generate_sample_submission
+    cfg["switches"]["prefer_original_description"] = ar.prefer_original_description
+    cfg["switches"]["direct_automl_from_description"] = ar.direct_automl_from_description
     cfg["llm"]["request_timeout_seconds"] = ar.llm_timeout
     cfg["llm"]["max_concurrent_requests"] = ar.llm_concurrency
     cfg["llm"]["enable_thinking"] = ar.llm_enable_thinking
@@ -651,22 +1635,26 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg["telemetry"]["enabled"] = not ar.no_telemetry
     cfg["knowledge"]["enabled"] = not ar.no_knowledge
     cfg["llm"]["enable_cache"] = not ar.no_llm_cache
+    cfg["investigation"]["enabled"] = bool(ar.enable_question_investigator)
+    cfg["data"]["auto_generate_predict_split"] = bool(ar.auto_generate_predict_split)
 
     llm = gs.llm
-    code_model = llm.get("codeModel", {})
-    vllm = llm.get("vllm", {})
-    if code_model.get("baseUrl"):
-        cfg["llm"]["base_url"] = code_model.get("baseUrl")
-    if code_model.get("model"):
-        cfg["llm"]["model_name"] = code_model.get("model")
-    if code_model.get("apiKey"):
-        cfg["llm"]["api_key"] = code_model.get("apiKey")
-    if "enableThinking" in code_model:
-        cfg["llm"]["enable_thinking"] = code_model.get("enableThinking")
-    if code_model.get("reasoningEffort"):
-        cfg["llm"]["reasoning_effort"] = code_model.get("reasoningEffort")
-    if "structuredDisableThinking" in code_model:
-        cfg["llm"]["structured_disable_thinking"] = bool(code_model.get("structuredDisableThinking"))
+    autorealize_model = _selected_model(llm, "autoRealize", fallback_role="autoMlCode")
+    vllm = _selected_model(llm, "autoRealizeVision")
+    if autorealize_model.get("baseUrl"):
+        cfg["llm"]["base_url"] = autorealize_model.get("baseUrl")
+    if autorealize_model.get("model"):
+        cfg["llm"]["model_name"] = autorealize_model.get("model")
+    if autorealize_model.get("apiKey"):
+        cfg["llm"]["api_key"] = autorealize_model.get("apiKey")
+    cfg["llm"]["enable_thinking"] = _legacy_enable_thinking(autorealize_model.get("thinkingMode", autorealize_model.get("enableThinking")))
+    effort = _normal_reasoning_effort(autorealize_model.get("reasoningEffort"))
+    cfg["llm"]["reasoning_effort"] = None if effort == "default" else effort
+    max_tokens = _normal_max_tokens(autorealize_model.get("maxTokens", autorealize_model.get("max_tokens")))
+    if max_tokens is not None:
+        cfg["llm"]["max_tokens"] = max_tokens
+        cfg["llm"]["structured_max_tokens"] = max_tokens
+    cfg["llm"]["structured_disable_thinking"] = True
 
     cfg["vllm"]["enabled"] = bool(ar.enable_vllm)
     if vllm.get("baseUrl"):
@@ -682,7 +1670,7 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
 
 
 def _automl_engine(task: TaskModel) -> str:
-    raw = str(getattr(task.config.auto_ml, "engine", "ml_master") or "ml_master").strip().lower()
+    raw = str(getattr(task.config.auto_ml, "engine", "mlevolve") or "mlevolve").strip().lower()
     if raw in {"mlevolve", "ml-evolve", "ml_evolve"}:
         return "mlevolve"
     return "ml_master"
@@ -698,8 +1686,8 @@ def _build_ml_master_command(
 ) -> list[str]:
     am = task.config.auto_ml
     llm = gs.llm
-    code_model = llm.get("codeModel", {})
-    feedback_model = llm.get("feedbackModel", {})
+    code_model = _selected_model(llm, "autoMlCode")
+    feedback_model = _selected_model(llm, "autoMlFeedback", fallback_role="autoMlCode")
     py = gs.python.get("executable", "python")
 
     exp_name = exp_name or task.task_name
@@ -737,22 +1725,59 @@ def _build_ml_master_command(
         f"agent.decay.decay_type={am.decay_type}",
         f"agent.decay.exploration_constant={am.exploration_constant}",
         f"agent.decay.lower_bound={am.lower_bound}",
-        f"agent.code.model={_as_cli_str(code_model.get('model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
+        f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         f"agent.code.temp=0.5",
-        f"agent.code.base_url={_as_cli_str(code_model.get('baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.code.api_key={_as_cli_str(code_model.get('apiKey', ''), '')}",
-        f"agent.feedback.model={_as_cli_str(feedback_model.get('model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
+        f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
+        f"agent.code.api_key={_as_cli_str(_model_cli_value(code_model, 'apiKey', ''), '')}",
+        f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
+        f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
+        f"agent.feedback.model={_as_cli_str(_model_cli_value(feedback_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         f"agent.feedback.temp=0.5",
-        f"agent.feedback.base_url={_as_cli_str(feedback_model.get('baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.feedback.api_key={_as_cli_str(feedback_model.get('apiKey', ''), '')}",
+        f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
+        f"agent.feedback.api_key={_as_cli_str(_model_cli_value(feedback_model, 'apiKey', ''), '')}",
+        f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
+        f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
         f"log_dir={str(automl_logs_root)}",
         f"workspace_dir={str(automl_workspaces_root)}",
     ]
+    code_max_tokens = _model_max_tokens_cli(code_model)
+    feedback_max_tokens = _model_max_tokens_cli(feedback_model)
+    if code_max_tokens is not None:
+        cmd.append(f"agent.code.max_tokens={code_max_tokens}")
+    if feedback_max_tokens is not None:
+        cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
     if am.goal:
         cmd.append(f"goal={_as_cli_str(am.goal)}")
     if am.eval:
         cmd.append(f"eval={_as_cli_str(am.eval)}")
     return cmd
+
+
+def _mlevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
+    """Honor AutoRealize's output protocol while preserving manual disable."""
+    if not configured:
+        return False
+    report_dir = autorealize_dir / "realize_report"
+    automl_pack = safe_read_json(report_dir / "automl_context_pack.json", {})
+    output = {}
+    if isinstance(automl_pack, dict):
+        output = automl_pack.get("output_contract") if isinstance(automl_pack.get("output_contract"), dict) else {}
+    if not output:
+        bundle = safe_read_json(report_dir / "description_protocol_bundle.json", {})
+        output = bundle.get("output") if isinstance(bundle, dict) and isinstance(bundle.get("output"), dict) else {}
+    if output:
+        if bool(output.get("sample_submission_required")):
+            return True
+        reason = str(output.get("no_sample_submission_reason") or "").strip()
+        kind = str(output.get("output_kind") or "").strip().lower()
+        columns = output.get("columns") if isinstance(output.get("columns"), list) else []
+        if reason and (kind in {"policy", "solution", "solution_table", "artifact", "report"} or not columns):
+            return False
+    problem = safe_read_json(report_dir / "problem_paradigm_report.json", {})
+    paradigm = str(problem.get("problem_paradigm") or "").strip()
+    if paradigm in {"static_optimization", "reinforcement_learning"} and not (autorealize_dir / "sample_submission.csv").exists():
+        return False
+    return True
 
 
 def _build_mlevolve_command(
@@ -766,8 +1791,9 @@ def _build_mlevolve_command(
     am = task.config.auto_ml
     llm = gs.llm
     global_mlevolve = gs.mlevolve or {}
-    code_model = llm.get("codeModel", {})
-    feedback_model = llm.get("feedbackModel", {})
+    code_model = _selected_model(llm, "autoMlCode")
+    feedback_model = _selected_model(llm, "autoMlFeedback", fallback_role="autoMlCode")
+    embedding_model = _selected_model(llm, "embedding")
     py = gs.python.get("executable", "python")
 
     exp_name = exp_name or task.task_name
@@ -775,6 +1801,8 @@ def _build_mlevolve_command(
     def _as_cli_str(value: Any, default: str = "") -> str:
         v = default if value is None else str(value)
         return json.dumps(v, ensure_ascii=False)
+
+    generate_submission = _mlevolve_generate_submission_required(autorealize_dir, bool(am.generate_submission))
 
     cmd = [
         py,
@@ -800,18 +1828,19 @@ def _build_mlevolve_command(
         f"agent.initial_drafts={am.initial_drafts}",
         "agent.seed=42",
         f"agent.data_preview={'true' if am.data_preview else 'false'}",
-        f"agent.code.model={_as_cli_str(code_model.get('model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
+        f"agent.generate_submission={'true' if generate_submission else 'false'}",
+        f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         "agent.code.temp=0.5",
-        f"agent.code.base_url={_as_cli_str(code_model.get('baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.code.api_key={_as_cli_str(code_model.get('apiKey', ''), '')}",
-        "agent.code.enable_thinking=false",
-        "agent.code.reasoning_effort=high",
-        f"agent.feedback.model={_as_cli_str(feedback_model.get('model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
+        f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
+        f"agent.code.api_key={_as_cli_str(_model_cli_value(code_model, 'apiKey', ''), '')}",
+        f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
+        f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
+        f"agent.feedback.model={_as_cli_str(_model_cli_value(feedback_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         "agent.feedback.temp=0.5",
-        f"agent.feedback.base_url={_as_cli_str(feedback_model.get('baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.feedback.api_key={_as_cli_str(feedback_model.get('apiKey', ''), '')}",
-        "agent.feedback.enable_thinking=false",
-        "agent.feedback.reasoning_effort=high",
+        f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
+        f"agent.feedback.api_key={_as_cli_str(_model_cli_value(feedback_model, 'apiKey', ''), '')}",
+        f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
+        f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
         f"agent.check_data_leakage={'true' if am.check_data_leakage else 'false'}",
         f"agent.use_diff_mode={'true' if am.use_diff_mode else 'false'}",
         "agent.fusion_vs_evolution_prob=0.3",
@@ -820,9 +1849,9 @@ def _build_mlevolve_command(
         f"agent.use_global_memory={'true' if am.use_global_memory else 'false'}",
         f"agent.memory_similarity_threshold={am.memory_similarity_threshold}",
         f"agent.memory_embedding_backend={_as_cli_str(am.memory_embedding_backend, 'openai')}",
-        f"agent.memory_embedding_api_key={_as_cli_str(global_mlevolve.get('embeddingApiKey', getattr(am, 'memory_embedding_api_key', '')))}",
-        f"agent.memory_embedding_base_url={_as_cli_str(global_mlevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', '')))}",
-        f"agent.memory_embedding_model={_as_cli_str(global_mlevolve.get('embeddingModel', getattr(am, 'memory_embedding_model', '')))}",
+        f"agent.memory_embedding_api_key={_as_cli_str(_model_cli_value(embedding_model, 'apiKey', global_mlevolve.get('embeddingApiKey', getattr(am, 'memory_embedding_api_key', ''))))}",
+        f"agent.memory_embedding_base_url={_as_cli_str(_model_cli_value(embedding_model, 'baseUrl', global_mlevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', ''))))}",
+        f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_mlevolve.get('embeddingModel', getattr(am, 'memory_embedding_model', ''))))}",
         f"agent.memory_embedding_device={_as_cli_str(am.memory_embedding_device, 'cuda')}",
         f"agent.memory_embedding_model_path={_as_cli_str(am.memory_embedding_model_path, 'BAAI/bge-base-en-v1.5')}",
         f"agent.search.parallel_search_num={am.parallel_search_num}",
@@ -862,6 +1891,12 @@ def _build_mlevolve_command(
         "agent.decay.phase_ratios=[0.3,0.7]",
         f"coldstart.use_coldstart={'true' if am.use_coldstart else 'false'}",
     ]
+    code_max_tokens = _model_max_tokens_cli(code_model)
+    feedback_max_tokens = _model_max_tokens_cli(feedback_model)
+    if code_max_tokens is not None:
+        cmd.append(f"agent.code.max_tokens={code_max_tokens}")
+    if feedback_max_tokens is not None:
+        cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
     if am.goal:
         cmd.append(f"goal={_as_cli_str(am.goal)}")
     if am.eval:
@@ -885,7 +1920,7 @@ def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: 
             retryable = e.code in {429, 500, 502, 503, 504}
             if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
                 raise RuntimeError(f"HTTP {e.code} {url}: {detail}")
-            time.sleep(min(8.0, 1.5 ** (attempt - 1)))
+            time.sleep(min(30.0, 2.0 ** (attempt - 1)))
             continue
         except Exception as e:
             last_error = e
@@ -896,10 +1931,17 @@ def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: 
                     "timed out",
                     "timeout",
                     "connection refused",
+                    "10061",
+                    "actively refused",
+                    "积极拒绝",
                     "connection reset",
                     "connection aborted",
                     "bad gateway",
                     "temporary failure",
+                    "getaddrinfo",
+                    "11001",
+                    "name resolution",
+                    "name or service not known",
                     "503",
                     "502",
                     "504",
@@ -907,7 +1949,7 @@ def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: 
             )
             if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
                 raise RuntimeError(f"POST {url} failed: {e}")
-            time.sleep(min(8.0, 1.5 ** (attempt - 1)))
+            time.sleep(min(30.0, 2.0 ** (attempt - 1)))
     raise RuntimeError(f"POST {url} failed: {last_error}")
 
 
@@ -925,7 +1967,7 @@ def _json_get(base_url: str, path: str, timeout_secs: int = 15) -> dict[str, Any
             retryable = e.code in {429, 500, 502, 503, 504}
             if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
                 raise RuntimeError(f"HTTP {e.code} {url}: {detail}")
-            time.sleep(min(8.0, 1.5 ** (attempt - 1)))
+            time.sleep(min(30.0, 2.0 ** (attempt - 1)))
             continue
         except Exception as e:
             last_error = e
@@ -936,10 +1978,17 @@ def _json_get(base_url: str, path: str, timeout_secs: int = 15) -> dict[str, Any
                     "timed out",
                     "timeout",
                     "connection refused",
+                    "10061",
+                    "actively refused",
+                    "积极拒绝",
                     "connection reset",
                     "connection aborted",
                     "bad gateway",
                     "temporary failure",
+                    "getaddrinfo",
+                    "11001",
+                    "name resolution",
+                    "name or service not known",
                     "503",
                     "502",
                     "504",
@@ -947,35 +1996,186 @@ def _json_get(base_url: str, path: str, timeout_secs: int = 15) -> dict[str, Any
             )
             if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
                 raise RuntimeError(f"GET {url} failed: {e}")
-            time.sleep(min(8.0, 1.5 ** (attempt - 1)))
+            time.sleep(min(30.0, 2.0 ** (attempt - 1)))
     raise RuntimeError(f"GET {url} failed: {last_error}")
 
 
-def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, int]:
+def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, str, int]:
     core = gs.coreServices or {}
     ar_base = str(core.get("autoRealizeBaseUrl") or "http://127.0.0.1:18101").strip().rstrip("/")
     ml_base = str(core.get("autoMlBaseUrl") or "http://127.0.0.1:18102").strip().rstrip("/")
     mlevolve_base = str(core.get("mlevolveBaseUrl") or "http://127.0.0.1:18103").strip().rstrip("/")
+    report_base = str(core.get("autoReportBaseUrl") or "http://127.0.0.1:18104").strip().rstrip("/")
     timeout_secs = int(core.get("requestTimeoutSecs") or 10)
-    return ar_base, ml_base, mlevolve_base, timeout_secs
+    return ar_base, ml_base, mlevolve_base, report_base, timeout_secs
 
 
 def _poll_remote_job(base_url: str, job_id: str, timeout_secs: int = 15) -> dict[str, Any]:
+    reconnect_attempt = 0
+    last_error = ""
     while True:
-        status = _json_get(base_url, f"/jobs/{job_id}", timeout_secs=timeout_secs)
+        try:
+            status = _json_get(base_url, f"/jobs/{job_id}", timeout_secs=timeout_secs)
+            reconnect_attempt = 0
+            last_error = ""
+        except Exception as exc:
+            reconnect_attempt += 1
+            last_error = str(exc)
+            if reconnect_attempt >= SERVICE_POLL_RECONNECT_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"service reconnect failed after {reconnect_attempt} attempts: {last_error}"
+                ) from exc
+            sleep_secs = min(
+                SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS,
+                SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS * reconnect_attempt,
+            )
+            time.sleep(sleep_secs)
+            continue
         state = str(status.get("status") or "")
         if state in {"completed", "failed", "stopped"}:
             return status
         time.sleep(1.0)
 
 
-def _autorealize_outputs_ready(autorealize_dir: Path) -> bool:
+def _is_interrupted_exit_code(exit_code: Any) -> bool:
+    try:
+        code = int(exit_code)
+    except Exception:
+        return False
+    # Windows CTRL_C_EVENT/CTRL_BREAK_EVENT is reported as 0xC000013A.
+    return code in {3221225786, -1073741510, 130, -2, -15}
+
+
+def _autorealize_outputs_ready(autorealize_dir: Path, *, require_sample_submission: bool = True) -> bool:
     required = [
         autorealize_dir / "description.md",
-        autorealize_dir / "sample_submission.csv",
         autorealize_dir / "realize_report" / "data_description.md",
     ]
+    if require_sample_submission:
+        required.append(autorealize_dir / "sample_submission.csv")
     return all(p.exists() for p in required)
+
+
+def _report_outputs_ready(report_dir: Path) -> bool:
+    return (report_dir / "report.json").exists() and (report_dir / "report.md").exists()
+
+
+def _report_evidence_paths(
+    *,
+    autorealize_dir: Path,
+    automl_root: Path,
+    ml_log_dir: Path | None,
+    ml_ws_dir: Path | None,
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    evidence.append({"label": "autorealize", "path": str(autorealize_dir), "kind": "autorealize", "required": True})
+    if automl_root.exists():
+        evidence.append({"label": "automl_root", "path": str(automl_root), "kind": "automl", "required": False})
+    if ml_log_dir is not None and ml_log_dir.exists():
+        evidence.append({"label": "automl_logs", "path": str(ml_log_dir), "kind": "automl", "required": False})
+    if ml_ws_dir is not None and ml_ws_dir.exists():
+        evidence.append({"label": "automl_workspace", "path": str(ml_ws_dir), "kind": "automl", "required": False})
+    return evidence
+
+
+def _run_report_stage(
+    *,
+    task_id: str,
+    task: TaskModel,
+    gs: GlobalSettingsModel,
+    autorealize_dir: Path,
+    automl_root: Path,
+    ml_log_dir: Path | None,
+    ml_ws_dir: Path | None,
+    report_dir: Path,
+    report_base: str,
+    req_timeout: int,
+) -> bool:
+    cfg = task.config.auto_report
+    if not cfg.enabled:
+        return True
+    report_dir.mkdir(parents=True, exist_ok=True)
+    feedback_model = _selected_model(gs.llm, "autoMlFeedback", fallback_role="autoMlCode")
+    code_model = _selected_model(gs.llm, "autoMlCode")
+    report_model = feedback_model
+    if not (report_model.get("model") and report_model.get("baseUrl") and report_model.get("apiKey")):
+        report_model = code_model
+    report_api_key = str(report_model.get("apiKey") or "")
+    store.set_status(
+        task_id,
+        status="running",
+        phase="report",
+        report_dir=str(report_dir),
+        last_error=None,
+    )
+    payload = {
+        "task_id": task_id,
+        "task_name": task.task_name,
+        "output_dir": str(report_dir),
+        "python_executable": str(gs.python.get("executable", "python")),
+        "working_dir": str(AUTOREPORT_DIR),
+        "evidence_paths": _report_evidence_paths(
+            autorealize_dir=autorealize_dir,
+            automl_root=automl_root,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+        ),
+        "config": {
+            "report_title": f"{task.task_name} AutoDecision 运行报告",
+            "audience": cfg.audience,
+            "language": cfg.language,
+            "include_raw_logs": cfg.include_raw_logs,
+            "include_code_excerpt": cfg.include_code_excerpt,
+            "use_llm": True,
+            "llm": {
+                "model": str(report_model.get("model") or ""),
+                "base_url": str(report_model.get("baseUrl") or ""),
+                "api_key": report_api_key,
+                "temperature": 0.25,
+                "max_tokens": 8192,
+                "max_prompt_chars": 60000,
+            },
+        },
+        "env_overrides": {"DEEPSEEK_API_KEY": report_api_key},
+    }
+    try:
+        report_start = _json_post(report_base, "/jobs/start", payload, timeout_secs=req_timeout)
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport service start failed: {e}")
+        return False
+    report_job_id = str(report_start.get("job_id") or "")
+    if not report_job_id:
+        store.set_status(task_id, status="failed", phase="report_failed", last_error="AutoReport service returned empty job_id")
+        return False
+    store.attach_handle(
+        task_id,
+        RuntimeHandle(
+            process=None,
+            source="autoreport_service",
+            remote_base_url=report_base,
+            remote_job_id=report_job_id,
+            started_at=now_ts(),
+        ),
+    )
+    try:
+        report_status = _poll_remote_job(report_base, report_job_id, timeout_secs=req_timeout)
+    except Exception as e:
+        store.pop_handle(task_id)
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport service poll failed: {e}")
+        return False
+    store.pop_handle(task_id)
+    report_state = str(report_status.get("status") or "")
+    report_code = report_status.get("exit_code")
+    if report_code is None and report_state == "completed":
+        report_code = 0
+    if report_state != "completed" or report_code != 0:
+        tail = str(report_status.get("stderr_tail") or report_status.get("stdout_tail") or report_status.get("last_error") or "").strip()
+        msg = f"AutoReport exited with code {report_code if report_code is not None else '?'}"
+        if tail:
+            msg = f"{msg}: {tail.splitlines()[-1][:180]}"
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=msg)
+        return False
+    return True
 
 
 def _run_autorealize_stage(
@@ -990,7 +2190,7 @@ def _run_autorealize_stage(
 ) -> bool:
     ar_cfg_path = _write_autorealize_config(task, gs)
     py = str(gs.python.get("executable", "python"))
-    code_model = (gs.llm or {}).get("codeModel", {}) or {}
+    autorealize_model = _selected_model(gs.llm or {}, "autoRealize", fallback_role="autoMlCode")
 
     store.set_status(
         task_id,
@@ -1011,7 +2211,7 @@ def _run_autorealize_stage(
         "working_dir": str(AUTOREALIZE_DIR),
         "offline": bool(task.config.auto_realize.offline),
         "auto_generate_predict_split": bool(task.config.auto_realize.auto_generate_predict_split),
-        "env_overrides": {"DEEPSEEK_API_KEY": str(code_model.get("apiKey") or "")},
+        "env_overrides": {"DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or "")},
     }
     try:
         ar_start = _json_post(ar_base, "/jobs/start", ar_start_payload, timeout_secs=req_timeout)
@@ -1055,14 +2255,16 @@ def _start_task_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        ar_base, ml_base, mlevolve_base, req_timeout = _service_base_urls(gs)
+        ar_base, ml_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
         input_root, output_root = _validate_start(task)
         run_started_at = now_ts()
         layout = _task_layout(task, output_root)
         run_dir = layout["task_root"]
         autorealize_dir = layout["autorealize_dir"]
+        automl_root = layout["automl_root"]
         automl_logs_root = layout["automl_logs_root"]
         automl_workspaces_root = layout["automl_workspaces_root"]
+        report_dir = layout["report_dir"]
         ml_exp_name, ml_log_dir, ml_ws_dir = _build_automl_paths(
             task,
             automl_logs_root=automl_logs_root,
@@ -1074,6 +2276,7 @@ def _start_task_thread(task_id: str) -> None:
             autorealize_dir.mkdir(parents=True, exist_ok=True)
             automl_logs_root.mkdir(parents=True, exist_ok=True)
             automl_workspaces_root.mkdir(parents=True, exist_ok=True)
+            report_dir.mkdir(parents=True, exist_ok=True)
         except FileExistsError:
             store.set_status(
                 task_id,
@@ -1085,24 +2288,48 @@ def _start_task_thread(task_id: str) -> None:
 
         env = os.environ.copy()
         llm = gs.llm
-        code_model = llm.get("codeModel", {})
+        code_model = _selected_model(llm, "autoMlCode")
         if code_model.get("apiKey"):
             env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
 
         store.set_status(task_id, status="running", phase="autorealize", run_dir=str(run_dir), run_started_at=run_started_at, last_error=None)
-        ok_ar = _run_autorealize_stage(
-            task_id=task_id,
-            task=task,
-            gs=gs,
-            input_root=input_root,
-            run_dir=run_dir,
-            ar_base=ar_base,
-            req_timeout=req_timeout,
-        )
+        if _direct_mode_enabled(task):
+            ok_ar = _prepare_direct_autorealize_output(
+                task_id=task_id,
+                task=task,
+                input_root=input_root,
+                run_dir=run_dir,
+                autorealize_dir=autorealize_dir,
+                clean=True,
+            )
+        else:
+            ok_ar = _run_autorealize_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                input_root=input_root,
+                run_dir=run_dir,
+                ar_base=ar_base,
+                req_timeout=req_timeout,
+            )
         if not ok_ar:
             return
 
         if not task.config.auto_ml.enabled:
+            ok_report = _run_report_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                autorealize_dir=autorealize_dir,
+                automl_root=automl_root,
+                ml_log_dir=None,
+                ml_ws_dir=None,
+                report_dir=report_dir,
+                report_base=report_base,
+                req_timeout=req_timeout,
+            )
+            if not ok_report:
+                return
             store.set_status(task_id, status="completed", phase="completed")
             return
 
@@ -1122,6 +2349,21 @@ def _start_task_thread(task_id: str) -> None:
             req_timeout=req_timeout,
         )
         if not ok:
+            return
+
+        ok_report = _run_report_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_root=automl_root,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            report_dir=report_dir,
+            report_base=report_base,
+            req_timeout=req_timeout,
+        )
+        if not ok_report:
             return
 
         store.set_status(task_id, status="completed", phase="completed")
@@ -1150,15 +2392,18 @@ def _run_automl_stage(
     ml_service_base: str,
     mlevolve_service_base: str,
     req_timeout: int,
+    resume_existing: bool = False,
 ) -> bool:
     engine = _automl_engine(task)
     if engine == "mlevolve":
+        mlevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
+        mlevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
         ml_cmd = _build_mlevolve_command(
             task,
             gs,
             autorealize_dir=autorealize_dir,
-            automl_logs_root=automl_logs_root,
-            automl_workspaces_root=automl_workspaces_root,
+            automl_logs_root=mlevolve_log_dir,
+            automl_workspaces_root=mlevolve_workspace_dir,
             exp_name=exp_name,
         )
         service_base = mlevolve_service_base
@@ -1186,19 +2431,22 @@ def _run_automl_stage(
         last_error=None,
     )
     try:
+        start_payload = {
+            "task_id": task_id,
+            "python_executable": str(gs.python.get("executable", "python")),
+            "working_dir": working_dir,
+            "env_overrides": {"DEEPSEEK_API_KEY": str((_selected_model(gs.llm, "autoMlCode") or {}).get("apiKey") or "")},
+            "args": ml_cmd[2:],
+            "log_dir": str((ml_log_dir if resume_existing else automl_logs_root) if engine == "mlevolve" else ml_log_dir),
+            "workspace_dir": str((ml_ws_dir if resume_existing else automl_workspaces_root) if engine == "mlevolve" else ml_ws_dir),
+            "graceful_shutdown_buffer_secs": graceful_shutdown_buffer_secs,
+        }
+        if engine == "mlevolve":
+            start_payload["resume"] = bool(resume_existing)
         ml_start = _json_post(
             service_base,
             "/jobs/start",
-            {
-                "task_id": task_id,
-                "python_executable": str(gs.python.get("executable", "python")),
-                "working_dir": working_dir,
-                "env_overrides": {"DEEPSEEK_API_KEY": str((gs.llm.get("codeModel", {}) or {}).get("apiKey") or "")},
-                "args": ml_cmd[2:],
-                "log_dir": str(automl_logs_root if engine == 'mlevolve' else ml_log_dir),
-                "workspace_dir": str(automl_workspaces_root if engine == 'mlevolve' else ml_ws_dir),
-                "graceful_shutdown_buffer_secs": graceful_shutdown_buffer_secs,
-            },
+            start_payload,
             timeout_secs=req_timeout,
         )
     except Exception as e:
@@ -1251,6 +2499,12 @@ def _run_automl_stage(
             (ml_log_dir / "_frontend_stderr.log").write_text(ml_stderr[-200000:], encoding="utf-8", errors="ignore")
     except Exception:
         pass
+    if ml_state == "stopped" or _is_interrupted_exit_code(ml_code):
+        stop_msg = str(ml_status.get("last_error") or "").strip()
+        if not stop_msg:
+            stop_msg = f"AutoML interrupted by console/control signal (exit code {ml_code})."
+        store.set_status(task_id, status="stopped", phase="stopped", last_error=stop_msg)
+        return False
     if ml_state != "completed" or ml_code != 0:
         err_hint = ""
         tail = (ml_stderr or ml_stdout or str(ml_status.get("last_error") or "")).strip()
@@ -1264,11 +2518,156 @@ def _run_automl_stage(
     return True
 
 
+def _rerun_autorealize_thread(task_id: str) -> None:
+    try:
+        task = store.get(task_id)
+        gs = get_global_settings()
+        ar_base, _ml_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        input_root, run_dir, autorealize_dir, _automl_root, _report_dir = _validate_autorealize_rerun(task)
+
+        store.set_status(
+            task_id,
+            status="running",
+            phase="autorealize",
+            run_dir=str(run_dir),
+            run_started_at=now_ts(),
+            last_error=None,
+        )
+        ok_clean = _remove_stage_dirs_for_rerun(
+            task_id=task_id,
+            run_dir=run_dir,
+            targets=[autorealize_dir],
+            allowed_names={"autorealize"},
+            phase="autorealize_failed",
+            label="重跑 AutoRealize",
+        )
+        if not ok_clean:
+            return
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=f"重跑 AutoRealize 准备目录失败: {e}")
+            return
+
+        if _direct_mode_enabled(task):
+            ok = _prepare_direct_autorealize_output(
+                task_id=task_id,
+                task=task,
+                input_root=input_root,
+                run_dir=run_dir,
+                autorealize_dir=autorealize_dir,
+                clean=False,
+            )
+        else:
+            ok = _run_autorealize_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                input_root=input_root,
+                run_dir=run_dir,
+                ar_base=ar_base,
+                req_timeout=req_timeout,
+            )
+        if not ok:
+            return
+        store.set_status(task_id, status="completed", phase="autorealize_completed", run_dir=str(run_dir), last_error=None)
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        msg = str(detail) if detail is not None else str(e)
+        store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=msg)
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=f"重跑 AutoRealize 异常: {e}")
+
+
+def _rerun_autoreport_thread(task_id: str) -> None:
+    try:
+        task = store.get(task_id)
+        gs = get_global_settings()
+        _ar_base, _ml_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, report_dir = _validate_autoreport_rerun(task)
+
+        store.set_status(
+            task_id,
+            status="running",
+            phase="report",
+            run_dir=str(run_dir),
+            run_started_at=now_ts(),
+            last_error=None,
+        )
+        ok_clean = _remove_stage_dirs_for_rerun(
+            task_id=task_id,
+            run_dir=run_dir,
+            targets=[report_dir],
+            allowed_names={"report"},
+            phase="report_failed",
+            label="重跑 AutoReport",
+        )
+        if not ok_clean:
+            return
+        store.clear_output_paths(task_id, report=True)
+
+        if _direct_mode_enabled(task):
+            input_root = Path(task.input_root).expanduser().resolve()
+            ok_direct = _prepare_direct_autorealize_output(
+                task_id=task_id,
+                task=task,
+                input_root=input_root,
+                run_dir=run_dir,
+                autorealize_dir=autorealize_dir,
+                clean=False,
+            )
+            if not ok_direct:
+                return
+            store.set_status(
+                task_id,
+                status="running",
+                phase="report",
+                run_dir=str(run_dir),
+                report_dir=str(report_dir),
+                last_error=None,
+            )
+
+        ok = _run_report_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_root=automl_root,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            report_dir=report_dir,
+            report_base=report_base,
+            req_timeout=req_timeout,
+        )
+        if not ok:
+            return
+        store.set_status(task_id, status="completed", phase="report_completed", report_dir=str(report_dir), last_error=None)
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        msg = str(detail) if detail is not None else str(e)
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=msg)
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=f"重跑 AutoReport 异常: {e}")
+
+
 def _rerun_automl_thread(task_id: str) -> None:
     task = store.get(task_id)
     gs = get_global_settings()
-    _ar_base, ml_base, mlevolve_base, req_timeout = _service_base_urls(gs)
+    _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     autorealize_dir, automl_logs_root, automl_workspaces_root, _old_ml_log_dir, _old_ml_ws_dir = _validate_automl_rerun(task)
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    if _direct_mode_enabled(task):
+        input_root = Path(task.input_root).expanduser().resolve()
+        ok_direct = _prepare_direct_autorealize_output(
+            task_id=task_id,
+            task=task,
+            input_root=input_root,
+            run_dir=run_dir,
+            autorealize_dir=autorealize_dir,
+            clean=True,
+        )
+        if not ok_direct:
+            return
     run_suffix = time.strftime("%Y%m%d_%H%M%S")
     ml_exp_name, ml_log_dir, ml_ws_dir = _build_automl_paths(
         task,
@@ -1288,7 +2687,7 @@ def _rerun_automl_thread(task_id: str) -> None:
 
     env = os.environ.copy()
     llm = gs.llm
-    code_model = llm.get("codeModel", {})
+    code_model = _selected_model(llm, "autoMlCode")
     if code_model.get("apiKey"):
         env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
 
@@ -1319,7 +2718,96 @@ def _rerun_automl_thread(task_id: str) -> None:
     )
     if not ok:
         return
-    store.set_status(task_id, status="completed", phase="completed")
+    store.set_status(task_id, status="completed", phase="automl_completed")
+
+
+def _start_direct_automl_thread(task_id: str) -> None:
+    try:
+        task = store.get(task_id)
+        gs = get_global_settings()
+        _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        input_root, run_dir, autorealize_dir, automl_logs_root, automl_workspaces_root = _validate_direct_automl_start(task)
+
+        # Persist direct mode so later snapshot/rerun/resume paths use the same
+        # original-description contract instead of expecting generated AutoRealize outputs.
+        if not task.config.auto_realize.direct_automl_from_description:
+            updated = task.config.model_copy(deep=True)
+            updated.auto_realize.direct_automl_from_description = True
+            updated.auto_realize.prefer_original_description = True
+            task = TaskModel.model_validate(store.update(task_id, updated).model_dump())
+
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            autorealize_dir.mkdir(parents=True, exist_ok=True)
+            automl_logs_root.mkdir(parents=True, exist_ok=True)
+            automl_workspaces_root.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"直接启动 AutoML 准备目录失败: {e}")
+            return
+
+        store.clear_output_paths(task_id, auto_ml=True)
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl_input_ready",
+            run_dir=str(run_dir),
+            run_started_at=now_ts(),
+            last_error=None,
+        )
+        ok_direct = _prepare_direct_autorealize_output(
+            task_id=task_id,
+            task=task,
+            input_root=input_root,
+            run_dir=run_dir,
+            autorealize_dir=autorealize_dir,
+            clean=True,
+        )
+        if not ok_direct:
+            return
+
+        run_suffix = time.strftime("%Y%m%d_%H%M%S")
+        ml_exp_name, ml_log_dir, ml_ws_dir = _build_automl_paths(
+            task,
+            automl_logs_root=automl_logs_root,
+            automl_workspaces_root=automl_workspaces_root,
+            run_suffix=run_suffix,
+        )
+        try:
+            ml_log_dir.mkdir(parents=True, exist_ok=False)
+            ml_ws_dir.mkdir(parents=True, exist_ok=False)
+        except Exception as e:
+            store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"直接启动 AutoML 创建实验目录失败: {e}")
+            return
+
+        env = os.environ.copy()
+        code_model = _selected_model(gs.llm, "autoMlCode")
+        if code_model.get("apiKey"):
+            env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
+
+        ok = _run_automl_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_logs_root=automl_logs_root,
+            automl_workspaces_root=automl_workspaces_root,
+            exp_name=ml_exp_name,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            env=env,
+            ml_service_base=ml_base,
+            mlevolve_service_base=mlevolve_base,
+            req_timeout=req_timeout,
+        )
+        if not ok:
+            return
+        store.set_status(task_id, status="completed", phase="automl_completed", run_dir=str(run_dir), last_error=None)
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        msg = str(detail) if detail is not None else str(e)
+        store.set_status(task_id, status="failed", phase="automl_failed", last_error=msg)
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"直接启动 AutoML 异常: {e}")
 
 
 def _resume_task_thread(task_id: str) -> None:
@@ -1329,32 +2817,35 @@ def _resume_task_thread(task_id: str) -> None:
         return
 
     gs = get_global_settings()
-    ar_base, ml_base, mlevolve_base, req_timeout = _service_base_urls(gs)
+    ar_base, ml_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
 
     if not task.input_root.strip() or not task.output_root.strip():
         store.set_status(task_id, status="failed", phase="resume_failed", last_error="缺少输入或输出目录配置，无法继续")
         return
 
     input_root = Path(task.input_root).expanduser().resolve()
-    output_root = Path(task.output_root).expanduser().resolve()
+    output_root = resolve_output_root(task.output_root)
     layout = _task_layout(task, output_root)
     run_dir = layout["task_root"]
     autorealize_dir = layout["autorealize_dir"]
+    automl_root = layout["automl_root"]
     automl_logs_root = layout["automl_logs_root"]
     automl_workspaces_root = layout["automl_workspaces_root"]
+    report_dir = layout["report_dir"]
 
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         autorealize_dir.mkdir(parents=True, exist_ok=True)
         automl_logs_root.mkdir(parents=True, exist_ok=True)
         automl_workspaces_root.mkdir(parents=True, exist_ok=True)
+        report_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         store.set_status(task_id, status="failed", phase="resume_failed", last_error=f"继续任务准备目录失败: {e}")
         return
 
     env = os.environ.copy()
     llm = gs.llm
-    code_model = llm.get("codeModel", {})
+    code_model = _selected_model(llm, "autoMlCode")
     if code_model.get("apiKey"):
         env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
 
@@ -1363,24 +2854,73 @@ def _resume_task_thread(task_id: str) -> None:
     # 2) If AutoML disabled, finish.
     # 3) If AutoML outputs exist, continue AutoML in-place with same exp_name.
     # 4) Else start a new AutoML run.
-    if not _autorealize_outputs_ready(autorealize_dir):
-        ok_ar = _run_autorealize_stage(
-            task_id=task_id,
-            task=task,
-            gs=gs,
-            input_root=input_root,
-            run_dir=run_dir,
-            ar_base=ar_base,
-            req_timeout=req_timeout,
-        )
+    require_sample = _sample_submission_required(
+        autorealize_dir,
+        task.config.auto_realize.generate_sample_submission,
+    )
+    if not _autorealize_outputs_ready(autorealize_dir, require_sample_submission=require_sample):
+        if _direct_mode_enabled(task):
+            ok_ar = _prepare_direct_autorealize_output(
+                task_id=task_id,
+                task=task,
+                input_root=input_root,
+                run_dir=run_dir,
+                autorealize_dir=autorealize_dir,
+                clean=False,
+            )
+        else:
+            ok_ar = _run_autorealize_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                input_root=input_root,
+                run_dir=run_dir,
+                ar_base=ar_base,
+                req_timeout=req_timeout,
+            )
         if not ok_ar:
             return
     else:
         store.set_status(task_id, status="running", phase="autorealize", run_dir=str(run_dir), run_started_at=now_ts(), last_error=None)
 
     if not task.config.auto_ml.enabled:
+        ok_report = _run_report_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_root=automl_root,
+            ml_log_dir=None,
+            ml_ws_dir=None,
+            report_dir=report_dir,
+            report_base=report_base,
+            req_timeout=req_timeout,
+        )
+        if not ok_report:
+            return
         store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
         return
+
+    if task.phase == "report_failed":
+        existing_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
+        existing_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve() if task.auto_ml_workspace_dir else None
+        if existing_log_dir is not None and existing_log_dir.exists():
+            ok_report = _run_report_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                autorealize_dir=autorealize_dir,
+                automl_root=automl_root,
+                ml_log_dir=existing_log_dir,
+                ml_ws_dir=existing_ws_dir if existing_ws_dir and existing_ws_dir.exists() else None,
+                report_dir=report_dir,
+                report_base=report_base,
+                req_timeout=req_timeout,
+            )
+            if not ok_report:
+                return
+            store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
+            return
 
     resume_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
     resume_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve() if task.auto_ml_workspace_dir else None
@@ -1433,8 +2973,23 @@ def _resume_task_thread(task_id: str) -> None:
         ml_service_base=ml_base,
         mlevolve_service_base=mlevolve_base,
         req_timeout=req_timeout,
+        resume_existing=can_resume_automl,
     )
     if not ok:
+        return
+    ok_report = _run_report_stage(
+        task_id=task_id,
+        task=task,
+        gs=gs,
+        autorealize_dir=autorealize_dir,
+        automl_root=automl_root,
+        ml_log_dir=ml_log_dir,
+        ml_ws_dir=ml_ws_dir,
+        report_dir=report_dir,
+        report_base=report_base,
+        req_timeout=req_timeout,
+    )
+    if not ok_report:
         return
     store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
 
@@ -1476,6 +3031,28 @@ def _parse_jsonl_local(path: Path, limit: int = 500) -> list[dict[str, Any]]:
     except Exception:
         return []
     return rows
+
+
+def _parse_log_events_tail_local(log_path: Path, limit: int = 400) -> list[dict[str, Any]]:
+    pattern = re.compile(r"^\[(?P<ts>[^\]]+)\]\s+(?P<level>[A-Z]+):\s+(?P<msg>.*)$")
+    rows: list[dict[str, Any]] = []
+    for line in safe_read_tail_lines(log_path, limit=limit, byte_limit=768_000):
+        text = line.strip()
+        if not text:
+            continue
+        match = pattern.match(text)
+        if match:
+            rows.append(
+                {
+                    "ts": match.group("ts"),
+                    "component": log_path.name,
+                    "event": match.group("level"),
+                    "message": match.group("msg"),
+                }
+            )
+        else:
+            rows.append({"ts": "", "component": log_path.name, "event": "INFO", "message": text})
+    return rows[-limit:]
 
 
 def _render_directory_tree_local(root: Path, max_nodes: int = 6000) -> str:
@@ -1549,10 +3126,12 @@ def _candidate_task_run_dirs(task: TaskModel) -> list[Path]:
     if task.run_dir:
         _add(Path(task.run_dir))
     if task.output_root and task.task_name:
-        _add(Path(task.output_root) / task.task_name)
+        _add(resolve_output_root(task.output_root) / task.task_name)
     if task.task_name:
         _add(PROJECT_RUNS_DIR / task.task_name)
         _add(DEFAULT_RUNS_DIR / task.task_name)
+        _add(LEGACY_BACKEND_RUNS_DIR / task.task_name)
+        _add(LEGACY_AUTOREALIZE_RUNS_DIR / task.task_name)
 
     return [x for x in dirs if x.exists() and x.is_dir()]
 
@@ -1584,6 +3163,15 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     out["frontend_manifest"] = safe_read_json(report_dir / "frontend_manifest.json", {})
     out["run_summary"] = safe_read_json(report_dir / "run_summary.json", {})
     out["data_cognition_report"] = safe_read_json(report_dir / "data_cognition_report.json", {})
+    out["question_investigation_report"] = safe_read_json(report_dir / "question_investigation_report.json", {})
+    out["task_definition_report"] = safe_read_json(report_dir / "task_definition_report.json", {})
+    out["submission_report"] = safe_read_json(report_dir / "submission_report.json", {})
+    out["evaluation_contract_report"] = safe_read_json(report_dir / "evaluation_contract_report.json", {})
+    out["main_task_protocol"] = safe_read_json(report_dir / "main_task_protocol.json", {})
+    out["automl_context_pack"] = safe_read_json(report_dir / "automl_context_pack.json", {})
+    out["authoritative_task_memory"] = safe_read_json(report_dir / "authoritative_task_memory.json", {})
+    out["agent_context_pack"] = safe_read_json(report_dir / "agent_context_pack.json", {})
+    out["retrieved_knowledge"] = safe_read_json(report_dir / "retrieved_knowledge.json", [])
     out["events"] = _parse_jsonl_local(report_dir / "event_stream.jsonl", limit=400)
     dir_tree_file = report_dir / "directory_tree.txt"
     out["directory_tree_text"] = dir_tree_file.read_text(encoding="utf-8", errors="ignore") if dir_tree_file.exists() else ""
@@ -1592,6 +3180,10 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     out["description_text"] = desc_file.read_text(encoding="utf-8", errors="ignore") if desc_file.exists() else ""
     data_desc_file = report_dir / "data_description.md"
     out["data_description_text"] = data_desc_file.read_text(encoding="utf-8", errors="ignore") if data_desc_file.exists() else ""
+    automl_context_file = report_dir / "automl_context.md"
+    out["automl_context_text"] = automl_context_file.read_text(encoding="utf-8", errors="ignore") if automl_context_file.exists() else ""
+    original_file = report_dir / "original_requirements.txt"
+    out["original_requirements_text"] = original_file.read_text(encoding="utf-8", errors="ignore") if original_file.exists() else ""
     out["file_cognition_index"] = _load_file_cognition_index_local(report_dir)
     return out
 
@@ -1639,7 +3231,24 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     if log_dir is None:
         return {}
     ws_dir = _pick_local_automl_workspace_dir(task, exp_name=log_dir.name)
-    journal = safe_read_json(log_dir / "journal.json", {})
+    # `filtered_journal.json` is usually the best-path projection, not the
+    # whole search tree. Prefer the full journal while keeping a size guard so
+    # huge historical runs cannot block the UI polling endpoint.
+    journal_source = ""
+    journal = {}
+    journal_path = log_dir / "journal.json"
+    filtered_journal_path = log_dir / "filtered_journal.json"
+    try:
+        if journal_path.exists() and journal_path.stat().st_size <= 150 * 1024 * 1024:
+            journal = safe_read_json(journal_path, {})
+            if isinstance(journal, dict) and journal:
+                journal_source = "journal"
+    except Exception:
+        journal = {}
+    if not isinstance(journal, dict) or not journal:
+        journal = safe_read_json(filtered_journal_path, {})
+        if isinstance(journal, dict) and journal:
+            journal_source = "filtered_journal"
     nodes: list[dict[str, Any]] = []
     best_id = None
     if isinstance(journal, dict) and journal:
@@ -1713,28 +3322,68 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "engine": engine,
         "log_dir": str(log_dir),
         "workspace_dir": str(ws_dir) if ws_dir is not None else "",
-        "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400),
+        "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400)
+        or _parse_log_events_tail_local(log_dir / ("MLEvolve.log" if engine == "mlevolve" else "ml-master.log"), limit=400),
         "nodes": nodes,
         "best_node_id": best_id,
-        "ml_log": (log_dir / "ml-master.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (log_dir / "ml-master.log").exists() else "",
-        "frontend_stdout": (log_dir / "_frontend_stdout.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (log_dir / "_frontend_stdout.log").exists() else "",
-        "frontend_stderr": (log_dir / "_frontend_stderr.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (log_dir / "_frontend_stderr.log").exists() else "",
-        "service_stdout": (log_dir / "_service_stdout.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (log_dir / "_service_stdout.log").exists() else "",
-        "service_stderr": (log_dir / "_service_stderr.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (log_dir / "_service_stderr.log").exists() else "",
+        "journal_source": journal_source,
+        "ml_log": safe_read_text_tail(log_dir / "ml-master.log", limit=60000),
+        "verbose_log": safe_read_text_tail(log_dir / "MLEvolve.verbose.log", limit=60000),
+        "frontend_stdout": safe_read_text_tail(log_dir / "_frontend_stdout.log", limit=60000),
+        "frontend_stderr": safe_read_text_tail(log_dir / "_frontend_stderr.log", limit=60000),
+        "service_stdout": safe_read_text_tail(log_dir / "_service_stdout.log", limit=60000),
+        "service_stderr": safe_read_text_tail(log_dir / "_service_stderr.log", limit=60000),
     }
     if ws_dir is not None:
         best_solution_code = ws_dir / "best_solution" / "solution.py"
         best_metric_text = ws_dir / "best_solution" / "metric.txt"
-        out["best_solution_code"] = best_solution_code.read_text(encoding="utf-8", errors="ignore")[-200000:] if best_solution_code.exists() else ""
-        out["best_metric_text"] = best_metric_text.read_text(encoding="utf-8", errors="ignore")[-20000:] if best_metric_text.exists() else ""
+        out["best_solution_code"] = safe_read_text_tail(best_solution_code, limit=200000)
+        out["best_metric_text"] = safe_read_text_tail(best_metric_text, limit=20000)
     return out
+
+
+def _pick_local_report_dir(task: TaskModel) -> Path | None:
+    candidates: list[Path] = []
+    if task.report_dir:
+        candidates.append(Path(task.report_dir).expanduser().resolve())
+    if task.run_dir:
+        candidates.append(Path(task.run_dir).expanduser().resolve() / "report")
+    try:
+        candidates.append(_task_layout(task)["report_dir"])
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists() and path.is_dir():
+            return path
+    return None
+
+
+def _build_local_report_snapshot(task: TaskModel) -> dict[str, Any]:
+    report_dir = _pick_local_report_dir(task)
+    if report_dir is None:
+        return {}
+    return {
+        "output_dir": str(report_dir),
+        "current_state": safe_read_json(report_dir / "current_state.json", {}),
+        "events": _parse_jsonl_local(report_dir / "event_stream.jsonl", limit=500),
+        "report": safe_read_json(report_dir / "report.json", {}),
+        "report_markdown": (report_dir / "report.md").read_text(encoding="utf-8", errors="ignore") if (report_dir / "report.md").exists() else "",
+        "resolved_config": safe_read_json(report_dir / "resolved_config.json", {}),
+        "stdout": (report_dir / "_service_stdout.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (report_dir / "_service_stdout.log").exists() else "",
+        "stderr": (report_dir / "_service_stderr.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (report_dir / "_service_stderr.log").exists() else "",
+    }
 
 
 def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     if not task.run_dir:
         return {}
     gs = get_global_settings()
-    ar_base, _ml_base, _mlevolve_base, req_timeout = _service_base_urls(gs)
+    ar_base, _ml_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     try:
         payload = {"run_dir": str(task.run_dir)}
         return _json_post(ar_base, "/snapshot", payload, timeout_secs=req_timeout)
@@ -1747,8 +3396,12 @@ def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
 
 def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
-    _ar_base, ml_base, mlevolve_base, req_timeout = _service_base_urls(gs)
+    _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     engine = _automl_engine(task)
+    local = _build_local_automl_snapshot(task)
+    if local:
+        local["snapshot_source"] = "local"
+        return local
     payload = {
         "log_dir": str(task.auto_ml_log_dir or ""),
         "workspace_dir": str(task.auto_ml_workspace_dir or ""),
@@ -1757,9 +3410,23 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     }
     try:
         base_url = mlevolve_base if engine == "mlevolve" else ml_base
-        return _json_post(base_url, "/snapshot", payload, timeout_secs=req_timeout)
+        remote = _json_post(base_url, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
+        remote["snapshot_source"] = "remote"
+        return remote
     except Exception:
-        local = _build_local_automl_snapshot(task)
+        raise
+
+
+def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
+    gs = get_global_settings()
+    _ar_base, _ml_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    report_dir = task.report_dir or (str(Path(task.run_dir).expanduser().resolve() / "report") if task.run_dir else "")
+    if not report_dir:
+        return {}
+    try:
+        return _json_post(report_base, "/snapshot", {"output_dir": report_dir}, timeout_secs=req_timeout)
+    except Exception:
+        local = _build_local_report_snapshot(task)
         if local:
             return local
         raise
@@ -2020,11 +3687,51 @@ def _python_executable_names() -> list[str]:
 def _collect_conda_candidates() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     names = _python_executable_names()
+
+    def add_env_python(env_dir: Path, source: str) -> None:
+        exe_dirs = [env_dir / "Scripts", env_dir] if os.name == "nt" else [env_dir / "bin"]
+        for exe_dir in exe_dirs:
+            for n in names:
+                exe = exe_dir / n
+                if exe.exists():
+                    out.append((exe, source))
+                    return
+
+    def add_root(root: Path, roots: list[Path]) -> None:
+        try:
+            resolved = root.expanduser().resolve()
+        except Exception:
+            resolved = root
+        if str(resolved).lower() not in {str(x).lower() for x in roots}:
+            roots.append(resolved)
+
     conda_exe = os.environ.get("CONDA_EXE", "").strip()
+    conda_cmds: list[str] = []
     if conda_exe:
+        conda_cmds.append(conda_exe)
+    path_conda = shutil.which("conda")
+    if path_conda:
+        conda_cmds.append(path_conda)
+
+    if os.name == "nt":
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        for root_name in ("anaconda3", "miniconda3", "mambaforge", "miniforge3"):
+            for candidate in (
+                Path(program_data) / root_name / "Scripts" / "conda.exe",
+                Path(program_data) / root_name / "condabin" / "conda.bat",
+            ):
+                if candidate.exists():
+                    conda_cmds.append(str(candidate))
+
+    seen_cmds: set[str] = set()
+    for cmd in conda_cmds:
+        cmd_key = cmd.lower()
+        if cmd_key in seen_cmds:
+            continue
+        seen_cmds.add(cmd_key)
         try:
             proc = subprocess.run(
-                [conda_exe, "info", "--envs", "--json"],
+                [cmd, "info", "--envs", "--json"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -2032,51 +3739,53 @@ def _collect_conda_candidates() -> list[tuple[Path, str]]:
             if proc.returncode == 0 and proc.stdout.strip():
                 payload = json.loads(proc.stdout)
                 for env_dir in payload.get("envs", []):
-                    p = Path(env_dir)
-                    for n in names:
-                        exe = p / ("Scripts" if os.name == "nt" else "bin") / n
-                        if exe.exists():
-                            out.append((exe, "conda"))
+                    add_env_python(Path(env_dir), "conda")
         except Exception:
             pass
 
     home = Path.home()
-    conda_roots = [
-        home / "anaconda3",
-        home / "miniconda3",
-        home / "mambaforge",
-        home / "miniforge3",
-    ]
+    conda_roots: list[Path] = []
+    for root in (home / "anaconda3", home / "miniconda3", home / "mambaforge", home / "miniforge3", home / ".conda"):
+        add_root(root, conda_roots)
     if os.name == "nt":
         user = os.environ.get("USERPROFILE", "")
         if user:
-            conda_roots.extend(
-                [
-                    Path(user) / "anaconda3",
-                    Path(user) / "miniconda3",
-                    Path(user) / "mambaforge",
-                    Path(user) / "miniforge3",
-                ]
-            )
+            for root in (
+                Path(user) / "anaconda3",
+                Path(user) / "miniconda3",
+                Path(user) / "mambaforge",
+                Path(user) / "miniforge3",
+                Path(user) / ".conda",
+            ):
+                add_root(root, conda_roots)
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        for root in (
+            Path(program_data) / "anaconda3",
+            Path(program_data) / "miniconda3",
+            Path(program_data) / "mambaforge",
+            Path(program_data) / "miniforge3",
+        ):
+            add_root(root, conda_roots)
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            for root in (
+                Path(local_app_data) / "anaconda3",
+                Path(local_app_data) / "miniconda3",
+            ):
+                add_root(root, conda_roots)
     for root in conda_roots:
         if not root.exists():
             continue
-        for n in names:
-            base_exe = root / ("python.exe" if os.name == "nt" else "bin/python")
-            if base_exe.exists():
-                out.append((base_exe, "conda-base"))
-                break
+        base_exe = root / ("python.exe" if os.name == "nt" else "bin/python")
+        if base_exe.exists():
+            out.append((base_exe, "conda-base"))
         envs_dir = root / "envs"
         if not envs_dir.exists():
             continue
         for env_dir in envs_dir.iterdir():
             if not env_dir.is_dir():
                 continue
-            for n in names:
-                exe = env_dir / ("Scripts" if os.name == "nt" else "bin") / n
-                if exe.exists():
-                    out.append((exe, "conda"))
-                    break
+            add_env_python(env_dir, "conda")
     return out
 
 
@@ -2245,6 +3954,17 @@ def start_task(payload: StartTaskRequest) -> dict[str, Any]:
     return {"status": "started", "task_id": payload.task_id}
 
 
+@app.post("/api/tasks/rerun-autorealize")
+def rerun_autorealize(payload: RerunAutoRealizeRequest) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for rerun autorealize")
+    task = store.get(payload.task_id)
+    _validate_autorealize_rerun(task)
+    thread = threading.Thread(target=_rerun_autorealize_thread, args=(payload.task_id,), daemon=True)
+    thread.start()
+    return {"status": "started", "task_id": payload.task_id, "mode": "autorealize_only"}
+
+
 @app.post("/api/tasks/rerun-automl")
 def rerun_automl(payload: RerunAutoMLRequest) -> dict[str, Any]:
     if not payload.confirm:
@@ -2254,6 +3974,29 @@ def rerun_automl(payload: RerunAutoMLRequest) -> dict[str, Any]:
     thread = threading.Thread(target=_rerun_automl_thread, args=(payload.task_id,), daemon=True)
     thread.start()
     return {"status": "started", "task_id": payload.task_id, "mode": "automl_only"}
+
+
+@app.post("/api/tasks/start-automl")
+def start_direct_automl(payload: StartDirectAutoMLRequest) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for direct automl start")
+    task = store.get(payload.task_id)
+    _validate_direct_automl_start(task)
+    thread = threading.Thread(target=_start_direct_automl_thread, args=(payload.task_id,), daemon=True)
+    thread.start()
+    return {"status": "started", "task_id": payload.task_id, "mode": "direct_automl"}
+
+
+@app.post("/api/tasks/rerun-autoreport")
+@app.post("/api/tasks/rerun-report")
+def rerun_autoreport(payload: RerunAutoReportRequest) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for rerun autoreport")
+    task = store.get(payload.task_id)
+    _validate_autoreport_rerun(task)
+    thread = threading.Thread(target=_rerun_autoreport_thread, args=(payload.task_id,), daemon=True)
+    thread.start()
+    return {"status": "started", "task_id": payload.task_id, "mode": "autoreport_only"}
 
 
 @app.post("/api/tasks/rerun-full")
@@ -2313,6 +4056,7 @@ def task_snapshot(task_id: str) -> dict[str, Any]:
     task = store.get(task_id)
     ar: dict[str, Any] = {}
     ml: dict[str, Any] = {}
+    report: dict[str, Any] = {}
     snapshot_errors: dict[str, str] = {}
     try:
         ar = _read_autorealize_snapshot(task)
@@ -2322,10 +4066,15 @@ def task_snapshot(task_id: str) -> dict[str, Any]:
         ml = _read_automl_snapshot(task)
     except Exception as e:
         snapshot_errors["auto_ml"] = str(e)
+    try:
+        report = _read_report_snapshot(task)
+    except Exception as e:
+        snapshot_errors["auto_report"] = str(e)
     return {
         "task": task.model_dump(),
         "auto_realize": ar,
         "auto_ml": ml,
+        "auto_report": report,
         "snapshot_errors": snapshot_errors,
     }
 

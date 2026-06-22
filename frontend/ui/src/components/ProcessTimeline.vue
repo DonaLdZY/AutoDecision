@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, shallowRef } from 'vue'
 import type { Task } from '../types'
 import CognitionTreeNode from './CognitionTreeNode.vue'
@@ -97,14 +97,14 @@ const readStateByFile = computed(() => {
     const event = String(e.event ?? '').toUpperCase()
     const fields = (e.fields ?? {}) as Record<string, unknown>
 
-    // 阶段1: 文件正在读取
+    // 闃舵1: 鏂囦欢姝ｅ湪璇诲彇
     if (component.startsWith('stage.P1')) {
       const file = normalizeRelPath(String(fields.file ?? ''))
       if (!file) continue
       if (event === 'READING_FILE') {
         map[file] = 'reading'
       } else if (event === 'READ_COMPLETED') {
-        // 仅表示“读取完成”，认知尚未完成，仍保持读取中
+        // File IO finished, but cognition is still pending until the artifact is generated.
         if (map[file] !== 'failed' && map[file] !== 'read') map[file] = 'reading'
       } else if (event === 'READ_FAILED') {
         map[file] = 'failed'
@@ -112,7 +112,7 @@ const readStateByFile = computed(() => {
       continue
     }
 
-    // 阶段2: 逐文件认知产物生成，才算“读完”
+    // Cognition artifact generation is the point where a file becomes fully read.
     if (component === 'module.data_cognition.file_artifact' && event === 'GENERATED_FILE') {
       const source = normalizeRelPath(String(fields.source ?? ''))
       if (!source) continue
@@ -185,17 +185,16 @@ const cognitionTree = computed<TreeNode | null>(() => {
 })
 
 type StepMeta = {
-  key: 'data_cognition' | 'task_definition' | 'data_cleaning' | 'automl' | 'report'
+  key: 'data_cognition' | 'task_definition' | 'automl' | 'report'
   label: string
   disabled?: boolean
 }
 
 const steps: StepMeta[] = [
-  { key: 'data_cognition', label: '1. 数据理解' },
-  { key: 'task_definition', label: '2. 任务定义' },
-  { key: 'data_cleaning', label: '3. 数据清洗(未完善)', disabled: true },
-  { key: 'automl', label: '4. 自动机器学习' },
-  { key: 'report', label: '5. 报告生成(未开发)', disabled: true },
+  { key: 'data_cognition', label: '1. 鏁版嵁鐞嗚В' },
+  { key: 'task_definition', label: '2. 浠诲姟瀹氫箟' },
+  { key: 'automl', label: '3. 鑷姩鏈哄櫒瀛︿範' },
+  { key: 'report', label: '4. 鎶ュ憡鐢熸垚(鏈紑鍙?' },
 ]
 
 const activeStepKey = computed<StepMeta['key'] | null>(() => {
@@ -203,7 +202,6 @@ const activeStepKey = computed<StepMeta['key'] | null>(() => {
   const phase = String(props.task?.phase ?? '').toLowerCase()
   if (c.includes('data_cognition') || c.includes('stage.p1') || phase.includes('autorealize')) return 'data_cognition'
   if (c.includes('task_definition') || c.includes('stage.p2')) return 'task_definition'
-  if (c.includes('data_cleaning') || c.includes('stage.p3')) return 'data_cleaning'
   if (c.includes('mcts') || c.includes('automl') || phase.includes('automl')) return 'automl'
   if (phase.includes('report')) return 'report'
   return null
@@ -219,11 +217,11 @@ function stepClass(step: StepMeta) {
 
 <template>
   <section class="timeline-panel">
-    <h3>流程时间线</h3>
+    <h3>娴佺▼鏃堕棿绾?/h3>
     <div class="runtime-bar" v-if="task">
-      <span>当前任务: {{ task.task_name }}</span>
-      <span>当前执行: {{ activeComponentText }}</span>
-      <span>已运行: {{ runningElapsed }}</span>
+      <span>褰撳墠浠诲姟: {{ task.task_name }}</span>
+      <span>褰撳墠鎵ц: {{ activeComponentText }}</span>
+      <span>宸茶繍琛? {{ runningElapsed }}</span>
     </div>
 
     <div class="steps-hint">
@@ -231,13 +229,13 @@ function stepClass(step: StepMeta) {
     </div>
 
     <div class="cognition-tree" v-if="cognitionTree">
-      <h4>数据理解目录树</h4>
+      <h4>鏁版嵁鐞嗚В鐩綍鏍?/h4>
       <div class="legend">
-        <span class="dot unread"></span><span>未读</span>
-        <span class="dot reading"></span><span>读取中</span>
-        <span class="dot read"></span><span>读完(认知已产出)</span>
-        <span class="dot skipped"></span><span>不读(抽样)</span>
-        <span class="dot partial"></span><span>部分已读</span>
+        <span class="dot unread"></span><span>鏈</span>
+        <span class="dot reading"></span><span>璇诲彇涓?/span>
+        <span class="dot read"></span><span>璇诲畬(璁ょ煡宸蹭骇鍑?</span>
+        <span class="dot skipped"></span><span>涓嶈(鎶芥牱)</span>
+        <span class="dot partial"></span><span>閮ㄥ垎宸茶</span>
       </div>
       <ul class="tree-root">
         <li>

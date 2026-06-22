@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { Task } from '../types'
 
-export type StepKey = 'data_cognition' | 'task_definition' | 'data_cleaning' | 'automl' | 'report'
+export type StepKey = 'data_cognition' | 'task_definition' | 'automl' | 'report'
 
 const props = defineProps<{
   task?: Task | null
@@ -25,14 +25,14 @@ type StepMeta = {
 const steps: StepMeta[] = [
   { key: 'data_cognition', label: '数据理解' },
   { key: 'task_definition', label: '任务定义' },
-  { key: 'data_cleaning', label: '数据清洗', disabled: true },
   { key: 'automl', label: '自动机器学习' },
-  { key: 'report', label: '报告生成', disabled: true },
+  { key: 'report', label: '报告生成' },
 ]
 
 const inferredActive = computed<StepKey | null>(() => {
   const phase = String(props.task?.phase ?? '').toLowerCase()
   if (phase.includes('automl')) return 'automl'
+  if (phase.includes('report')) return 'report'
 
   const state = props.autoRealizeState ?? {}
   const active = state.active_components
@@ -40,8 +40,7 @@ const inferredActive = computed<StepKey | null>(() => {
     const first = active[0] as Record<string, unknown>
     const comp = String(first.component ?? '').toLowerCase()
     if (comp.includes('task_definition') || comp.includes('stage.p2')) return 'task_definition'
-    if (comp.includes('data_cleaning') || comp.includes('stage.p3')) return 'data_cleaning'
-    if (comp.includes('data_cognition') || comp.includes('stage.p1')) return 'data_cognition'
+    if (comp.includes('data_cognition') || comp.includes('file_cognition') || comp.includes('cognition_probe') || comp.includes('stage.p1')) return 'data_cognition'
   }
 
   const mlEvents = props.autoMlEvents ?? []
@@ -56,8 +55,7 @@ const inferredActive = computed<StepKey | null>(() => {
     const row = arEvents[i]
     const comp = String(row.component ?? '').toLowerCase()
     if (comp.includes('task_definition') || comp.includes('stage.p2')) return 'task_definition'
-    if (comp.includes('data_cleaning') || comp.includes('stage.p3')) return 'data_cleaning'
-    if (comp.includes('data_cognition') || comp.includes('stage.p1')) return 'data_cognition'
+    if (comp.includes('data_cognition') || comp.includes('file_cognition') || comp.includes('cognition_probe') || comp.includes('stage.p1')) return 'data_cognition'
   }
   return null
 })
@@ -66,13 +64,13 @@ const stepStatus = computed(() => {
   const active = inferredActive.value
   const task = props.task
   const completed = task?.status === 'completed'
+  const phase = String(task?.phase ?? '').toLowerCase()
 
-  const order: StepKey[] = ['data_cognition', 'task_definition', 'data_cleaning', 'automl', 'report']
+  const order: StepKey[] = ['data_cognition', 'task_definition', 'automl', 'report']
   const activeIdx = active ? order.indexOf(active) : -1
   const out: Record<StepKey, 'idle' | 'active' | 'done'> = {
     data_cognition: 'idle',
     task_definition: 'idle',
-    data_cleaning: 'idle',
     automl: 'idle',
     report: 'idle',
   }
@@ -80,8 +78,20 @@ const stepStatus = computed(() => {
   for (let i = 0; i < order.length; i += 1) {
     const key = order[i]
     if (completed) {
-      if (key === 'data_cleaning' || key === 'report') out[key] = 'idle'
-      else out[key] = 'done'
+      if (phase === 'autorealize_completed') {
+        out[key] = key === 'data_cognition' || key === 'task_definition' ? 'done' : 'idle'
+        continue
+      }
+      if (phase === 'automl_completed') {
+        out[key] = key === 'data_cognition' || key === 'task_definition' || key === 'automl' ? 'done' : 'idle'
+        continue
+      }
+      if (phase === 'report_completed') {
+        if (key === 'automl' && task?.config.auto_ml.enabled === false) out[key] = 'idle'
+        else out[key] = 'done'
+        continue
+      }
+      out[key] = 'done'
       continue
     }
     if (activeIdx >= 0) {
@@ -135,7 +145,7 @@ function cls(step: StepMeta) {
 .track {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   align-items: start;
 }

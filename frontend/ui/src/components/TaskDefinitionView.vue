@@ -1,6 +1,7 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed } from 'vue'
 import type { SnapshotPayload } from '../types'
+import TaskDefinitionProcessView from './TaskDefinitionProcessView.vue'
 
 const props = defineProps<{
   snapshot?: SnapshotPayload
@@ -13,23 +14,37 @@ const descriptionText = computed(() => String(ar.value.description_text ?? ''))
 
 <template>
   <section class="page">
-    <template v-if="!descriptionText && activeStepRunning">
-      <div class="working">正在生成赛题描述，请稍候...</div>
-    </template>
-    <template v-else>
+    <TaskDefinitionProcessView
+      :snapshot="snapshot"
+      :active-step-running="activeStepRunning"
+    />
+
+    <section class="preview-card">
       <h4>description.md 预览</h4>
       <pre class="desc">{{ descriptionText || '尚未生成 description.md' }}</pre>
-    </template>
+    </section>
   </section>
 </template>
 
 <style scoped>
 .page {
-  border: 1px solid #d0ddee;
-  border-radius: 10px;
-  background: #fff;
-  padding: 10px;
+  display: grid;
+  gap: 12px;
   min-height: 460px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.preview-card {
+  border: 1px solid #d0ddee;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 12px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 h4 {
@@ -46,14 +61,12 @@ h4 {
   overflow: auto;
   max-height: 620px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
 }
 
-.working {
-  border: 1px solid #bcd4f1;
-  border-radius: 10px;
-  background: #e9f2ff;
-  color: #264d81;
-  padding: 20px;
-}
 </style>

@@ -15,7 +15,10 @@ const emit = defineEmits<{
   updateConfig: [taskId: string, config: TaskConfig]
   save: [taskId: string]
   start: [taskId: string]
+  rerunAutoRealize: [taskId: string]
   rerunAutoML: [taskId: string]
+  startAutoML: [taskId: string]
+  rerunAutoReport: [taskId: string]
   rerunFull: [taskId: string]
   resume: [taskId: string]
   stop: [taskId: string]
@@ -26,10 +29,17 @@ const emit = defineEmits<{
 const subTab = reactive({ key: 'basic' })
 const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
 
+function normalizeLocalConfig() {
+  localConfig.auto_realize.enable_question_investigator = localConfig.auto_realize.enable_question_investigator !== false
+}
+
+normalizeLocalConfig()
+
 watch(
   () => props.task.id,
   () => {
     Object.assign(localConfig, cloneDeep(props.task.config))
+    normalizeLocalConfig()
     subTab.key = 'basic'
   },
 )
@@ -38,11 +48,21 @@ watch(
   () => props.task.config,
   (cfg) => {
     Object.assign(localConfig, cloneDeep(cfg))
+    normalizeLocalConfig()
   },
   { deep: true },
 )
 
 function propagateConfig() {
+  localConfig.auto_report.use_llm = true
+  localConfig.auto_realize.run_data_cleaning = false
+  localConfig.auto_realize.offline = false
+  localConfig.auto_realize.enable_question_investigator = localConfig.auto_realize.enable_question_investigator !== false
+  localConfig.auto_realize.prefer_original_description = localConfig.auto_realize.prefer_original_description !== false
+  localConfig.auto_realize.direct_automl_from_description = !!localConfig.auto_realize.direct_automl_from_description
+  localConfig.auto_realize.no_knowledge = false
+  localConfig.auto_realize.no_telemetry = false
+  localConfig.auto_realize.no_llm_cache = false
   emit('updateConfig', props.task.id, cloneDeep(localConfig))
 }
 
@@ -50,20 +70,25 @@ const canStart = computed(() => props.task.status !== 'running' && localConfig.i
 const canStop = computed(() => props.task.status === 'running')
 const canOpenRunDir = computed(() => !!props.task.run_dir)
 const canFullRerun = computed(() => props.task.status !== 'running' && localConfig.input_root.trim().length > 0 && localConfig.task_name.trim().length > 0)
+const canRerunAutoRealize = computed(() => props.task.status !== 'running' && localConfig.input_root.trim().length > 0 && localConfig.task_name.trim().length > 0)
 const canRerunAutoML = computed(() => {
   if (props.task.status === 'running') return false
   if (!localConfig.auto_ml.enabled) return false
   if (!props.task.run_dir) return false
-  const s = props.task.status
-  const p = props.task.phase
-  return s === 'failed' && (p === 'automl_failed' || p === 'report_failed' || p === 'failed')
+  return true
 })
+const canStartAutoML = computed(() => {
+  if (props.task.status === 'running') return false
+  if (!localConfig.auto_ml.enabled) return false
+  return localConfig.input_root.trim().length > 0 && localConfig.task_name.trim().length > 0
+})
+const canRerunAutoReport = computed(() => props.task.status !== 'running' && localConfig.auto_report.enabled && !!props.task.run_dir)
 const canResume = computed(() => {
   if (props.task.status === 'running') return false
   if (!localConfig.input_root.trim() || !localConfig.task_name.trim()) return false
   return ['failed', 'stopped'].includes(String(props.task.status))
 })
-const autoMlEngine = computed(() => String(localConfig.auto_ml.engine || 'ml_master').toLowerCase())
+const autoMlEngine = computed(() => String(localConfig.auto_ml.engine || 'mlevolve').toLowerCase())
 const embeddingEnabled = computed(() => !!localConfig.auto_ml.use_global_memory)
 const embeddingMode = computed({
   get: () => (String(localConfig.auto_ml.memory_embedding_backend || '').toLowerCase() === 'local' ? 'local' : 'remote'),
@@ -151,6 +176,13 @@ function onToggleEmbedding() {
   }
   propagateConfig()
 }
+
+function onToggleDirectAutoML() {
+  if (localConfig.auto_realize.direct_automl_from_description) {
+    localConfig.auto_realize.prefer_original_description = true
+  }
+  propagateConfig()
+}
 </script>
 
 <template>
@@ -158,7 +190,7 @@ function onToggleEmbedding() {
     <div class="panel-header">
       <div>
         <h2>任务配置</h2>
-        <p>配置完成后启动：数据认知 → 任务定义 → 数据清洗(未完善) → AutoML → 报告(未开发)</p>
+        <p>配置完成后启动：数据认知 → 任务定义 → AutoML → AutoReport</p>
       </div>
       <div class="status-block">
         <span v-if="props.isDirty" class="draft-pill">未保存草稿</span>
@@ -171,6 +203,7 @@ function onToggleEmbedding() {
       <button :class="{ active: subTab.key === 'basic' }" @click="subTab.key = 'basic'">基础配置</button>
       <button :class="{ active: subTab.key === 'autorealize' }" @click="subTab.key = 'autorealize'">AutoRealize</button>
       <button :class="{ active: subTab.key === 'automl' }" @click="subTab.key = 'automl'">AutoML</button>
+      <button :class="{ active: subTab.key === 'report' }" @click="subTab.key = 'report'">AutoReport</button>
     </div>
 
     <div class="sub-body" v-if="subTab.key === 'basic'">
@@ -188,7 +221,7 @@ function onToggleEmbedding() {
       <label>
         <span>输出文件夹</span>
         <div class="path-input-row">
-          <input v-model="localConfig.output_root" @input="propagateConfig" placeholder="默认项目目录/runs" />
+          <input v-model="localConfig.output_root" @input="propagateConfig" placeholder="默认 AutoDecision/runs" />
           <button type="button" class="path-btn" @click="openDirPicker('output')">浏览...</button>
         </div>
       </label>
@@ -196,9 +229,6 @@ function onToggleEmbedding() {
         <span>任务自然语言需求</span>
         <textarea v-model="localConfig.auto_realize.task_hint" @input="propagateConfig" rows="4" placeholder="一句话任务需求或文档摘要" />
       </label>
-      <div class="hint-row">
-        <span>运行时将自动建立 runs/任务名/autorealize 与 runs/任务名/automl，AutoML 会自动读取 autorealize 输出。</span>
-      </div>
     </div>
 
     <div class="sub-body" v-else-if="subTab.key === 'autorealize'">
@@ -206,22 +236,21 @@ function onToggleEmbedding() {
         <label><span>LLM超时(秒)</span><input type="number" v-model.number="localConfig.auto_realize.llm_timeout" @input="propagateConfig" /></label>
         <label><span>LLM并发</span><input type="number" v-model.number="localConfig.auto_realize.llm_concurrency" @input="propagateConfig" /></label>
         <label><span>认知并行Worker</span><input type="number" v-model.number="localConfig.auto_realize.cognition_workers" @input="propagateConfig" /></label>
-        <label><span>清洗并行Worker</span><input type="number" v-model.number="localConfig.auto_realize.cleaning_workers" @input="propagateConfig" /></label>
       </div>
       <div class="switches">
         <label><input type="checkbox" v-model="localConfig.auto_realize.run_data_cognition" @change="propagateConfig" /> 数据认知</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.run_task_definition" @change="propagateConfig" /> 任务定义</label>
-        <label class="disabled-hint"><input type="checkbox" v-model="localConfig.auto_realize.run_data_cleaning" @change="propagateConfig" /> 数据清洗(未完善，默认建议关闭)</label>
+        <label><input type="checkbox" v-model="localConfig.auto_realize.enable_question_investigator" @change="propagateConfig" /> 启用 Question-Driven Investigator</label>
+        <label><input type="checkbox" v-model="localConfig.auto_realize.enable_fewshot" @change="propagateConfig" /> 启用 few-shot 示例</label>
+        <label><input type="checkbox" v-model="localConfig.auto_realize.generate_sample_submission" @change="propagateConfig" /> 生成 sample_submission.csv</label>
+        <label><input type="checkbox" v-model="localConfig.auto_realize.prefer_original_description" @change="propagateConfig" /> 优先使用原始 description.md</label>
+        <label><input type="checkbox" v-model="localConfig.auto_realize.direct_automl_from_description" @change="onToggleDirectAutoML" /> 跳过 AutoRealize 直接跑 AutoML</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.auto_generate_predict_split" @change="propagateConfig" /> 自动生成预测切分集</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.offline" @change="propagateConfig" /> 离线模式</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.no_knowledge" @change="propagateConfig" /> 关闭知识库</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.no_telemetry" @change="propagateConfig" /> 关闭遥测</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.no_llm_cache" @change="propagateConfig" /> 关闭LLM缓存</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.enable_vllm" @change="propagateConfig" /> 启用 VLLM 视觉模型</label>
       </div>
     </div>
 
-    <div class="sub-body" v-else>
+    <div class="sub-body" v-else-if="subTab.key === 'automl'">
       <label>
         <span>AutoML 引擎</span>
         <select v-model="localConfig.auto_ml.engine" @change="propagateConfig">
@@ -251,9 +280,10 @@ function onToggleEmbedding() {
       </label>
       <div class="switches">
         <label><input type="checkbox" v-model="localConfig.auto_ml.enabled" @change="propagateConfig" /> 启用AutoML</label>
-        <label><input type="checkbox" v-model="localConfig.auto_ml.check_format" @change="propagateConfig" /> 检查submission格式</label>
-        <label><input type="checkbox" v-model="localConfig.auto_ml.expose_prediction" @change="propagateConfig" /> 暴露predict函数</label>
-        <label><input type="checkbox" v-model="localConfig.auto_ml.steerable_reasoning" @change="propagateConfig" /> steerable reasoning</label>
+        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.check_format" @change="propagateConfig" /> 检查submission格式</label>
+        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.expose_prediction" @change="propagateConfig" /> 暴露predict函数</label>
+        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.generate_submission" @change="propagateConfig" /> 生成最终 submission.csv</label>
+        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.steerable_reasoning" @change="propagateConfig" /> steerable reasoning</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.preprocess_data" @change="propagateConfig" /> 预处理输入数据</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.copy_data" @change="propagateConfig" /> 复制数据到工作区</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.data_preview" @change="propagateConfig" /> 启用数据预览</label>
@@ -262,9 +292,6 @@ function onToggleEmbedding() {
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_global_memory" @change="onToggleEmbedding" /> 启用 Embedding 记忆</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_coldstart" @change="propagateConfig" /> 启用 cold-start</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_grading_server" @change="propagateConfig" /> 启用 grading server</label>
-      </div>
-      <div v-if="autoMlEngine === 'mlevolve'" class="hint-row">
-        <span>提示：`Torch Hub 目录`、`预训练模型目录`、`Embedding Base URL`、`Embedding API Key`、`Embedding 模型名` 已迁移到右上角全局设置 → MLEvolve 配置。</span>
       </div>
       <div v-if="autoMlEngine === 'mlevolve' && embeddingEnabled" class="grid2">
         <label><span>Memory 相似度阈值</span><input type="number" step="0.01" v-model.number="localConfig.auto_ml.memory_similarity_threshold" @input="propagateConfig" /></label>
@@ -280,12 +307,41 @@ function onToggleEmbedding() {
       </div>
     </div>
 
+    <div class="sub-body" v-else>
+      <div class="switches">
+        <label><input type="checkbox" v-model="localConfig.auto_report.enabled" @change="propagateConfig" /> 启用 AutoReport 报告生成</label>
+        <label><input type="checkbox" v-model="localConfig.auto_report.include_raw_logs" @change="propagateConfig" /> 报告包含原始日志摘录</label>
+        <label><input type="checkbox" v-model="localConfig.auto_report.include_code_excerpt" @change="propagateConfig" /> 报告包含最优代码摘录</label>
+        <label class="disabled-hint"><input type="checkbox" checked disabled /> LLM 文章生成(必需，未配置全局反馈/编码模型会启动失败)</label>
+      </div>
+      <div class="grid2">
+        <label>
+          <span>报告受众</span>
+          <select v-model="localConfig.auto_report.audience" @change="propagateConfig">
+            <option value="technical">technical 技术复现</option>
+            <option value="executive">executive 管理摘要</option>
+            <option value="delivery">delivery 交付验收</option>
+          </select>
+        </label>
+        <label>
+          <span>报告语言</span>
+          <select v-model="localConfig.auto_report.language" @change="propagateConfig">
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
     <div class="footer-actions">
       <button @click="emit('save', task.id)">保存配置</button>
       <button @click="emit('refresh', task.id)">刷新状态</button>
       <button @click="openRunDirectory" :disabled="!canOpenRunDir">打开任务目录</button>
       <button class="danger-soft" @click="emit('rerunFull', task.id)" :disabled="!canFullRerun">完全重跑</button>
+      <button class="primary-soft" @click="emit('rerunAutoRealize', task.id)" :disabled="!canRerunAutoRealize">仅重跑AutoRealize</button>
+      <button class="primary-soft direct" @click="emit('startAutoML', task.id)" :disabled="!canStartAutoML">直接跑AutoML</button>
       <button class="primary-soft" @click="emit('rerunAutoML', task.id)" :disabled="!canRerunAutoML">仅重跑AutoML</button>
+      <button class="primary-soft" @click="emit('rerunAutoReport', task.id)" :disabled="!canRerunAutoReport">仅重跑AutoReport</button>
       <button class="primary-soft" @click="emit('resume', task.id)" :disabled="!canResume">继续任务</button>
       <button class="danger" @click="emit('remove', task.id)" :disabled="task.status === 'running'">删除任务</button>
       <button class="primary" @click="emit('start', task.id)" :disabled="!canStart">启动任务</button>
@@ -297,6 +353,7 @@ function onToggleEmbedding() {
       <span v-if="task.run_dir">run_dir: {{ task.run_dir }}</span>
       <span v-if="autoRealizeDirPath">step1-3_dir: {{ autoRealizeDirPath }}</span>
       <span v-if="autoMlDirPath">automl_dir: {{ autoMlDirPath }}</span>
+      <span v-if="task.report_dir">report_dir: {{ task.report_dir }}</span>
       <span v-if="task.auto_ml_log_dir">automl_log_dir: {{ task.auto_ml_log_dir }}</span>
       <span v-if="task.auto_ml_workspace_dir">automl_workspace_dir: {{ task.auto_ml_workspace_dir }}</span>
       <span v-if="task.last_error" class="error">error: {{ task.last_error }}</span>
@@ -454,11 +511,6 @@ textarea {
 
 .disabled-hint {
   color: #9f5d1e;
-}
-
-.hint-row {
-  font-size: 12px;
-  color: #4f6488;
 }
 
 .footer-actions {

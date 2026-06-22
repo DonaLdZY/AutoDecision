@@ -1,4 +1,4 @@
-﻿{
+{
   "python": {
     "executable": "python"
   },
@@ -7,20 +7,90 @@
     "memoryLimitGb": 8
   },
   "llm": {
+    "modelLibrary": [
+      {
+        "id": "default-code",
+        "name": "默认编码模型",
+        "model": "deepseek-v4-pro",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": "",
+        "thinkingMode": "default",
+        "reasoningEffort": "default",
+        "maxTokens": 0
+      },
+      {
+        "id": "default-autorealize",
+        "name": "默认 AutoRealize 模型",
+        "model": "deepseek-v4-pro",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": "",
+        "thinkingMode": "default",
+        "reasoningEffort": "default",
+        "maxTokens": 0
+      },
+      {
+        "id": "default-feedback",
+        "name": "默认反馈模型",
+        "model": "deepseek-v4-pro",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": "",
+        "thinkingMode": "default",
+        "reasoningEffort": "default",
+        "maxTokens": 0
+      },
+      {
+        "id": "default-vllm",
+        "name": "默认视觉模型",
+        "model": "glm-4.6v-flashx",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4/",
+        "apiKey": "",
+        "thinkingMode": "default",
+        "reasoningEffort": "default",
+        "maxTokens": 0
+      },
+      {
+        "id": "default-embedding",
+        "name": "默认向量化模型",
+        "model": "text-embedding-v4",
+        "baseUrl": "",
+        "apiKey": "",
+        "thinkingMode": "default",
+        "reasoningEffort": "default",
+        "maxTokens": 0
+      }
+    ],
+    "roleModels": {
+      "autoRealize": "default-autorealize",
+      "autoRealizeVision": "default-vllm",
+      "autoMlCode": "default-code",
+      "autoMlFeedback": "default-feedback",
+      "embedding": "default-embedding"
+    },
     "codeModel": {
       "model": "deepseek-v4-pro",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "",
       "enableThinking": null,
-      "reasoningEffort": "high",
-      "structuredDisableThinking": true
+      "reasoningEffort": null,
+      "structuredDisableThinking": true,
+      "maxTokens": 0
+    },
+    "autoRealizeModel": {
+      "model": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "",
+      "enableThinking": null,
+      "reasoningEffort": null,
+      "structuredDisableThinking": true,
+      "maxTokens": 0
     },
     "feedbackModel": {
       "model": "deepseek-v4-pro",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "",
       "enableThinking": null,
-      "reasoningEffort": "high"
+      "reasoningEffort": null,
+      "maxTokens": 0
     },
     "vllm": {
       "enabled": true,
@@ -33,6 +103,7 @@
     "autoRealizeBaseUrl": "http://127.0.0.1:18101",
     "autoMlBaseUrl": "http://127.0.0.1:18102",
     "mlevolveBaseUrl": "http://127.0.0.1:18103",
+    "autoReportBaseUrl": "http://127.0.0.1:18104",
     "requestTimeoutSecs": 10
   },
   "mlevolve": {

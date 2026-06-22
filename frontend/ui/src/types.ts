@@ -1,14 +1,19 @@
 ﻿export interface AutoRealizeConfig {
   run_data_cognition: boolean
   run_task_definition: boolean
-  run_data_cleaning: boolean
+  run_data_cleaning?: boolean
+  enable_question_investigator: boolean
+  enable_fewshot: boolean
+  generate_sample_submission: boolean
+  prefer_original_description: boolean
+  direct_automl_from_description: boolean
   no_knowledge: boolean
   no_telemetry: boolean
   no_llm_cache: boolean
   enable_vllm: boolean
-  offline: boolean
+  offline?: boolean
   auto_generate_predict_split: boolean
-  parallel_cleaning: boolean
+  parallel_cleaning?: boolean
   task_hint: string
   llm_timeout: number
   llm_concurrency: number
@@ -16,7 +21,7 @@
   llm_reasoning_effort: string | null
   llm_structured_disable_thinking: boolean
   cognition_workers: number
-  cleaning_workers: number
+  cleaning_workers?: number
 }
 
 export interface AutoMLConfig {
@@ -28,6 +33,7 @@ export interface AutoMLConfig {
   k_fold_validation: number
   check_format: boolean
   expose_prediction: boolean
+  generate_submission: boolean
   steerable_reasoning: boolean
   search_num_drafts: number
   search_num_bugs: number
@@ -59,12 +65,22 @@ export interface AutoMLConfig {
   exec_timeout_secs: number
 }
 
+export interface AutoReportConfig {
+  enabled: boolean
+  audience: string
+  language: string
+  include_raw_logs: boolean
+  include_code_excerpt: boolean
+  use_llm: boolean
+}
+
 export interface TaskConfig {
   task_name: string
   input_root: string
   output_root: string
   auto_realize: AutoRealizeConfig
   auto_ml: AutoMLConfig
+  auto_report: AutoReportConfig
 }
 
 export interface Task {
@@ -81,6 +97,7 @@ export interface Task {
   run_started_at?: number | null
   auto_ml_log_dir?: string | null
   auto_ml_workspace_dir?: string | null
+  report_dir?: string | null
   last_error?: string | null
 }
 
@@ -93,21 +110,34 @@ export interface GlobalSettings {
     memoryLimitGb: number
   }
   llm: {
+    modelLibrary: ModelConfig[]
+    roleModels: ModelRoleSelection
     codeModel: {
       model: string
       baseUrl: string
-      apiKey: string
-      enableThinking: boolean | null
-      reasoningEffort: string
-      structuredDisableThinking: boolean
-    }
-    feedbackModel: {
-      model: string
-      baseUrl: string
-      apiKey: string
-      enableThinking: boolean | null
-      reasoningEffort: string
-    }
+    apiKey: string
+    enableThinking: boolean | null
+    reasoningEffort: string
+    maxTokens?: number
+    structuredDisableThinking: boolean
+  }
+  autoRealizeModel: {
+    model: string
+    baseUrl: string
+    apiKey: string
+    enableThinking: boolean | null
+    reasoningEffort: string
+    maxTokens?: number
+    structuredDisableThinking: boolean
+  }
+  feedbackModel: {
+    model: string
+    baseUrl: string
+    apiKey: string
+    enableThinking: boolean | null
+    reasoningEffort: string
+    maxTokens?: number
+  }
     vllm: {
       enabled: boolean
       model: string
@@ -119,6 +149,7 @@ export interface GlobalSettings {
     autoRealizeBaseUrl: string
     autoMlBaseUrl: string
     mlevolveBaseUrl: string
+    autoReportBaseUrl: string
     requestTimeoutSecs: number
   }
   mlevolve: {
@@ -130,6 +161,25 @@ export interface GlobalSettings {
   }
 }
 
+export interface ModelConfig {
+  id: string
+  name: string
+  model: string
+  baseUrl: string
+  apiKey: string
+  thinkingMode: 'default' | 'enabled' | 'disabled' | string
+  reasoningEffort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string
+  maxTokens: number | '' | null
+}
+
+export interface ModelRoleSelection {
+  autoRealize: string
+  autoRealizeVision: string
+  autoMlCode: string
+  autoMlFeedback: string
+  embedding: string
+}
+
 export interface SnapshotPayload {
   task: Task
   auto_realize: {
@@ -138,11 +188,22 @@ export interface SnapshotPayload {
     frontend_manifest?: Record<string, unknown>
     run_summary?: Record<string, unknown>
     data_cognition_report?: Record<string, unknown>
+    question_investigation_report?: Record<string, unknown>
+    task_definition_report?: Record<string, unknown>
+    submission_report?: Record<string, unknown>
+    evaluation_contract_report?: Record<string, unknown>
+    main_task_protocol?: Record<string, unknown>
+    automl_context_pack?: Record<string, unknown>
+    authoritative_task_memory?: Record<string, unknown>
+    agent_context_pack?: Record<string, unknown>
+    retrieved_knowledge?: unknown[]
     events?: Record<string, unknown>[]
     directory_tree_text?: string
     output_tree_text?: string
     description_text?: string
     data_description_text?: string
+    automl_context_text?: string
+    original_requirements_text?: string
     file_cognition_index?: Record<string, { json?: Record<string, unknown>; markdown?: string }>
   }
   auto_ml: {
@@ -160,6 +221,16 @@ export interface SnapshotPayload {
     frontend_stderr?: string
     service_stdout?: string
     service_stderr?: string
+  }
+  auto_report?: {
+    output_dir?: string
+    current_state?: Record<string, unknown>
+    events?: Record<string, unknown>[]
+    report?: Record<string, unknown>
+    report_markdown?: string
+    resolved_config?: Record<string, unknown>
+    stdout?: string
+    stderr?: string
   }
 }
 

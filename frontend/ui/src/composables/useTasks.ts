@@ -1,19 +1,21 @@
 ﻿import { computed, reactive, shallowRef } from 'vue'
 import { api } from '../api'
-import type { AutoMLConfig, AutoRealizeConfig, SnapshotPayload, Task, TaskConfig } from '../types'
+import type { AutoMLConfig, AutoRealizeConfig, AutoReportConfig, SnapshotPayload, Task, TaskConfig } from '../types'
 
 function defaultAutoRealize(): AutoRealizeConfig {
   return {
     run_data_cognition: true,
     run_task_definition: true,
-    run_data_cleaning: false,
+    enable_question_investigator: true,
+    enable_fewshot: false,
+    generate_sample_submission: true,
+    prefer_original_description: true,
+    direct_automl_from_description: false,
     no_knowledge: false,
     no_telemetry: false,
     no_llm_cache: false,
     enable_vllm: true,
-    offline: false,
     auto_generate_predict_split: false,
-    parallel_cleaning: true,
     task_hint: '',
     llm_timeout: 180,
     llm_concurrency: 4,
@@ -21,13 +23,12 @@ function defaultAutoRealize(): AutoRealizeConfig {
     llm_reasoning_effort: null,
     llm_structured_disable_thinking: true,
     cognition_workers: 4,
-    cleaning_workers: 2,
   }
 }
 
 function defaultAutoML(): AutoMLConfig {
   return {
-    engine: 'ml_master',
+    engine: 'mlevolve',
     enabled: true,
     steps: 50,
     time_limit_secs: 3600,
@@ -35,6 +36,7 @@ function defaultAutoML(): AutoMLConfig {
     k_fold_validation: 1,
     check_format: false,
     expose_prediction: true,
+    generate_submission: true,
     steerable_reasoning: false,
     search_num_drafts: 5,
     search_num_bugs: 1,
@@ -67,14 +69,30 @@ function defaultAutoML(): AutoMLConfig {
   }
 }
 
+function defaultAutoReport(): AutoReportConfig {
+  return {
+    enabled: true,
+    audience: 'technical',
+    language: 'zh-CN',
+    include_raw_logs: true,
+    include_code_excerpt: true,
+    use_llm: true,
+  }
+}
+
 function defaultTaskConfig(index: number): TaskConfig {
   return {
     task_name: `task_${index}`,
     input_root: '',
-    output_root: 'runs',
+    output_root: '',
     auto_realize: defaultAutoRealize(),
     auto_ml: defaultAutoML(),
+    auto_report: defaultAutoReport(),
   }
+}
+
+function isConnectivityError(text: string) {
+  return /failed to fetch|networkerror|load failed|connection/i.test(text)
 }
 
 export function useTasks() {
@@ -86,12 +104,17 @@ export function useTasks() {
 
   const activeTask = computed(() => tasks.value.find((t) => t.id === activeTaskId.value) ?? null)
 
-  async function refreshTasks() {
-    loading.value = true
-    error.value = ''
+  async function refreshTasks(options: { silent?: boolean } = {}) {
+    const silent = options.silent === true
+    if (!silent) {
+      loading.value = true
+      error.value = ''
+    }
     try {
       const list = await api.listTasks()
       tasks.value = list
+      if (silent && isConnectivityError(error.value)) error.value = ''
+      if (!silent) error.value = ''
       if (!activeTaskId.value && list.length > 0) {
         activeTaskId.value = list[0].id
       }
@@ -99,9 +122,9 @@ export function useTasks() {
         activeTaskId.value = list[0].id
       }
     } catch (e) {
-      error.value = (e as Error).message
+      if (!silent) error.value = (e as Error).message
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
@@ -143,8 +166,24 @@ export function useTasks() {
     await refreshTasks()
   }
 
+  async function rerunAutoRealize(taskId: string) {
+    await api.rerunAutoRealize(taskId)
+    delete snapshots[taskId]
+    await refreshTasks()
+  }
+
   async function rerunAutoML(taskId: string) {
     await api.rerunAutoML(taskId)
+    await refreshTasks()
+  }
+
+  async function startAutoML(taskId: string) {
+    await api.startAutoML(taskId)
+    await refreshTasks()
+  }
+
+  async function rerunAutoReport(taskId: string) {
+    await api.rerunAutoReport(taskId)
     await refreshTasks()
   }
 
@@ -178,7 +217,10 @@ export function useTasks() {
     saveTask,
     deleteTask,
     startTask,
+    rerunAutoRealize,
     rerunAutoML,
+    startAutoML,
+    rerunAutoReport,
     rerunFull,
     resumeTask,
     stopTask,

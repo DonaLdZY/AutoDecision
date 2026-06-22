@@ -235,6 +235,9 @@ function shortMetric(v: number | null | undefined): string {
   border: 1px solid #cae7c7;
   border-radius: 14px;
   padding: 14px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .sub {
@@ -245,11 +248,20 @@ function shortMetric(v: number | null | undefined): string {
 
 .tree-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
   border: 1px solid #c7dfc4;
   border-radius: 10px;
   background: #ffffff;
   max-height: 500px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.tree-wrap svg {
+  display: block;
+  max-width: none;
 }
 
 .tree-edge {
@@ -363,4 +375,3 @@ function shortMetric(v: number | null | undefined): string {
   }
 }
 </style>
-

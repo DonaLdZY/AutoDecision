@@ -1,5 +1,7 @@
 param(
-  [switch]$Force
+  [switch]$Force,
+  [switch]$Wait,
+  [switch]$Open
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +14,7 @@ $pidFile = Join-Path $stateDir "pids.json"
 $autoRealizeDir = Join-Path $root "core\AutoRealize"
 $autoMlDir = Join-Path $root "core\ML-Master-Alter"
 $mlevolveDir = Join-Path $root "core\MLEvolve-Alter"
+$autoReportDir = Join-Path $root "core\AutoReport"
 $gatewayDir = Join-Path $root "frontend\backend"
 $uiDir = Join-Path $root "frontend\ui"
 
@@ -177,37 +180,57 @@ try {
   $jobs += Start-HiddenProc -Name "autorealize-api" -WorkDir $autoRealizeDir -Port 18101 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "autorealize.service_api:app", "--host", "127.0.0.1", "--port", "18101")
   $jobs += Start-HiddenProc -Name "automl-api" -WorkDir $autoMlDir -Port 18102 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18102")
   $jobs += Start-HiddenProc -Name "mlevolve-api" -WorkDir $mlevolveDir -Port 18103 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18103")
+  $jobs += Start-HiddenProc -Name "autoreport-api" -WorkDir $autoReportDir -Port 18104 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18104")
   $jobs += Start-HiddenProc -Name "gateway-api" -WorkDir $gatewayDir -Port 18080 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "18080")
   $jobs += Start-HiddenProc -Name "frontend-ui" -WorkDir $uiDir -Port 5173 -FilePath $npmExe -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1", "--port", "5173")
 
-  Wait-HttpReady -Name "AutoRealize API" -Url "http://127.0.0.1:18101/health" -TimeoutSec 30
-  Wait-HttpReady -Name "AutoML API" -Url "http://127.0.0.1:18102/health" -TimeoutSec 30
-  Wait-HttpReady -Name "MLEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
-  Wait-HttpReady -Name "Gateway API" -Url "http://127.0.0.1:18080/api/health" -TimeoutSec 30
-  Wait-HttpReady -Name "Frontend UI" -Url "http://127.0.0.1:5173" -TimeoutSec 45
+  $payload = @{
+    started_at = (Get-Date).ToString("s")
+    root = [string]$root
+    processes = $jobs
+  }
+
+  $payload | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $pidFile
+
+  if ($Wait) {
+    Wait-HttpReady -Name "AutoRealize API" -Url "http://127.0.0.1:18101/health" -TimeoutSec 30
+    Wait-HttpReady -Name "AutoML API" -Url "http://127.0.0.1:18102/health" -TimeoutSec 30
+    Wait-HttpReady -Name "MLEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
+    Wait-HttpReady -Name "AutoReport API" -Url "http://127.0.0.1:18104/health" -TimeoutSec 30
+    Wait-HttpReady -Name "Gateway API" -Url "http://127.0.0.1:18080/api/health" -TimeoutSec 30
+    Wait-HttpReady -Name "Frontend UI" -Url "http://127.0.0.1:5173" -TimeoutSec 45
+  }
 } catch {
   Write-Host "Startup failed: $($_.Exception.Message)"
   foreach ($j in $jobs) {
     try { taskkill /PID ([int]$j.pid) /T /F | Out-Null } catch {}
   }
+  if (Test-Path $pidFile) {
+    try { Remove-Item -Force $pidFile } catch {}
+  }
   throw
 }
-
-$payload = @{
-  started_at = (Get-Date).ToString("s")
-  root = [string]$root
-  processes = $jobs
-}
-
-$payload | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $pidFile
 
 Write-Host ""
 Write-Host "All services started in background:"
 Write-Host "1) AutoRealize API: http://127.0.0.1:18101/health"
 Write-Host "2) AutoML API:      http://127.0.0.1:18102/health"
 Write-Host "3) MLEvolve API:    http://127.0.0.1:18103/health"
-Write-Host "4) Gateway API:     http://127.0.0.1:18080/api/health"
-Write-Host "5) Frontend UI:     http://127.0.0.1:5173"
+Write-Host "4) AutoReport API:  http://127.0.0.1:18104/health"
+Write-Host "5) Gateway API:     http://127.0.0.1:18080/api/health"
+Write-Host "6) Frontend UI:     http://127.0.0.1:5173"
 Write-Host "Logs: .dev-state/logs/*.log"
 Write-Host ""
+if ($Wait) {
+  Write-Host "Health checks passed."
+} else {
+  Write-Host "Returned immediately. Check readiness with: powershell -ExecutionPolicy Bypass -File .\scripts\dev-status.ps1"
+  Write-Host "Wait for health checks next time: powershell -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Wait"
+}
 Write-Host "Stop all: powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1"
+Write-Host "Restart:  powershell -ExecutionPolicy Bypass -File .\scripts\dev-restart.ps1"
+Write-Host "Logs:     powershell -ExecutionPolicy Bypass -File .\scripts\dev-logs.ps1"
+
+if ($Open) {
+  Start-Process "http://127.0.0.1:5173"
+}

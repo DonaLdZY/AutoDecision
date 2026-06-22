@@ -23,12 +23,11 @@ function toggle() {
 }
 
 function onDblclick() {
-  if (!props.node.isDir) emit('preview', props.node.path)
+  emit('preview', props.node.path)
 }
 
 const canPreview = computed(() => {
-  if (props.node.isDir) return false
-  if (!props.boldWhen) return true
+  if (!props.boldWhen) return !props.node.isDir
   return !!props.boldWhen(props.node.path)
 })
 </script>
@@ -41,7 +40,7 @@ const canPreview = computed(() => {
       @click="toggle"
       @dblclick.stop="canPreview && onDblclick()"
     >
-      <span class="caret" :class="{ open: expanded }" v-if="canToggle">▸</span>
+      <span v-if="canToggle" class="caret" :class="{ open: expanded }">▶</span>
       <span class="caret empty" v-else></span>
       <span class="dot" :class="node.readState"></span>
       <span>{{ node.name }}<span v-if="node.isDir">/</span></span>
