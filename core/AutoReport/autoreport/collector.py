@@ -17,15 +17,31 @@ IMPORTANT_NAMES = {
     "data_cognition_report.json",
     "constraint_memory.json",
     "knowledge_base.json",
+    "autorealize_context.md",
+    "automl_context.md",
     "sample_submission.csv",
+    "submission.csv",
+    "submissions.csv",
+    "assignments.csv",
+    "unassigned_orders.csv",
+    "metrics.json",
     "report.json",
     "report.md",
     "run_summary.json",
     "current_state.json",
     "event_stream.jsonl",
+    "journal.json",
+    "filtered_journal.json",
+    "node_summary_compact.json",
+    "pending_nodes.json",
     "best_solution.py",
     "solution.py",
     "metric.txt",
+    "node_id.txt",
+    "model_path.txt",
+    "model_artifacts_manifest.md",
+    "llm_usage_brief.json",
+    "llm_usage_summary.json",
     "ml-master.log",
     "mlevolve.log",
 }
@@ -189,14 +205,41 @@ def _summarize_json_text(text: str, *, suffix: str) -> dict[str, Any]:
             "type": "object",
             "keys": sorted([str(k) for k in obj.keys()])[:80],
             "summary": _summarize_known_json(obj),
+            "object_excerpt": _compact_json_value(obj, max_depth=3, max_items=80),
         }
     if isinstance(obj, list):
         return {
             "type": "array",
             "length": len(obj),
             "first_item_keys": sorted(list(obj[0].keys()))[:40] if obj and isinstance(obj[0], dict) else [],
+            "items_excerpt": _compact_json_value(obj[:20], max_depth=3, max_items=80),
         }
     return {"type": type(obj).__name__, "value": str(obj)[:200]}
+
+
+def _compact_json_value(value: Any, *, max_depth: int = 2, max_items: int = 40) -> Any:
+    if max_depth <= 0:
+        return _short_scalar(value)
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for idx, (key, val) in enumerate(value.items()):
+            if idx >= max_items:
+                out["_omitted_keys"] = max(0, len(value) - idx)
+                break
+            out[str(key)] = _compact_json_value(val, max_depth=max_depth - 1, max_items=max_items)
+        return out
+    if isinstance(value, list):
+        out = [_compact_json_value(x, max_depth=max_depth - 1, max_items=max_items) for x in value[:max_items]]
+        if len(value) > max_items:
+            out.append({"_omitted_items": len(value) - max_items})
+        return out
+    return _short_scalar(value)
+
+
+def _short_scalar(value: Any) -> Any:
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:500]
 
 
 def _summarize_known_json(obj: dict[str, Any]) -> dict[str, Any]:
@@ -268,4 +311,432 @@ def _derive_summary(items: list[EvidenceItem]) -> dict[str, Any]:
             for item in items
             if Path(item.path).name.lower() == "sample_submission.csv" and item.table_preview
         ][:1],
+        "solution_evidence": _derive_solution_evidence(items),
     }
+
+
+def _derive_solution_evidence(items: list[EvidenceItem]) -> dict[str, Any]:
+    """Build a delivery-oriented evidence pack for the report writer.
+
+    AutoReport should persuade users that the selected solution is usable. This
+    pack therefore focuses on the final solution, reusable code interface,
+    validation artifacts, and how other explored methods compared.
+    """
+
+    by_name: dict[str, list[EvidenceItem]] = {}
+    for item in items:
+        by_name.setdefault(Path(item.path).name.lower(), []).append(item)
+
+    best_solution = _best_solution_summary(items)
+    node_rows = _candidate_nodes_from_items(items)
+    candidate_summary = _summarize_candidate_nodes(node_rows)
+    top_solutions = _top_solution_summaries(items)
+    artifacts = _delivery_artifact_summary(items)
+    reusable = _reusable_code_summary(best_solution.get("code_excerpt", ""))
+
+    return {
+        "best_solution": best_solution,
+        "top_solutions": top_solutions,
+        "candidate_comparison": candidate_summary,
+        "delivery_artifacts": artifacts,
+        "reusable_code_interface": reusable,
+        "available_evidence_files": {
+            "journal_files": [item.path for item in by_name.get("journal.json", [])[:5]],
+            "node_summary_files": [item.path for item in by_name.get("node_summary_compact.json", [])[:5]],
+            "metric_files": [item.path for item in by_name.get("metric.txt", [])[:12]],
+            "solution_files": [
+                item.path
+                for item in items
+                if Path(item.path).name.lower() in {"solution.py", "best_solution.py"}
+            ][:12],
+        },
+    }
+
+
+def _best_solution_summary(items: list[EvidenceItem]) -> dict[str, Any]:
+    metric_items = [
+        item
+        for item in items
+        if Path(item.path).name.lower() == "metric.txt" and _path_has_part(item.path, "best_solution")
+    ]
+    if not metric_items:
+        metric_items = [item for item in items if Path(item.path).name.lower() == "metric.txt"]
+    solution_items = [
+        item
+        for item in items
+        if Path(item.path).name.lower() in {"solution.py", "best_solution.py"} and _path_has_part(item.path, "best_solution")
+    ]
+    if not solution_items:
+        solution_items = [item for item in items if Path(item.path).name.lower() in {"solution.py", "best_solution.py"}]
+    node_id_items = [
+        item
+        for item in items
+        if Path(item.path).name.lower() == "node_id.txt" and _path_has_part(item.path, "best_solution")
+    ]
+    model_manifest = [
+        item
+        for item in items
+        if Path(item.path).name.lower() == "model_artifacts_manifest.md" and _path_has_part(item.path, "best_solution")
+    ]
+    metric = _parse_metric_text(metric_items[0].text_excerpt) if metric_items else {}
+    code_excerpt = solution_items[0].text_excerpt if solution_items else ""
+    return {
+        "metric": metric,
+        "metric_text": metric_items[0].text_excerpt[:3000] if metric_items else "",
+        "metric_path": metric_items[0].path if metric_items else "",
+        "node_id": node_id_items[0].text_excerpt.strip()[:120] if node_id_items else "",
+        "solution_path": solution_items[0].path if solution_items else "",
+        "code_excerpt": code_excerpt[:12000],
+        "code_functions": _extract_python_defs(code_excerpt),
+        "model_artifacts_manifest": model_manifest[0].text_excerpt[:4000] if model_manifest else "",
+        "model_artifacts_manifest_path": model_manifest[0].path if model_manifest else "",
+    }
+
+
+def _top_solution_summaries(items: list[EvidenceItem]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    metric_items = [
+        item
+        for item in items
+        if Path(item.path).name.lower() == "metric.txt" and _path_has_part(item.path, "top_solution")
+    ]
+    for item in sorted(metric_items, key=lambda x: x.path.lower())[:8]:
+        parent = str(Path(item.path).parent)
+        sibling = _find_item_by_path(items, str(Path(parent) / "node_id.txt"))
+        solution = _find_item_by_path(items, str(Path(parent) / "solution.py"))
+        out.append(
+            {
+                "rank_dir": Path(parent).name,
+                "metric": _parse_metric_text(item.text_excerpt),
+                "metric_path": item.path,
+                "node_id": sibling.text_excerpt.strip()[:120] if sibling else "",
+                "solution_path": solution.path if solution else "",
+                "code_functions": _extract_python_defs(solution.text_excerpt) if solution else [],
+            }
+        )
+    return out
+
+
+def _delivery_artifact_summary(items: list[EvidenceItem]) -> list[dict[str, Any]]:
+    interesting_names = {
+        "submission.csv",
+        "submissions.csv",
+        "assignments.csv",
+        "unassigned_orders.csv",
+        "metrics.json",
+        "model_artifacts_manifest.md",
+        "model_path.txt",
+    }
+    out: list[dict[str, Any]] = []
+    for item in items:
+        name = Path(item.path).name.lower()
+        if name not in interesting_names:
+            continue
+        entry: dict[str, Any] = {
+            "path": item.path,
+            "name": Path(item.path).name,
+            "kind": item.kind,
+            "size": item.size,
+        }
+        if item.table_preview:
+            entry["table_preview"] = item.table_preview[:3]
+            entry["columns"] = list(item.table_preview[0].keys()) if item.table_preview else []
+        if item.json_summary:
+            entry["json_summary"] = item.json_summary.get("summary") or item.json_summary.get("object_excerpt") or item.json_summary
+        elif item.text_excerpt:
+            entry["text_excerpt"] = item.text_excerpt[:1200]
+        out.append(entry)
+    return out[:40]
+
+
+def _candidate_nodes_from_items(items: list[EvidenceItem]) -> list[dict[str, Any]]:
+    compact_items = [item for item in items if Path(item.path).name.lower() == "node_summary_compact.json"]
+    for item in compact_items:
+        rows = _load_json_from_item(item)
+        if isinstance(rows, list):
+            return [_normalize_compact_node(row) for row in rows if isinstance(row, dict)]
+
+    journal_items = [item for item in items if Path(item.path).name.lower() in {"journal.json", "filtered_journal.json"}]
+    for item in journal_items:
+        obj = _load_json_from_item(item)
+        nodes = obj.get("nodes") if isinstance(obj, dict) else None
+        if isinstance(nodes, list):
+            return [_normalize_journal_node(row) for row in nodes if isinstance(row, dict)]
+    return []
+
+
+def _summarize_candidate_nodes(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    if not nodes:
+        return {
+            "node_count": 0,
+            "successful_metric_nodes": [],
+            "failed_nodes": [],
+            "failure_patterns": [],
+            "method_signals": {},
+        }
+
+    metric_nodes = [n for n in nodes if n.get("metric") not in (None, "", {})]
+    maximize = _first_non_none([n.get("maximize") for n in metric_nodes])
+    successful = [n for n in metric_nodes if not n.get("buggy")]
+    successful = sorted(
+        successful,
+        key=lambda n: _metric_sort_key(n.get("metric"), maximize=maximize),
+        reverse=_boolish(maximize),
+    )
+    failed = [n for n in nodes if n.get("buggy") or n.get("exc_type")]
+    failure_patterns = _failure_patterns(failed)
+    method_signals = {
+        "nodes_with_greedy": sum(1 for n in nodes if n.get("has_greedy")),
+        "nodes_with_rl_env": sum(1 for n in nodes if n.get("has_rl_env")),
+        "nodes_with_decision_summary": sum(1 for n in nodes if n.get("has_decision_summary")),
+        "valid_nodes": sum(1 for n in nodes if n.get("valid") is True),
+        "buggy_nodes": sum(1 for n in nodes if n.get("buggy") is True),
+    }
+    return {
+        "node_count": len(nodes),
+        "maximize": maximize,
+        "successful_metric_nodes": [_compact_node_for_report(n) for n in successful[:12]],
+        "failed_nodes": [_compact_node_for_report(n) for n in failed[:10]],
+        "failure_patterns": failure_patterns,
+        "method_signals": method_signals,
+    }
+
+
+def _normalize_compact_node(row: dict[str, Any]) -> dict[str, Any]:
+    metric = row.get("metric")
+    if isinstance(metric, dict):
+        metric_value = metric.get("value")
+        maximize = metric.get("maximize")
+    else:
+        metric_value = metric
+        maximize = row.get("maximize")
+    return {
+        "id": str(row.get("id") or ""),
+        "stage": str(row.get("stage") or ""),
+        "step": row.get("step"),
+        "parent": str(row.get("parent") or ""),
+        "exec_time": row.get("exec_time"),
+        "buggy": row.get("buggy"),
+        "valid": row.get("valid"),
+        "metric": metric_value,
+        "maximize": maximize,
+        "exc_type": str(row.get("exc_type") or ""),
+        "exc_msg": str(row.get("exc_msg") or "")[:500],
+        "plan": str(row.get("plan") or "")[:1000],
+        "analysis": str(row.get("analysis") or "")[:1400],
+        "llm_insight": str(row.get("llm_insight") or row.get("insight") or "")[:1400],
+        "funcs": str(row.get("funcs") or "")[:800],
+        "classes": str(row.get("classes") or "")[:800],
+        "has_greedy": bool(row.get("has_greedy")),
+        "has_rl_env": bool(row.get("has_rl_env")),
+        "has_decision_summary": bool(row.get("has_decision_summary")),
+        "term_tail": str(row.get("term_tail") or "")[:1000],
+    }
+
+
+def _normalize_journal_node(row: dict[str, Any]) -> dict[str, Any]:
+    metric = row.get("metric") if isinstance(row.get("metric"), dict) else {}
+    code = str(row.get("code") or "")
+    return {
+        "id": str(row.get("id") or ""),
+        "stage": str(row.get("stage") or ""),
+        "step": row.get("step"),
+        "parent": str(row.get("parent") or ""),
+        "exec_time": row.get("exec_time"),
+        "buggy": row.get("is_buggy"),
+        "valid": row.get("is_valid"),
+        "metric": metric.get("value"),
+        "maximize": metric.get("maximize"),
+        "exc_type": str(row.get("exc_type") or ""),
+        "exc_msg": _exc_message(row.get("exc_info"))[:500],
+        "plan": str(row.get("plan") or "")[:1000],
+        "analysis": str(row.get("parser_analysis") or row.get("analysis") or "")[:1400],
+        "llm_insight": str(row.get("llm_insight") or "")[:1400],
+        "funcs": ", ".join(_extract_python_defs(code))[:800],
+        "classes": ", ".join(_extract_python_classes(code))[:800],
+        "has_greedy": "greedy" in code.lower(),
+        "has_rl_env": any(tok in code for tok in ["Env", "PPO", "DQN", "ActorCritic", "policy"]),
+        "has_decision_summary": "Decision Validation Summary" in code or "decision validation" in code.lower(),
+        "term_tail": str(row.get("_term_out") or "")[-1000:],
+    }
+
+
+def _compact_node_for_report(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": node.get("id"),
+        "stage": node.get("stage"),
+        "step": node.get("step"),
+        "metric": node.get("metric"),
+        "maximize": node.get("maximize"),
+        "valid": node.get("valid"),
+        "buggy": node.get("buggy"),
+        "exec_time": node.get("exec_time"),
+        "method_flags": {
+            "greedy": bool(node.get("has_greedy")),
+            "rl_env": bool(node.get("has_rl_env")),
+            "decision_summary": bool(node.get("has_decision_summary")),
+        },
+        "failure": {
+            "exc_type": node.get("exc_type"),
+            "exc_msg": node.get("exc_msg"),
+        },
+        "plan": str(node.get("plan") or "")[:700],
+        "insight": str(node.get("llm_insight") or node.get("analysis") or "")[:900],
+    }
+
+
+def _failure_patterns(failed_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for node in failed_nodes:
+        key = str(node.get("exc_type") or "").strip() or _failure_family(str(node.get("analysis") or node.get("term_tail") or "unknown"))
+        key = key or "unknown"
+        bucket = buckets.setdefault(key, {"type": key, "count": 0, "examples": []})
+        bucket["count"] += 1
+        if len(bucket["examples"]) < 3:
+            bucket["examples"].append(
+                {
+                    "id": node.get("id"),
+                    "stage": node.get("stage"),
+                    "message": str(node.get("exc_msg") or node.get("analysis") or node.get("term_tail") or "")[:500],
+                }
+            )
+    return sorted(buckets.values(), key=lambda row: (-int(row["count"]), str(row["type"])))[:12]
+
+
+def _failure_family(text: str) -> str:
+    lower = text.lower()
+    if "keyerror" in lower or "not in the [columns]" in lower:
+        return "KeyError/schema_mismatch"
+    if "nameerror" in lower:
+        return "NameError"
+    if "typeerror" in lower:
+        return "TypeError"
+    if "runtimeerror" in lower:
+        return "RuntimeError"
+    if "coverage_ok is not true" in lower or "unassigned" in lower:
+        return "incomplete_solution"
+    return "unknown"
+
+
+def _reusable_code_summary(code: str) -> dict[str, Any]:
+    defs = _extract_python_defs(code)
+    return {
+        "has_predict": "predict" in defs,
+        "has_load_problem_data": "load_problem_data" in defs,
+        "has_validate_solution": "validate_solution" in defs,
+        "has_score_solution": "score_solution" in defs,
+        "has_main": "main" in defs,
+        "functions": defs[:80],
+        "recommended_usage": [
+            "Place the expected input files under ./input or pass the input directory used by the solution.",
+            "Run python solution.py for an end-to-end reproduction when main() is available.",
+            "For integration, call predict(model_path, data) if the solution exposes predict(); otherwise reuse load_problem_data + solver/validation functions shown in the code.",
+        ],
+    }
+
+
+def _parse_metric_text(text: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for line in str(text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        norm = key.strip().lower().replace(" ", "_")
+        value = value.strip()
+        if norm in {"metric", "score", "final_validation_score"}:
+            out["metric"] = _maybe_number(value)
+        elif norm == "maximize":
+            out["maximize"] = value.lower() in {"true", "1", "yes"}
+        elif norm == "branch_id":
+            out["branch_id"] = value
+        elif norm == "stage":
+            out["stage"] = value
+        elif norm in {"execution_time(s)", "execution_time", "execution_time_seconds"}:
+            out["execution_time_seconds"] = _maybe_number(value)
+        elif norm == "created_time":
+            out["created_time"] = value
+        else:
+            out[norm] = value[:500]
+    return out
+
+
+def _maybe_number(value: Any) -> Any:
+    text = str(value).strip()
+    try:
+        if "." in text or "e" in text.lower():
+            return float(text)
+        return int(text)
+    except Exception:
+        return value
+
+
+def _metric_sort_key(value: Any, *, maximize: Any) -> tuple[int, float]:
+    try:
+        numeric = float(value)
+    except Exception:
+        return (1, 0.0)
+    if numeric != numeric:  # NaN should not outrank real metrics.
+        return (1, 0.0)
+    return (0, numeric)
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n", "", "none", "null"}:
+        return False
+    return bool(value)
+
+
+def _load_json_from_item(item: EvidenceItem) -> Any:
+    try:
+        text = Path(item.path).read_text(encoding="utf-8-sig", errors="ignore")
+    except Exception:
+        text = item.text_excerpt
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def _extract_python_defs(code: str) -> list[str]:
+    import re
+
+    return list(dict.fromkeys(re.findall(r"(?m)^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", str(code or ""))))[:120]
+
+
+def _extract_python_classes(code: str) -> list[str]:
+    import re
+
+    return list(dict.fromkeys(re.findall(r"(?m)^class\s+([A-Za-z_][A-Za-z0-9_]*)\b", str(code or ""))))[:80]
+
+
+def _exc_message(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("message") or value.get("error") or value)[:800]
+    return str(value or "")[:800]
+
+
+def _find_item_by_path(items: list[EvidenceItem], path: str) -> EvidenceItem | None:
+    normalized = str(Path(path)).replace("\\", "/").lower()
+    for item in items:
+        if str(Path(item.path)).replace("\\", "/").lower() == normalized:
+            return item
+    return None
+
+
+def _path_has_part(path: str, part: str) -> bool:
+    wanted = part.lower().replace("\\", "/")
+    return wanted in str(path).lower().replace("\\", "/").split("/")
+
+
+def _first_non_none(values: list[Any]) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None

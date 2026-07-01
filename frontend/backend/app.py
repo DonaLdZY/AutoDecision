@@ -84,6 +84,29 @@ def safe_read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def read_mlevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
+    payload = safe_read_json(log_dir / "pending_nodes.json", {})
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("nodes")
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        node_id = str(row.get("id") or "").strip()
+        if not node_id:
+            continue
+        row = dict(row)
+        row["id"] = node_id
+        row["pending_execution"] = bool(
+            row.get("pending_execution") or row.get("status") in {"generating", "pending_execution", "executing"}
+        )
+        out.append(row)
+    return out
+
+
 def safe_read_text_tail(path: Path, limit: int = 60000, *, byte_multiplier: int = 4) -> str:
     """Read only the tail of a potentially huge UTF-8-ish text file."""
     if not path.exists() or not path.is_file():
@@ -150,11 +173,11 @@ class AutoRealizeConfigPayload(BaseModel):
     parallel_cleaning: bool = True
     task_hint: str = ""
     llm_timeout: float = 180.0
-    llm_concurrency: int = 4
+    llm_concurrency: int = 100
     llm_enable_thinking: bool | None = None
     llm_reasoning_effort: str | None = None
     llm_structured_disable_thinking: bool = True
-    cognition_workers: int = 4
+    cognition_workers: int = 100
     cleaning_workers: int = 2
 
 
@@ -162,16 +185,16 @@ class AutoMLConfigPayload(BaseModel):
     engine: str = "mlevolve"
     enabled: bool = True
     steps: int = 50
-    time_limit_secs: int = 3600
-    parallel_search_num: int = 1
+    time_limit_secs: int = 10800
+    parallel_search_num: int = 4
     k_fold_validation: int = 1
     check_format: bool = False
     expose_prediction: bool = True
     generate_submission: bool = True
     steerable_reasoning: bool = False
-    search_num_drafts: int = 5
+    search_num_drafts: int = 8
     search_num_bugs: int = 1
-    search_num_improves: int = 3
+    search_num_improves: int = 5
     search_max_debug_depth: int = 20
     search_back_debug_depth: int = 3
     metric_improvement_threshold: float = 0.0001
@@ -1300,8 +1323,6 @@ def _resolve_autorealize_dir(task: TaskModel) -> Path:
 def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoML")
-    if not task.config.auto_ml.enabled:
-        raise HTTPException(status_code=400, detail="AutoML is disabled in task config")
 
     if _direct_mode_enabled(task):
         run_dir = _resolve_task_run_dir_for_rerun(task)
@@ -1339,8 +1360,6 @@ def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Pat
 def _validate_direct_automl_start(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task is running; cannot start AutoML")
-    if not task.config.auto_ml.enabled:
-        raise HTTPException(status_code=400, detail="AutoML is disabled in task config")
     if not task.input_root.strip():
         raise HTTPException(status_code=400, detail="请先配置输入文件夹(input_root)再直接启动 AutoML")
     if not task.task_name.strip():
@@ -1617,26 +1636,28 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg.setdefault("investigation", {})
     cfg.setdefault("data", {})
 
-    cfg["switches"]["run_data_cognition"] = ar.run_data_cognition
-    cfg["switches"]["run_task_definition"] = ar.run_task_definition
+    llm_concurrency = max(1, int(ar.llm_concurrency or 1))
+
+    cfg["switches"]["run_data_cognition"] = True
+    cfg["switches"]["run_task_definition"] = True
     cfg["switches"]["run_data_cleaning"] = ar.run_data_cleaning
     cfg["switches"]["enable_fewshot"] = ar.enable_fewshot
     cfg["switches"]["generate_sample_submission"] = ar.generate_sample_submission
-    cfg["switches"]["prefer_original_description"] = ar.prefer_original_description
-    cfg["switches"]["direct_automl_from_description"] = ar.direct_automl_from_description
+    cfg["switches"]["prefer_original_description"] = True
+    cfg["switches"]["direct_automl_from_description"] = False
     cfg["llm"]["request_timeout_seconds"] = ar.llm_timeout
-    cfg["llm"]["max_concurrent_requests"] = ar.llm_concurrency
+    cfg["llm"]["max_concurrent_requests"] = llm_concurrency
     cfg["llm"]["enable_thinking"] = ar.llm_enable_thinking
     cfg["llm"]["reasoning_effort"] = ar.llm_reasoning_effort
     cfg["llm"]["structured_disable_thinking"] = ar.llm_structured_disable_thinking
-    cfg["parallel"]["cognition_max_workers"] = ar.cognition_workers
+    cfg["parallel"]["cognition_max_workers"] = llm_concurrency
     cfg["parallel"]["cleaning_max_workers"] = ar.cleaning_workers
     cfg["parallel"]["enable_parallel_cleaning"] = ar.parallel_cleaning
     cfg["telemetry"]["enabled"] = not ar.no_telemetry
     cfg["knowledge"]["enabled"] = not ar.no_knowledge
     cfg["llm"]["enable_cache"] = not ar.no_llm_cache
     cfg["investigation"]["enabled"] = bool(ar.enable_question_investigator)
-    cfg["data"]["auto_generate_predict_split"] = bool(ar.auto_generate_predict_split)
+    cfg["data"]["auto_generate_predict_split"] = False
 
     llm = gs.llm
     autorealize_model = _selected_model(llm, "autoRealize", fallback_role="autoMlCode")
@@ -1814,7 +1835,7 @@ def _build_mlevolve_command(
         f"exp_name={_as_cli_str(exp_name)}",
         f"log_dir={str(automl_logs_root)}",
         f"workspace_dir={str(automl_workspaces_root)}",
-        f"preprocess_data={'true' if am.preprocess_data else 'false'}",
+        "preprocess_data=true",
         f"copy_data={'true' if am.copy_data else 'false'}",
         f"start_cpu_id=0",
         f"cpu_number={int(gs.resource.get('cpuLimit', 4))}",
@@ -1827,7 +1848,7 @@ def _build_mlevolve_command(
         f"agent.time_limit={am.time_limit_secs}",
         f"agent.initial_drafts={am.initial_drafts}",
         "agent.seed=42",
-        f"agent.data_preview={'true' if am.data_preview else 'false'}",
+        "agent.data_preview=true",
         f"agent.generate_submission={'true' if generate_submission else 'false'}",
         f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         "agent.code.temp=0.5",
@@ -2210,7 +2231,7 @@ def _run_autorealize_stage(
         "python_executable": py,
         "working_dir": str(AUTOREALIZE_DIR),
         "offline": bool(task.config.auto_realize.offline),
-        "auto_generate_predict_split": bool(task.config.auto_realize.auto_generate_predict_split),
+        "auto_generate_predict_split": False,
         "env_overrides": {"DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or "")},
     }
     try:
@@ -2313,24 +2334,6 @@ def _start_task_thread(task_id: str) -> None:
                 req_timeout=req_timeout,
             )
         if not ok_ar:
-            return
-
-        if not task.config.auto_ml.enabled:
-            ok_report = _run_report_stage(
-                task_id=task_id,
-                task=task,
-                gs=gs,
-                autorealize_dir=autorealize_dir,
-                automl_root=automl_root,
-                ml_log_dir=None,
-                ml_ws_dir=None,
-                report_dir=report_dir,
-                report_base=report_base,
-                req_timeout=req_timeout,
-            )
-            if not ok_report:
-                return
-            store.set_status(task_id, status="completed", phase="completed")
             return
 
         ok = _run_automl_stage(
@@ -2883,24 +2886,6 @@ def _resume_task_thread(task_id: str) -> None:
     else:
         store.set_status(task_id, status="running", phase="autorealize", run_dir=str(run_dir), run_started_at=now_ts(), last_error=None)
 
-    if not task.config.auto_ml.enabled:
-        ok_report = _run_report_stage(
-            task_id=task_id,
-            task=task,
-            gs=gs,
-            autorealize_dir=autorealize_dir,
-            automl_root=automl_root,
-            ml_log_dir=None,
-            ml_ws_dir=None,
-            report_dir=report_dir,
-            report_base=report_base,
-            req_timeout=req_timeout,
-        )
-        if not ok_report:
-            return
-        store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
-        return
-
     if task.phase == "report_failed":
         existing_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
         existing_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve() if task.auto_ml_workspace_dir else None
@@ -3295,6 +3280,8 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
             node_id = n.get("id")
             term_out = n.get("_term_out")
             result = "".join(term_out) if isinstance(term_out, list) else str(term_out or "")
+            llm_insight = n.get("llm_insight")
+            parser_analysis = n.get("parser_analysis") or n.get("analysis")
             nodes.append(
                 {
                     "id": node_id,
@@ -3303,7 +3290,10 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "plan": n.get("plan"),
                     "code": n.get("code"),
                     "result": result,
-                    "insight": n.get("analysis"),
+                    "insight": llm_insight or n.get("analysis"),
+                    "llm_insight": llm_insight,
+                    "parser_analysis": parser_analysis,
+                    "decision_signals": n.get("decision_signals"),
                     "metric": metric_val,
                     "maximize": maximize,
                     "is_buggy": n.get("is_buggy"),
@@ -3315,8 +3305,14 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "exec_time": n.get("exec_time"),
                     "branch_id": n.get("branch_id"),
                     "from_topk": n.get("from_topk"),
+                    "status": n.get("status"),
                 }
             )
+    journal_node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
+    pending_nodes = [
+        node for node in read_mlevolve_pending_nodes(log_dir)
+        if str(node.get("id")) not in journal_node_ids
+    ]
     engine = _automl_engine(task)
     out: dict[str, Any] = {
         "engine": engine,
@@ -3325,6 +3321,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400)
         or _parse_log_events_tail_local(log_dir / ("MLEvolve.log" if engine == "mlevolve" else "ml-master.log"), limit=400),
         "nodes": nodes,
+        "pending_nodes": pending_nodes,
         "best_node_id": best_id,
         "journal_source": journal_source,
         "ml_log": safe_read_text_tail(log_dir / "ml-master.log", limit=60000),

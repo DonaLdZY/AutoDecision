@@ -9,6 +9,12 @@ const props = defineProps<{
 const autoMl = computed(() => props.snapshot?.auto_ml ?? {})
 const isMLEvolve = computed(() => String(autoMl.value.engine ?? '') === 'mlevolve')
 const nodes = computed(() => autoMl.value.nodes ?? [])
+const pendingNodes = computed(() => autoMl.value.pending_nodes ?? [])
+const visiblePendingNodes = computed(() => {
+  const seen = new Set(nodes.value.map((node) => node.id))
+  return pendingNodes.value.filter((node) => node.id && !seen.has(node.id))
+})
+const displayNodes = computed(() => [...nodes.value, ...visiblePendingNodes.value])
 const bestNodeId = computed(() => String(autoMl.value.best_node_id ?? ''))
 const bestNode = computed(() => nodes.value.find((node) => node.id === bestNodeId.value) ?? null)
 const goodNodes = computed(() => nodes.value.filter((node) => node.is_buggy === false))
@@ -16,14 +22,14 @@ const buggyNodes = computed(() => nodes.value.filter((node) => node.is_buggy ===
 const finishedNodes = computed(() => nodes.value.filter((node) => !!node.finish_time))
 const branchCount = computed(() => {
   const set = new Set<number>()
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     if (typeof node.branch_id === 'number') set.add(node.branch_id)
   }
   return set.size
 })
 const stageSummary = computed(() => {
   const map = new Map<string, number>()
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     const key = String(node.stage || 'unknown')
     map.set(key, (map.get(key) ?? 0) + 1)
   }
@@ -47,7 +53,11 @@ const workspaceDir = computed(() => String(autoMl.value.workspace_dir ?? ''))
     <div class="stats-grid">
       <article class="stat-card">
         <span class="label">总节点数</span>
-        <strong>{{ nodes.length }}</strong>
+        <strong>{{ displayNodes.length }}</strong>
+      </article>
+      <article class="stat-card pending-stat">
+        <span class="label">待执行草稿</span>
+        <strong>{{ visiblePendingNodes.length }}</strong>
       </article>
       <article class="stat-card">
         <span class="label">已完成节点</span>
@@ -135,7 +145,7 @@ const workspaceDir = computed(() => String(autoMl.value.workspace_dir ?? ''))
 .stats-grid {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 8px;
 }
 
@@ -157,6 +167,15 @@ const workspaceDir = computed(() => String(autoMl.value.workspace_dir ?? ''))
   margin-top: 6px;
   color: #234a76;
   font-size: 18px;
+}
+
+.pending-stat {
+  background: #f6f7f9;
+  border-color: #c9d0d9;
+}
+
+.pending-stat strong {
+  color: #5f6875;
 }
 
 .meta-grid,
@@ -214,12 +233,6 @@ pre {
   max-height: 260px;
   white-space: pre-wrap;
   font-size: 12px;
-}
-
-@media (max-width: 1200px) {
-  .stats-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 900px) {

@@ -147,6 +147,7 @@ function edgePath(from: string, to: string): string {
 function nodeClass(node: MctsNode): string[] {
   const cls = ['node-card']
   cls.push(`stage-${node.stage ?? 'other'}`)
+  if (isPendingNode(node)) cls.push('pending')
   if (node.id === selectedNodeId.value) cls.push('selected')
   if (props.bestNodeId && node.id === props.bestNodeId) cls.push('best')
   return cls
@@ -155,6 +156,35 @@ function nodeClass(node: MctsNode): string[] {
 function shortMetric(v: number | null | undefined): string {
   if (v === null || v === undefined) return '-'
   return Number(v).toFixed(4)
+}
+
+function isPendingNode(node: MctsNode): boolean {
+  const status = String(node.status ?? '')
+  return Boolean(node.pending_execution) || ['generating', 'pending_execution', 'executing', 'cancelled', 'failed'].includes(status)
+}
+
+function nodeMetricLabel(node: MctsNode): string {
+  if (!isPendingNode(node)) return shortMetric(node.metric)
+  if (String(node.status ?? '') === 'generating') return 'generating'
+  if (String(node.status ?? '') === 'failed') return 'failed'
+  return String(node.status ?? '') === 'executing' ? 'executing' : 'pending'
+}
+
+function hasParserDetails(node: MctsNode): boolean {
+  return Boolean(node.parser_analysis || node.decision_signals)
+}
+
+function displayInsight(node: MctsNode): string {
+  return String(node.llm_insight || node.insight || '').trim() || '-'
+}
+
+function formatDecisionSignals(signals: Record<string, unknown> | null | undefined): string {
+  if (!signals) return ''
+  try {
+    return JSON.stringify(signals, null, 2)
+  } catch {
+    return String(signals)
+  }
 }
 </script>
 
@@ -185,7 +215,7 @@ function shortMetric(v: number | null | undefined): string {
           <text :x="n.x + 10" :y="n.y + 20" class="node-title">
             {{ n.stage || 'node' }}<tspan v-if="n.id === bestNodeId"> · BEST</tspan>
           </text>
-          <text :x="n.x + 10" :y="n.y + 38" class="node-meta">m={{ shortMetric(n.metric) }}</text>
+          <text :x="n.x + 10" :y="n.y + 38" class="node-meta">m={{ nodeMetricLabel(n) }}</text>
           <text :x="n.x + 10" :y="n.y + 54" class="node-meta">uct={{ shortMetric(n.uct) }}</text>
           <text :x="n.x + 10" :y="n.y + 68" class="node-meta">v={{ n.visits ?? 0 }} r={{ shortMetric(n.total_reward) }}</text>
         </g>
@@ -199,6 +229,7 @@ function shortMetric(v: number | null | undefined): string {
         <span>parent: {{ selectedNode.parent_id || '-' }}</span>
         <span>stage: {{ selectedNode.stage }}</span>
         <span>metric: {{ selectedNode.metric ?? '-' }}</span>
+        <span v-if="selectedNode.status">status: {{ selectedNode.status }}</span>
         <span>uct: {{ selectedNode.uct ?? '-' }}</span>
       </div>
       <div class="meta-row">
@@ -221,9 +252,16 @@ function shortMetric(v: number | null | undefined): string {
           <pre>{{ selectedNode.result || '-' }}</pre>
         </article>
         <article>
-          <h5>Insight</h5>
-          <pre>{{ selectedNode.insight || '-' }}</pre>
+          <h5>LLM Insight</h5>
+          <pre>{{ displayInsight(selectedNode) }}</pre>
         </article>
+        <details v-if="hasParserDetails(selectedNode)" class="parser-details">
+          <summary>程序解析事实（给后续节点看的硬事实）</summary>
+          <h5 v-if="selectedNode.parser_analysis">Parser Analysis</h5>
+          <pre v-if="selectedNode.parser_analysis">{{ selectedNode.parser_analysis }}</pre>
+          <h5 v-if="selectedNode.decision_signals">Decision Signals</h5>
+          <pre v-if="selectedNode.decision_signals">{{ formatDecisionSignals(selectedNode.decision_signals) }}</pre>
+        </details>
       </div>
     </div>
   </section>
@@ -299,6 +337,12 @@ function shortMetric(v: number | null | undefined): string {
   stroke: #b6b6b6;
 }
 
+.pending {
+  fill: #f1f3f5;
+  stroke: #8d98a7;
+  stroke-dasharray: 5 4;
+}
+
 .selected {
   stroke: #0b5d2c;
   stroke-width: 2.4;
@@ -357,8 +401,26 @@ function shortMetric(v: number | null | undefined): string {
   min-height: 120px;
 }
 
+.blocks .parser-details {
+  border: 1px solid #d4e9d2;
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 120px;
+}
+
 .blocks h5 {
   margin: 0 0 6px;
+}
+
+.parser-details summary {
+  cursor: pointer;
+  color: #2e5933;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.parser-details h5 {
+  margin-top: 8px;
 }
 
 .blocks pre {

@@ -212,6 +212,7 @@ export interface SnapshotPayload {
     workspace_dir?: string
     events?: Record<string, unknown>[]
     nodes?: MctsNode[]
+    pending_nodes?: MctsNode[]
     best_node_id?: string | null
     best_solution_code?: string
     best_metric_text?: string
@@ -242,6 +243,9 @@ export interface MctsNode {
   code?: string
   result?: string
   insight?: string
+  llm_insight?: string | null
+  parser_analysis?: string | null
+  decision_signals?: Record<string, unknown> | null
   metric?: number | null
   maximize?: boolean | null
   is_buggy?: boolean | null
@@ -250,9 +254,13 @@ export interface MctsNode {
   total_reward?: number
   uct?: number
   finish_time?: string | null
+  created_time?: string | null
   exec_time?: number | null
   branch_id?: number | null
   from_topk?: boolean | null
+  status?: string | null
+  pending_execution?: boolean | null
+  label?: string | null
 }
 
 export interface DirectoryEntry {

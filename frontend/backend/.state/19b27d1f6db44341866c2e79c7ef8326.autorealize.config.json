@@ -1,0 +1,47 @@
+{
+  "switches": {
+    "run_data_cognition": true,
+    "run_task_definition": true,
+    "run_data_cleaning": false,
+    "enable_fewshot": false,
+    "generate_sample_submission": true,
+    "prefer_original_description": true,
+    "direct_automl_from_description": false
+  },
+  "llm": {
+    "request_timeout_seconds": 180.0,
+    "max_concurrent_requests": 100,
+    "enable_thinking": null,
+    "reasoning_effort": null,
+    "structured_disable_thinking": true,
+    "enable_cache": true,
+    "base_url": "https://api.deepseek.com",
+    "model_name": "deepseek-v4-pro",
+    "api_key": "sk-ba3e2e93e6944cb490adcfd24e57c8eb",
+    "max_tokens": 114514,
+    "structured_max_tokens": 114514
+  },
+  "vllm": {
+    "enabled": true,
+    "base_url": "https://api.deepseek.com",
+    "model_name": "deepseek-v4-pro",
+    "api_key": "sk-ba3e2e93e6944cb490adcfd24e57c8eb"
+  },
+  "parallel": {
+    "cognition_max_workers": 100,
+    "cleaning_max_workers": 2,
+    "enable_parallel_cleaning": true
+  },
+  "telemetry": {
+    "enabled": true
+  },
+  "knowledge": {
+    "enabled": true
+  },
+  "investigation": {
+    "enabled": true
+  },
+  "data": {
+    "auto_generate_predict_split": false
+  }
+}

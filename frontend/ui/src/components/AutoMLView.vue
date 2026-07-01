@@ -18,6 +18,12 @@ const yGap = 40
 
 const engine = computed(() => String(props.snapshot?.auto_ml?.engine ?? 'mlevolve'))
 const nodes = computed(() => props.snapshot?.auto_ml?.nodes ?? [])
+const pendingNodes = computed(() => props.snapshot?.auto_ml?.pending_nodes ?? [])
+const visiblePendingNodes = computed(() => {
+  const seen = new Set(nodes.value.map((node) => node.id))
+  return pendingNodes.value.filter((node) => node.id && !seen.has(node.id))
+})
+const displayNodes = computed(() => [...nodes.value, ...visiblePendingNodes.value])
 const bestNodeId = computed(() => props.snapshot?.auto_ml?.best_node_id ?? null)
 const bestSolutionCode = computed(() => props.snapshot?.auto_ml?.best_solution_code ?? '')
 const bestMetricText = computed(() => props.snapshot?.auto_ml?.best_metric_text ?? '')
@@ -41,13 +47,13 @@ const terminalText = computed(() => {
 
 const nodeMap = computed(() => {
   const map = new Map<string, MctsNode>()
-  for (const node of nodes.value) map.set(node.id, node)
+  for (const node of displayNodes.value) map.set(node.id, node)
   return map
 })
 
 const childrenMap = computed(() => {
   const map = new Map<string, MctsNode[]>()
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     const parentId = node.parent_id ?? '__root__'
     if (!map.has(parentId)) map.set(parentId, [])
     map.get(parentId)?.push(node)
@@ -60,7 +66,7 @@ const childrenMap = computed(() => {
 
 const roots = computed(() => {
   const out: MctsNode[] = []
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     if (!node.parent_id || !nodeMap.value.has(node.parent_id)) out.push(node)
   }
   out.sort((a, b) => String(a.finish_time ?? '').localeCompare(String(b.finish_time ?? '')))
@@ -87,12 +93,12 @@ const graph = computed(() => {
   const depthMap = new Map<string, number>()
   const visited = new Set<string>()
   for (const root of roots.value) assignDepth(root, 0, depthMap, visited)
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     if (!depthMap.has(node.id)) depthMap.set(node.id, 0)
   }
 
   const levelMap = new Map<number, MctsNode[]>()
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     const depth = depthMap.get(node.id) ?? 0
     if (!levelMap.has(depth)) levelMap.set(depth, [])
     levelMap.get(depth)?.push(node)
@@ -118,7 +124,7 @@ const graph = computed(() => {
   }
 
   const edges: GraphEdge[] = []
-  for (const node of nodes.value) {
+  for (const node of displayNodes.value) {
     if (!node.parent_id || !nodeMap.value.has(node.parent_id)) continue
     edges.push({ from: node.parent_id, to: node.id, action: actionOf(node.stage) })
   }
@@ -131,7 +137,7 @@ const graph = computed(() => {
 })
 
 watch(
-  () => nodes.value,
+  () => displayNodes.value,
   (rows) => {
     if (!rows.length) {
       selectedNodeId.value = ''
@@ -150,7 +156,7 @@ const graphNodeMap = computed(() => {
   return map
 })
 
-const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) ?? null)
+const selectedNode = computed(() => displayNodes.value.find((node) => node.id === selectedNodeId.value) ?? null)
 
 function edgePath(from: string, to: string): string {
   const source = graphNodeMap.value.get(from)
@@ -166,7 +172,8 @@ function edgePath(from: string, to: string): string {
 
 function nodeClass(node: MctsNode): string[] {
   const classes = ['node-card']
-  if (bestNodeId.value && node.id === bestNodeId.value) classes.push('best')
+  if (isPendingNode(node)) classes.push('pending')
+  else if (bestNodeId.value && node.id === bestNodeId.value) classes.push('best')
   else if (node.is_buggy) classes.push('buggy')
   else if (node.metric !== null && node.metric !== undefined) classes.push('ok')
   else classes.push('unknown')
@@ -185,6 +192,35 @@ function shortMetric(value: number | null | undefined): string {
   if (value === null || value === undefined) return '-'
   return Number(value).toFixed(4)
 }
+
+function isPendingNode(node: MctsNode): boolean {
+  const status = String(node.status ?? '')
+  return Boolean(node.pending_execution) || ['generating', 'pending_execution', 'executing', 'cancelled', 'failed'].includes(status)
+}
+
+function nodeMetricLabel(node: MctsNode): string {
+  if (!isPendingNode(node)) return shortMetric(node.metric)
+  if (String(node.status ?? '') === 'generating') return 'generating'
+  if (String(node.status ?? '') === 'failed') return 'failed'
+  return String(node.status ?? '') === 'executing' ? 'executing' : 'pending'
+}
+
+function hasParserDetails(node: MctsNode): boolean {
+  return Boolean(node.parser_analysis || node.decision_signals)
+}
+
+function displayInsight(node: MctsNode): string {
+  return String(node.llm_insight || node.insight || '').trim() || '-'
+}
+
+function formatDecisionSignals(signals: Record<string, unknown> | null | undefined): string {
+  if (!signals) return ''
+  try {
+    return JSON.stringify(signals, null, 2)
+  } catch {
+    return String(signals)
+  }
+}
 </script>
 
 <template>
@@ -195,6 +231,7 @@ function shortMetric(value: number | null | undefined): string {
         <span class="dot ok"></span><span>无 bug 且有有效成绩</span>
         <span class="dot buggy"></span><span>运行存在 bug</span>
         <span class="dot best"></span><span>当前最优节点</span>
+        <span class="dot pending"></span><span>生成中 / 待执行草稿</span>
       </div>
       <div class="legend">
         <span class="line draft"></span><span>draft</span>
@@ -215,7 +252,7 @@ function shortMetric(value: number | null | undefined): string {
           <g v-for="node in graph.nodes" :key="node.id" class="tree-node" @click="selectedNodeId = node.id">
             <rect :x="node.x" :y="node.y" :width="nodeW" :height="nodeH" rx="10" :class="nodeClass(node)" />
             <text :x="node.x + 10" :y="node.y + 20" class="node-title">{{ node.stage || 'node' }}</text>
-            <text :x="node.x + 10" :y="node.y + 38" class="node-meta">score={{ shortMetric(node.metric) }}</text>
+            <text :x="node.x + 10" :y="node.y + 38" class="node-meta">score={{ nodeMetricLabel(node) }}</text>
             <text :x="node.x + 10" :y="node.y + 54" class="node-meta">uct={{ shortMetric(node.uct) }}</text>
             <text :x="node.x + 10" :y="node.y + 68" class="node-meta">v={{ node.visits ?? 0 }}</text>
           </g>
@@ -232,6 +269,7 @@ function shortMetric(value: number | null | undefined): string {
           <span>parent: {{ selectedNode.parent_id || '-' }}</span>
           <span>stage: {{ selectedNode.stage || '-' }}</span>
           <span>score: {{ selectedNode.metric ?? '-' }}</span>
+          <span v-if="selectedNode.status">status: {{ selectedNode.status }}</span>
           <span>uct: {{ selectedNode.uct ?? '-' }}</span>
           <span>visits: {{ selectedNode.visits ?? 0 }}</span>
           <span v-if="selectedNode.branch_id !== undefined">branch: {{ selectedNode.branch_id ?? '-' }}</span>
@@ -242,7 +280,14 @@ function shortMetric(value: number | null | undefined): string {
         <article class="block"><h5>Plan</h5><pre>{{ selectedNode.plan || '-' }}</pre></article>
         <article class="block"><h5>Code</h5><pre>{{ selectedNode.code || '-' }}</pre></article>
         <article class="block"><h5>运行结果</h5><pre>{{ selectedNode.result || '-' }}</pre></article>
-        <article class="block"><h5>Insight</h5><pre>{{ selectedNode.insight || '-' }}</pre></article>
+        <article class="block"><h5>LLM Insight</h5><pre>{{ displayInsight(selectedNode) }}</pre></article>
+        <details v-if="hasParserDetails(selectedNode)" class="block parser-details">
+          <summary>程序解析事实（给后续节点看的硬事实）</summary>
+          <h5 v-if="selectedNode.parser_analysis">Parser Analysis</h5>
+          <pre v-if="selectedNode.parser_analysis">{{ selectedNode.parser_analysis }}</pre>
+          <h5 v-if="selectedNode.decision_signals">Decision Signals</h5>
+          <pre v-if="selectedNode.decision_signals">{{ formatDecisionSignals(selectedNode.decision_signals) }}</pre>
+        </details>
       </div>
       <div v-else class="empty">请选择左侧一个节点</div>
     </div>
@@ -314,6 +359,10 @@ h4 {
 
 .dot.best {
   background: #d3a11f;
+}
+
+.dot.pending {
+  background: #9aa3af;
 }
 
 .line {
@@ -400,6 +449,12 @@ h4 {
   stroke: #b8c3d2;
 }
 
+.node-card.pending {
+  fill: #f1f3f5;
+  stroke: #8d98a7;
+  stroke-dasharray: 5 4;
+}
+
 .node-card.selected {
   stroke-width: 2.6;
   stroke: #2f5f9f;
@@ -434,6 +489,17 @@ h4 {
 
 .block h5 {
   margin: 0 0 6px;
+}
+
+.parser-details summary {
+  cursor: pointer;
+  color: #294b70;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.parser-details h5 {
+  margin-top: 8px;
 }
 
 .block pre {

@@ -87,8 +87,8 @@ def config_schema() -> dict[str, Any]:
         "properties": {
             "task_name": "Report task/run name.",
             "output_dir": "Directory where AutoReport writes report.md, report.json, events and state.",
-            "report_title": "Optional human-facing report title.",
-            "audience": "technical | executive | delivery; used to tune the LLM-written article.",
+            "report_title": "Optional human-facing delivery report title.",
+            "audience": "technical | executive | delivery; used to tune the solution delivery report.",
             "language": "zh-CN or en-US.",
             "evidence_paths": [
                 {
@@ -100,8 +100,8 @@ def config_schema() -> dict[str, Any]:
             ],
             "max_files_per_path": "Maximum files scanned below each evidence path.",
             "max_text_chars_per_file": "Maximum text excerpt read from each file.",
-            "include_raw_logs": "Whether raw logs may be read as evidence for the LLM. Logs are not pasted into the report body.",
-            "include_code_excerpt": "Whether best-solution code may be read as evidence for the LLM. Code is not pasted verbatim into the report body.",
+            "include_raw_logs": "Whether raw logs may be read as evidence for candidate comparison. Logs are not pasted into the report body.",
+            "include_code_excerpt": "Whether best-solution code may be read for method/interface extraction. Code is not pasted verbatim into the report body.",
             "use_llm": "Must be true. AutoReport is an LLM-written report generator and will fail when disabled.",
             "llm": {
                 "model": "Required model name.",

@@ -30,7 +30,16 @@ const subTab = reactive({ key: 'basic' })
 const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
 
 function normalizeLocalConfig() {
+  localConfig.auto_realize.run_data_cognition = true
+  localConfig.auto_realize.run_task_definition = true
   localConfig.auto_realize.enable_question_investigator = localConfig.auto_realize.enable_question_investigator !== false
+  localConfig.auto_realize.prefer_original_description = true
+  localConfig.auto_realize.direct_automl_from_description = false
+  localConfig.auto_realize.auto_generate_predict_split = false
+  localConfig.auto_realize.cognition_workers = localConfig.auto_realize.llm_concurrency
+  localConfig.auto_ml.enabled = true
+  localConfig.auto_ml.preprocess_data = true
+  localConfig.auto_ml.data_preview = true
 }
 
 normalizeLocalConfig()
@@ -55,14 +64,21 @@ watch(
 
 function propagateConfig() {
   localConfig.auto_report.use_llm = true
+  localConfig.auto_realize.run_data_cognition = true
+  localConfig.auto_realize.run_task_definition = true
   localConfig.auto_realize.run_data_cleaning = false
   localConfig.auto_realize.offline = false
   localConfig.auto_realize.enable_question_investigator = localConfig.auto_realize.enable_question_investigator !== false
-  localConfig.auto_realize.prefer_original_description = localConfig.auto_realize.prefer_original_description !== false
-  localConfig.auto_realize.direct_automl_from_description = !!localConfig.auto_realize.direct_automl_from_description
+  localConfig.auto_realize.prefer_original_description = true
+  localConfig.auto_realize.direct_automl_from_description = false
+  localConfig.auto_realize.auto_generate_predict_split = false
+  localConfig.auto_realize.cognition_workers = localConfig.auto_realize.llm_concurrency
   localConfig.auto_realize.no_knowledge = false
   localConfig.auto_realize.no_telemetry = false
   localConfig.auto_realize.no_llm_cache = false
+  localConfig.auto_ml.enabled = true
+  localConfig.auto_ml.preprocess_data = true
+  localConfig.auto_ml.data_preview = true
   emit('updateConfig', props.task.id, cloneDeep(localConfig))
 }
 
@@ -73,13 +89,11 @@ const canFullRerun = computed(() => props.task.status !== 'running' && localConf
 const canRerunAutoRealize = computed(() => props.task.status !== 'running' && localConfig.input_root.trim().length > 0 && localConfig.task_name.trim().length > 0)
 const canRerunAutoML = computed(() => {
   if (props.task.status === 'running') return false
-  if (!localConfig.auto_ml.enabled) return false
   if (!props.task.run_dir) return false
   return true
 })
 const canStartAutoML = computed(() => {
   if (props.task.status === 'running') return false
-  if (!localConfig.auto_ml.enabled) return false
   return localConfig.input_root.trim().length > 0 && localConfig.task_name.trim().length > 0
 })
 const canRerunAutoReport = computed(() => props.task.status !== 'running' && localConfig.auto_report.enabled && !!props.task.run_dir)
@@ -177,12 +191,6 @@ function onToggleEmbedding() {
   propagateConfig()
 }
 
-function onToggleDirectAutoML() {
-  if (localConfig.auto_realize.direct_automl_from_description) {
-    localConfig.auto_realize.prefer_original_description = true
-  }
-  propagateConfig()
-}
 </script>
 
 <template>
@@ -235,17 +243,11 @@ function onToggleDirectAutoML() {
       <div class="grid2">
         <label><span>LLM超时(秒)</span><input type="number" v-model.number="localConfig.auto_realize.llm_timeout" @input="propagateConfig" /></label>
         <label><span>LLM并发</span><input type="number" v-model.number="localConfig.auto_realize.llm_concurrency" @input="propagateConfig" /></label>
-        <label><span>认知并行Worker</span><input type="number" v-model.number="localConfig.auto_realize.cognition_workers" @input="propagateConfig" /></label>
       </div>
       <div class="switches">
-        <label><input type="checkbox" v-model="localConfig.auto_realize.run_data_cognition" @change="propagateConfig" /> 数据认知</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.run_task_definition" @change="propagateConfig" /> 任务定义</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.enable_question_investigator" @change="propagateConfig" /> 启用 Question-Driven Investigator</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.enable_fewshot" @change="propagateConfig" /> 启用 few-shot 示例</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.generate_sample_submission" @change="propagateConfig" /> 生成 sample_submission.csv</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.prefer_original_description" @change="propagateConfig" /> 优先使用原始 description.md</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.direct_automl_from_description" @change="onToggleDirectAutoML" /> 跳过 AutoRealize 直接跑 AutoML</label>
-        <label><input type="checkbox" v-model="localConfig.auto_realize.auto_generate_predict_split" @change="propagateConfig" /> 自动生成预测切分集</label>
         <label><input type="checkbox" v-model="localConfig.auto_realize.enable_vllm" @change="propagateConfig" /> 启用 VLLM 视觉模型</label>
       </div>
     </div>
@@ -265,7 +267,7 @@ function onToggleDirectAutoML() {
         <label><span>K折验证</span><input type="number" v-model.number="localConfig.auto_ml.k_fold_validation" @input="propagateConfig" /></label>
         <label v-if="autoMlEngine === 'mlevolve'"><span>初始草稿数</span><input type="number" v-model.number="localConfig.auto_ml.initial_drafts" @input="propagateConfig" /></label>
         <label v-if="autoMlEngine === 'mlevolve'"><span>执行超时(秒)</span><input type="number" v-model.number="localConfig.auto_ml.exec_timeout_secs" @input="propagateConfig" /></label>
-        <label><span>num_drafts</span><input type="number" v-model.number="localConfig.auto_ml.search_num_drafts" @input="propagateConfig" /></label>
+        <label><span>最大草稿数</span><input type="number" v-model.number="localConfig.auto_ml.search_num_drafts" @input="propagateConfig" /></label>
         <label><span>num_bugs</span><input type="number" v-model.number="localConfig.auto_ml.search_num_bugs" @input="propagateConfig" /></label>
         <label><span>num_improves</span><input type="number" v-model.number="localConfig.auto_ml.search_num_improves" @input="propagateConfig" /></label>
         <label><span>探索常数C</span><input type="number" step="0.001" v-model.number="localConfig.auto_ml.exploration_constant" @input="propagateConfig" /></label>
@@ -279,14 +281,11 @@ function onToggleDirectAutoML() {
         <input v-model="localConfig.auto_ml.eval" @input="propagateConfig" placeholder="补充评估约束，可空" />
       </label>
       <div class="switches">
-        <label><input type="checkbox" v-model="localConfig.auto_ml.enabled" @change="propagateConfig" /> 启用AutoML</label>
         <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.check_format" @change="propagateConfig" /> 检查submission格式</label>
         <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.expose_prediction" @change="propagateConfig" /> 暴露predict函数</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.generate_submission" @change="propagateConfig" /> 生成最终 submission.csv</label>
         <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.steerable_reasoning" @change="propagateConfig" /> steerable reasoning</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.preprocess_data" @change="propagateConfig" /> 预处理输入数据</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.copy_data" @change="propagateConfig" /> 复制数据到工作区</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.data_preview" @change="propagateConfig" /> 启用数据预览</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_diff_mode" @change="propagateConfig" /> 使用 diff patch 模式</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.check_data_leakage" @change="propagateConfig" /> 检查数据泄漏</label>
         <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_global_memory" @change="onToggleEmbedding" /> 启用 Embedding 记忆</label>

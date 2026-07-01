@@ -87,8 +87,7 @@ const stepStatus = computed(() => {
         continue
       }
       if (phase === 'report_completed') {
-        if (key === 'automl' && task?.config.auto_ml.enabled === false) out[key] = 'idle'
-        else out[key] = 'done'
+        out[key] = 'done'
         continue
       }
       out[key] = 'done'
