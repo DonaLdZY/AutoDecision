@@ -1,3 +1,15 @@
 runs/
 claude-code-main/
 ReportAgetnt/
+
+# Local runtime/dev state. These can contain machine-specific config, logs, and secrets.
+.dev-state/
+frontend/backend/.state/
+
+# External or removed optional engines.
+core/ML-Master-Alter/
+
+# Python/runtime artifacts.
+__pycache__/
+*.py[cod]
+*.log
