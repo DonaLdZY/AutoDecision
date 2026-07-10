@@ -1,8 +1,69 @@
-runs/
-claude-code-main/
-ReportAgetnt/
-.dev-state/
-frontend/backend/.state/
+# Operating system and editors
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+!frontend/ui/.vscode/
+!frontend/ui/.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python bytecode, environments, and packaging
 __pycache__/
 *.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Python tooling and test output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+
+# Frontend dependencies and build output
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.vite/
+frontend/ui/dist/
+
+# Runtime state and generated output
+runs/
+.dev-state/
+frontend/backend/.state/
 *.log
+*.pid
+*.out
+*.tmp
+*.bak
+
+# Local external checkouts and removed engines
+claude-code-main/
+ReportAgetnt/
+ReportAgent/
+core/ML-Master-Alter/
