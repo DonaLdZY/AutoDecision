@@ -6,7 +6,6 @@ $pidFile = Join-Path $stateDir "pids.json"
 
 $healthUrls = @{
   "autorealize-api" = "http://127.0.0.1:18101/health"
-  "automl-api" = "http://127.0.0.1:18102/health"
   "mlevolve-api" = "http://127.0.0.1:18103/health"
   "autoreport-api" = "http://127.0.0.1:18104/health"
   "gateway-api" = "http://127.0.0.1:18080/api/health"

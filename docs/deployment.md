@@ -28,10 +28,9 @@ bash ./scripts/dev-down.sh
 
 ## Docker 化建议
 
-推荐拆成 5 个服务：
+推荐拆成 4 个服务：
 
 - `autorealize-api`
-- `ml-master-api`
 - `mlevolve-api`
 - `gateway-api`
 - `frontend-ui`
@@ -40,7 +39,7 @@ bash ./scripts/dev-down.sh
 
 - 甲方正式对接建议只暴露 `gateway-api`
 - `frontend-ui` 可作为内部演示与运维界面
-- 三个 Core API 可放在内网网络中，不直接暴露公网
+- 两个 Core API 可放在内网网络中，不直接暴露公网
 
 ## 数据卷建议
 
@@ -64,3 +63,4 @@ bash ./scripts/dev-down.sh
 - MLEvolve 当前适配未改变其原始求解功能
 - 仅增加了服务包装、日志桥接、快照提取和运行目录可预测支持
 - 若要继续容器化，优先保持“服务包装层”和“核心求解逻辑”分离
+

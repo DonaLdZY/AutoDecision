@@ -1,9 +1,8 @@
-param(
+﻿param(
   [ValidateSet(
     "frontend", "frontend-ui", "ui",
     "gateway", "gateway-api", "backend",
     "autorealize", "autorealize-api",
-    "automl", "automl-api",
     "mlevolve", "mlevolve-api",
     "autoreport", "autoreport-api"
   )]
@@ -27,13 +26,6 @@ $serviceDefs = @{
     file = "python"
     args = @("-m", "uvicorn", "autorealize.service_api:app", "--host", "127.0.0.1", "--port", "18101")
     health = "http://127.0.0.1:18101/health"
-  }
-  "automl-api" = @{
-    port = 18102
-    workdir = Join-Path $root "core\ML-Master-Alter"
-    file = "python"
-    args = @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18102")
-    health = "http://127.0.0.1:18102/health"
   }
   "mlevolve-api" = @{
     port = 18103
@@ -74,8 +66,6 @@ $aliases = @{
   "backend" = "gateway-api"
   "autorealize" = "autorealize-api"
   "autorealize-api" = "autorealize-api"
-  "automl" = "automl-api"
-  "automl-api" = "automl-api"
   "mlevolve" = "mlevolve-api"
   "mlevolve-api" = "mlevolve-api"
   "autoreport" = "autoreport-api"
@@ -268,3 +258,4 @@ if ($Wait) {
 if ($Open -and $serviceName -eq "frontend-ui") {
   Start-Process "http://127.0.0.1:5173"
 }
+

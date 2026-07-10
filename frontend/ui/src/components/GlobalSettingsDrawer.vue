@@ -24,7 +24,7 @@ const envFilter = shallowRef('')
 const roleLabels: Array<{ key: keyof GlobalSettings['llm']['roleModels']; label: string; hint: string }> = [
   { key: 'autoRealize', label: 'AutoRealize 模型', hint: '数据认知、QDI、任务定义和 description 生成。' },
   { key: 'autoRealizeVision', label: 'AutoRealize 视觉模型', hint: '图片/视觉文件认知，受任务配置里的 VLLM 开关控制。' },
-  { key: 'autoMlCode', label: 'AutoML 编码模型', hint: 'MLEvolve/ML-Master 生成方案和代码。' },
+  { key: 'autoMlCode', label: 'AutoML 编码模型', hint: 'MLEvolve 生成方案和代码。' },
   { key: 'autoMlFeedback', label: 'AutoML feedback 模型', hint: '反馈、评审、修复建议和报告优先使用。' },
   { key: 'embedding', label: '向量化模型', hint: 'MLEvolve 全局记忆的远程 embedding 模型。' },
 ]
@@ -270,8 +270,7 @@ function saveCurrent() {
           <section v-else-if="activePage === 'services'" class="page">
             <h4>Core 服务编排</h4>
             <label><span>AutoRealize Base URL</span><input v-model="local.coreServices.autoRealizeBaseUrl" placeholder="http://127.0.0.1:18101" /></label>
-            <label><span>AutoML Base URL</span><input v-model="local.coreServices.autoMlBaseUrl" placeholder="http://127.0.0.1:18102" /></label>
-            <label><span>MLEvolve Base URL</span><input v-model="local.coreServices.mlevolveBaseUrl" placeholder="http://127.0.0.1:18103" /></label>
+            <label><span>AutoML / MLEvolve Base URL</span><input v-model="local.coreServices.mlevolveBaseUrl" placeholder="http://127.0.0.1:18103" /></label>
             <label><span>AutoReport Base URL</span><input v-model="local.coreServices.autoReportBaseUrl" placeholder="http://127.0.0.1:18104" /></label>
             <label><span>请求超时(秒)</span><input type="number" min="1" v-model.number="local.coreServices.requestTimeoutSecs" /></label>
           </section>

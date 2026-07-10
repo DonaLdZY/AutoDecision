@@ -58,7 +58,7 @@
 
 ```json
 {
-  "engine": "ml_master|mlevolve|autorealize",
+  "engine": "mlevolve|autorealize",
   "log_dir": "...",
   "workspace_dir": "...",
   "events": [],
@@ -90,3 +90,4 @@
 - 改变搜索策略核心行为
 - 改变默认命令行使用方式
 - 修改任务求解主逻辑结果
+

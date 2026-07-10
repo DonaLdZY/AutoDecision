@@ -10,15 +10,6 @@ services:
     volumes:
       - ../../:/app
 
-  ml-master-api:
-    image: autodecision/ml-master-api:dev
-    ports:
-      - '18102:18102'
-    command: uvicorn service_api:app --host 0.0.0.0 --port 18102
-    working_dir: /app/core/ML-Master-Alter
-    volumes:
-      - ../../:/app
-
   mlevolve-api:
     image: autodecision/mlevolve-api:dev
     ports:
@@ -40,7 +31,6 @@ services:
       PYTHONUNBUFFERED: '1'
     depends_on:
       - autorealize-api
-      - ml-master-api
       - mlevolve-api
 
   frontend-ui:

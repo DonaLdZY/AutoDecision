@@ -25,7 +25,7 @@
 }
 
 export interface AutoMLConfig {
-  engine: 'ml_master' | 'mlevolve' | string
+  engine: 'mlevolve' | string
   enabled: boolean
   steps: number
   time_limit_secs: number
@@ -147,7 +147,6 @@ export interface GlobalSettings {
   }
   coreServices: {
     autoRealizeBaseUrl: string
-    autoMlBaseUrl: string
     mlevolveBaseUrl: string
     autoReportBaseUrl: string
     requestTimeoutSecs: number

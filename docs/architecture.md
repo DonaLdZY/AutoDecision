@@ -16,7 +16,6 @@
 每个 Core 项目各自暴露独立 FastAPI：
 
 - `AutoRealize API`
-- `ML-Master API`
 - `MLEvolve API`
 
 职责：
@@ -42,7 +41,7 @@
 - 任务 CRUD
 - 全局配置管理
 - 任务运行目录编排
-- 先调 `AutoRealize` 再调 `ML-Master` / `MLEvolve`
+- 先调 `AutoRealize` 再调 `MLEvolve`
 - 汇总多服务快照
 - 管理重跑、终止、状态恢复
 
@@ -64,7 +63,6 @@
 AutoDecision/
   core/
     AutoRealize/
-    ML-Master-Alter/
     MLEvolve-Alter/
   frontend/
     ui/
@@ -90,7 +88,6 @@ AutoDecision/
 `gateway-api` 只能调用：
 
 - `AutoRealize API`
-- `ML-Master API`
 - `MLEvolve API`
 
 禁止：
@@ -152,7 +149,6 @@ runs/<task_name>/
 当前已经满足：
 
 - `AutoRealize` 通过 FastAPI 暴露
-- `ML-Master-Alter` 通过 FastAPI 暴露
 - `MLEvolve-Alter` 通过 FastAPI 暴露
 - Vue 前端只调用 `frontend/backend/app.py`
 - `frontend/backend/app.py` 只调用各 Core 的 FastAPI
@@ -166,3 +162,4 @@ runs/<task_name>/
 3. 将任务状态持久化从 JSON 文件切到 SQLite / PostgreSQL
 4. 为快照接口增加 WebSocket / SSE 实时推送
 5. 为每个服务分别制作 Docker 镜像
+

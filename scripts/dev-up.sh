@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 FORCE=0
@@ -12,7 +12,6 @@ LOG_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/pids.sh"
 
 AUTOREALIZE_DIR="$ROOT_DIR/core/AutoRealize"
-AUTOML_DIR="$ROOT_DIR/core/ML-Master-Alter"
 MLEVOLVE_DIR="$ROOT_DIR/core/MLEvolve-Alter"
 AUTOREPORT_DIR="$ROOT_DIR/core/AutoReport"
 GATEWAY_DIR="$ROOT_DIR/frontend/backend"
@@ -45,7 +44,7 @@ start_service() {
   local logfile="$LOG_DIR/${name}.log"
 
   if port_in_use "$port" && [[ "$FORCE" -ne 1 ]]; then
-    echo "端口 $port 已被占用，启动中止。可使用 --force 继续。"
+    echo "Port $port is already in use. Use --force or run ./scripts/dev-down.sh first."
     exit 1
   fi
 
@@ -61,15 +60,14 @@ start_service() {
 }
 
 if [[ -f "$PID_FILE" && "$FORCE" -ne 1 ]]; then
-  echo "检测到已有启动记录：$PID_FILE"
-  echo "请先执行 ./scripts/dev-down.sh，或使用 ./scripts/dev-up.sh --force"
+  echo "Detected existing state file: $PID_FILE"
+  echo "Run ./scripts/dev-down.sh first, or use ./scripts/dev-up.sh --force."
   exit 1
 fi
 
 rm -f "$STATE_DIR/.processes.tmp"
 
 start_service "autorealize-api" "$AUTOREALIZE_DIR" 18101 "uvicorn autorealize.service_api:app --host 127.0.0.1 --port 18101"
-start_service "automl-api" "$AUTOML_DIR" 18102 "uvicorn service_api:app --host 127.0.0.1 --port 18102"
 start_service "mlevolve-api" "$MLEVOLVE_DIR" 18103 "uvicorn service_api:app --host 127.0.0.1 --port 18103"
 start_service "autoreport-api" "$AUTOREPORT_DIR" 18104 "uvicorn service_api:app --host 127.0.0.1 --port 18104"
 start_service "gateway-api" "$GATEWAY_DIR" 18080 "uvicorn app:app --host 127.0.0.1 --port 18080"
@@ -88,12 +86,12 @@ chmod +x "$PID_FILE"
 rm -f "$STATE_DIR/.processes.tmp"
 
 echo
-echo "已启动全部服务（后台运行）:"
+echo "All services started in background:"
 echo "1) AutoRealize API: http://127.0.0.1:18101/health"
-echo "2) AutoML API:      http://127.0.0.1:18102/health"
-echo "3) MLEvolve API:    http://127.0.0.1:18103/health"
-echo "4) AutoReport API:  http://127.0.0.1:18104/health"
-echo "5) Gateway API:     http://127.0.0.1:18080/api/health"
-echo "6) Frontend UI:     http://127.0.0.1:5173"
+echo "2) MLEvolve API:    http://127.0.0.1:18103/health"
+echo "3) AutoReport API:  http://127.0.0.1:18104/health"
+echo "4) Gateway API:     http://127.0.0.1:18080/api/health"
+echo "5) Frontend UI:     http://127.0.0.1:5173"
 echo
-echo "停止全部服务：./scripts/dev-down.sh"
+echo "Stop all: ./scripts/dev-down.sh"
+

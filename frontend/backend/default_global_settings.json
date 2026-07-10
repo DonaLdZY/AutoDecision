@@ -101,7 +101,6 @@
   },
   "coreServices": {
     "autoRealizeBaseUrl": "http://127.0.0.1:18101",
-    "autoMlBaseUrl": "http://127.0.0.1:18102",
     "mlevolveBaseUrl": "http://127.0.0.1:18103",
     "autoReportBaseUrl": "http://127.0.0.1:18104",
     "requestTimeoutSecs": 10

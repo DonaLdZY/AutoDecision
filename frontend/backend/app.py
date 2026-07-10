@@ -28,7 +28,6 @@ BACKEND_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = APP_ROOT / "core"
 AUTOREALIZE_DIR = CORE_DIR / "AutoRealize"
-ML_MASTER_DIR = CORE_DIR / "ML-Master-Alter"
 MLEVOLVE_DIR = CORE_DIR / "MLEvolve-Alter"
 AUTOREPORT_DIR = CORE_DIR / "AutoReport"
 PROJECT_RUNS_DIR = APP_ROOT / "runs"
@@ -140,6 +139,16 @@ def safe_read_tail_lines(path: Path, limit: int = 400, *, byte_limit: int = 512_
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def normalize_automl_config_payload(config: Any) -> Any:
+    """Migrate legacy AutoML engine selections to the only supported engine."""
+    try:
+        config.auto_ml.engine = "mlevolve"
+        config.auto_ml.enabled = True
+    except Exception:
+        pass
+    return config
 
 
 def rel_str(path: Path, base: Path) -> str:
@@ -338,6 +347,10 @@ class TaskStore:
                     task.config.output_root = normalized_output_root
                     task.updated_at = now_ts()
                     changed = True
+                if str(task.config.auto_ml.engine or "").lower() != "mlevolve" or not task.config.auto_ml.enabled:
+                    normalize_automl_config_payload(task.config)
+                    task.updated_at = now_ts()
+                    changed = True
                 tasks[task.id] = task
             except Exception:
                 continue
@@ -407,6 +420,7 @@ class TaskStore:
 
     def create(self, payload: TaskConfigPayload) -> TaskModel:
         with self._lock:
+            normalize_automl_config_payload(payload)
             payload.output_root = normalize_output_root(payload.output_root)
             task_id = uuid.uuid4().hex
             ts = now_ts()
@@ -432,6 +446,7 @@ class TaskStore:
                 raise HTTPException(status_code=404, detail="task not found")
             if task.status == "running":
                 raise HTTPException(status_code=400, detail="running task cannot be edited")
+            normalize_automl_config_payload(payload)
             payload.output_root = normalize_output_root(payload.output_root)
             task.task_name = payload.task_name
             task.input_root = payload.input_root
@@ -565,6 +580,10 @@ def ensure_global_settings() -> dict[str, Any]:
     core_defaults = defaults.get("coreServices", {})
     core_current = current.get("coreServices", {})
     merged["coreServices"] = {**core_defaults, **core_current}
+    merged["coreServices"].pop("autoMlBaseUrl", None)
+    merged["coreServices"]["mlevolveBaseUrl"] = str(
+        merged["coreServices"].get("mlevolveBaseUrl") or "http://127.0.0.1:18103"
+    )
     mlevolve_defaults = defaults.get("mlevolve", {})
     mlevolve_current = current.get("mlevolve", {})
     merged["mlevolve"] = {**mlevolve_defaults, **mlevolve_current}
@@ -1691,87 +1710,7 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
 
 
 def _automl_engine(task: TaskModel) -> str:
-    raw = str(getattr(task.config.auto_ml, "engine", "mlevolve") or "mlevolve").strip().lower()
-    if raw in {"mlevolve", "ml-evolve", "ml_evolve"}:
-        return "mlevolve"
-    return "ml_master"
-
-
-def _build_ml_master_command(
-    task: TaskModel,
-    gs: GlobalSettingsModel,
-    autorealize_dir: Path,
-    automl_logs_root: Path,
-    automl_workspaces_root: Path,
-    exp_name: str | None = None,
-) -> list[str]:
-    am = task.config.auto_ml
-    llm = gs.llm
-    code_model = _selected_model(llm, "autoMlCode")
-    feedback_model = _selected_model(llm, "autoMlFeedback", fallback_role="autoMlCode")
-    py = gs.python.get("executable", "python")
-
-    exp_name = exp_name or task.task_name
-
-    def _as_cli_str(value: Any, default: str = "") -> str:
-        # Use JSON string encoding so OmegaConf.from_cli receives a real string
-        # even when value is empty; avoid parsing empty override as None.
-        v = default if value is None else str(value)
-        return json.dumps(v, ensure_ascii=False)
-
-    cmd = [
-        py,
-        "main_mcts.py",
-        f"data_dir={str(autorealize_dir)}",
-        f"dataset_dir={str(autorealize_dir.parent)}",
-        "template_file=./instruction/instruction_template.txt",
-        f"exp_name={exp_name}",
-        "start_cpu_id=0",
-        f"cpu_number={int(gs.resource.get('cpuLimit', 4))}",
-        f"agent.steps={am.steps}",
-        f"agent.time_limit={am.time_limit_secs}",
-        f"agent.k_fold_validation={am.k_fold_validation}",
-        f"agent.check_format={'true' if am.check_format else 'false'}",
-        f"agent.expose_prediction={'true' if am.expose_prediction else 'false'}",
-        f"agent.steerable_reasoning={'true' if am.steerable_reasoning else 'false'}",
-        f"agent.search.parallel_search_num={am.parallel_search_num}",
-        f"agent.search.num_drafts={am.search_num_drafts}",
-        f"agent.search.num_bugs={am.search_num_bugs}",
-        f"agent.search.num_improves={am.search_num_improves}",
-        f"agent.search.max_debug_depth={am.search_max_debug_depth}",
-        f"agent.search.back_debug_depth={am.search_back_debug_depth}",
-        f"agent.search.metric_improvement_threshold={am.metric_improvement_threshold}",
-        f"agent.search.invalid_metric_upper_bound={am.invalid_metric_upper_bound}",
-        f"agent.search.max_improve_failure={am.max_improve_failure}",
-        f"agent.decay.decay_type={am.decay_type}",
-        f"agent.decay.exploration_constant={am.exploration_constant}",
-        f"agent.decay.lower_bound={am.lower_bound}",
-        f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
-        f"agent.code.temp=0.5",
-        f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.code.api_key={_as_cli_str(_model_cli_value(code_model, 'apiKey', ''), '')}",
-        f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
-        f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
-        f"agent.feedback.model={_as_cli_str(_model_cli_value(feedback_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
-        f"agent.feedback.temp=0.5",
-        f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.feedback.api_key={_as_cli_str(_model_cli_value(feedback_model, 'apiKey', ''), '')}",
-        f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
-        f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
-        f"log_dir={str(automl_logs_root)}",
-        f"workspace_dir={str(automl_workspaces_root)}",
-    ]
-    code_max_tokens = _model_max_tokens_cli(code_model)
-    feedback_max_tokens = _model_max_tokens_cli(feedback_model)
-    if code_max_tokens is not None:
-        cmd.append(f"agent.code.max_tokens={code_max_tokens}")
-    if feedback_max_tokens is not None:
-        cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
-    if am.goal:
-        cmd.append(f"goal={_as_cli_str(am.goal)}")
-    if am.eval:
-        cmd.append(f"eval={_as_cli_str(am.eval)}")
-    return cmd
+    return "mlevolve"
 
 
 def _mlevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
@@ -2021,14 +1960,13 @@ def _json_get(base_url: str, path: str, timeout_secs: int = 15) -> dict[str, Any
     raise RuntimeError(f"GET {url} failed: {last_error}")
 
 
-def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, str, int]:
+def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, int]:
     core = gs.coreServices or {}
     ar_base = str(core.get("autoRealizeBaseUrl") or "http://127.0.0.1:18101").strip().rstrip("/")
-    ml_base = str(core.get("autoMlBaseUrl") or "http://127.0.0.1:18102").strip().rstrip("/")
     mlevolve_base = str(core.get("mlevolveBaseUrl") or "http://127.0.0.1:18103").strip().rstrip("/")
     report_base = str(core.get("autoReportBaseUrl") or "http://127.0.0.1:18104").strip().rstrip("/")
     timeout_secs = int(core.get("requestTimeoutSecs") or 10)
-    return ar_base, ml_base, mlevolve_base, report_base, timeout_secs
+    return ar_base, mlevolve_base, report_base, timeout_secs
 
 
 def _poll_remote_job(base_url: str, job_id: str, timeout_secs: int = 15) -> dict[str, Any]:
@@ -2065,6 +2003,19 @@ def _is_interrupted_exit_code(exit_code: Any) -> bool:
         return False
     # Windows CTRL_C_EVENT/CTRL_BREAK_EVENT is reported as 0xC000013A.
     return code in {3221225786, -1073741510, 130, -2, -15}
+
+
+def _is_automl_budget_exhausted_status(status: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(status.get(key) or "")
+        for key in ("last_error", "stdout_tail", "stderr_tail")
+    )
+    return (
+        "search budget was exhausted" in text
+        or "Search budget is exhausted" in text
+        or "MLEvolve search budget exhausted" in text
+        or "Time limit reached (configured=" in text
+    )
 
 
 def _autorealize_outputs_ready(autorealize_dir: Path, *, require_sample_submission: bool = True) -> bool:
@@ -2276,7 +2227,7 @@ def _start_task_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        ar_base, ml_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        ar_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
         input_root, output_root = _validate_start(task)
         run_started_at = now_ts()
         layout = _task_layout(task, output_root)
@@ -2347,7 +2298,6 @@ def _start_task_thread(task_id: str) -> None:
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
             env=env,
-            ml_service_base=ml_base,
             mlevolve_service_base=mlevolve_base,
             req_timeout=req_timeout,
         )
@@ -2392,38 +2342,24 @@ def _run_automl_stage(
     ml_log_dir: Path,
     ml_ws_dir: Path,
     env: dict[str, str],
-    ml_service_base: str,
     mlevolve_service_base: str,
     req_timeout: int,
     resume_existing: bool = False,
 ) -> bool:
     engine = _automl_engine(task)
-    if engine == "mlevolve":
-        mlevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
-        mlevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
-        ml_cmd = _build_mlevolve_command(
-            task,
-            gs,
-            autorealize_dir=autorealize_dir,
-            automl_logs_root=mlevolve_log_dir,
-            automl_workspaces_root=mlevolve_workspace_dir,
-            exp_name=exp_name,
-        )
-        service_base = mlevolve_service_base
-        working_dir = str(MLEVOLVE_DIR)
-        graceful_shutdown_buffer_secs = 600
-    else:
-        ml_cmd = _build_ml_master_command(
-            task,
-            gs,
-            autorealize_dir=autorealize_dir,
-            automl_logs_root=automl_logs_root,
-            automl_workspaces_root=automl_workspaces_root,
-            exp_name=exp_name,
-        )
-        service_base = ml_service_base
-        working_dir = str(ML_MASTER_DIR)
-        graceful_shutdown_buffer_secs = 600
+    mlevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
+    mlevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
+    ml_cmd = _build_mlevolve_command(
+        task,
+        gs,
+        autorealize_dir=autorealize_dir,
+        automl_logs_root=mlevolve_log_dir,
+        automl_workspaces_root=mlevolve_workspace_dir,
+        exp_name=exp_name,
+    )
+    service_base = mlevolve_service_base
+    working_dir = str(MLEVOLVE_DIR)
+    graceful_shutdown_buffer_secs = 600
 
     store.set_status(
         task_id,
@@ -2440,12 +2376,11 @@ def _run_automl_stage(
             "working_dir": working_dir,
             "env_overrides": {"DEEPSEEK_API_KEY": str((_selected_model(gs.llm, "autoMlCode") or {}).get("apiKey") or "")},
             "args": ml_cmd[2:],
-            "log_dir": str((ml_log_dir if resume_existing else automl_logs_root) if engine == "mlevolve" else ml_log_dir),
-            "workspace_dir": str((ml_ws_dir if resume_existing else automl_workspaces_root) if engine == "mlevolve" else ml_ws_dir),
+            "log_dir": str(mlevolve_log_dir),
+            "workspace_dir": str(mlevolve_workspace_dir),
             "graceful_shutdown_buffer_secs": graceful_shutdown_buffer_secs,
+            "resume": bool(resume_existing),
         }
-        if engine == "mlevolve":
-            start_payload["resume"] = bool(resume_existing)
         ml_start = _json_post(
             service_base,
             "/jobs/start",
@@ -2492,6 +2427,7 @@ def _run_automl_stage(
     ml_stdout = str(ml_status.get("stdout_tail") or "")
     ml_stderr = str(ml_status.get("stderr_tail") or "")
     ml_code = ml_status.get("exit_code")
+    ml_budget_exhausted = _is_automl_budget_exhausted_status(ml_status)
     if ml_code is None and ml_state == "completed":
         ml_code = 0
     try:
@@ -2502,13 +2438,16 @@ def _run_automl_stage(
             (ml_log_dir / "_frontend_stderr.log").write_text(ml_stderr[-200000:], encoding="utf-8", errors="ignore")
     except Exception:
         pass
-    if ml_state == "stopped" or _is_interrupted_exit_code(ml_code):
+    if ml_budget_exhausted and ml_state in {"completed", "stopped"}:
+        store.set_status(task_id, status="running", phase="automl_completed", last_error=None)
+        return True
+    if ml_state == "stopped" or (_is_interrupted_exit_code(ml_code) and not ml_budget_exhausted):
         stop_msg = str(ml_status.get("last_error") or "").strip()
         if not stop_msg:
             stop_msg = f"AutoML interrupted by console/control signal (exit code {ml_code})."
         store.set_status(task_id, status="stopped", phase="stopped", last_error=stop_msg)
         return False
-    if ml_state != "completed" or ml_code != 0:
+    if ml_state != "completed" or (ml_code != 0 and not ml_budget_exhausted):
         err_hint = ""
         tail = (ml_stderr or ml_stdout or str(ml_status.get("last_error") or "")).strip()
         if tail:
@@ -2518,6 +2457,8 @@ def _run_automl_stage(
             msg = f"{msg}: {err_hint}"
         store.set_status(task_id, status="failed", phase="automl_failed", last_error=msg)
         return False
+    if ml_budget_exhausted:
+        store.set_status(task_id, status="running", phase="automl_completed", last_error=None)
     return True
 
 
@@ -2525,7 +2466,7 @@ def _rerun_autorealize_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        ar_base, _ml_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        ar_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
         input_root, run_dir, autorealize_dir, _automl_root, _report_dir = _validate_autorealize_rerun(task)
 
         store.set_status(
@@ -2586,7 +2527,7 @@ def _rerun_autoreport_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        _ar_base, _ml_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        _ar_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
         run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, report_dir = _validate_autoreport_rerun(task)
 
         store.set_status(
@@ -2656,7 +2597,7 @@ def _rerun_autoreport_thread(task_id: str) -> None:
 def _rerun_automl_thread(task_id: str) -> None:
     task = store.get(task_id)
     gs = get_global_settings()
-    _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     autorealize_dir, automl_logs_root, automl_workspaces_root, _old_ml_log_dir, _old_ml_ws_dir = _validate_automl_rerun(task)
     run_dir = _resolve_task_run_dir_for_rerun(task)
     if _direct_mode_enabled(task):
@@ -2715,7 +2656,6 @@ def _rerun_automl_thread(task_id: str) -> None:
         ml_log_dir=ml_log_dir,
         ml_ws_dir=ml_ws_dir,
         env=env,
-        ml_service_base=ml_base,
         mlevolve_service_base=mlevolve_base,
         req_timeout=req_timeout,
     )
@@ -2728,7 +2668,7 @@ def _start_direct_automl_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
         input_root, run_dir, autorealize_dir, automl_logs_root, automl_workspaces_root = _validate_direct_automl_start(task)
 
         # Persist direct mode so later snapshot/rerun/resume paths use the same
@@ -2798,7 +2738,6 @@ def _start_direct_automl_thread(task_id: str) -> None:
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
             env=env,
-            ml_service_base=ml_base,
             mlevolve_service_base=mlevolve_base,
             req_timeout=req_timeout,
         )
@@ -2820,7 +2759,7 @@ def _resume_task_thread(task_id: str) -> None:
         return
 
     gs = get_global_settings()
-    ar_base, ml_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    ar_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
 
     if not task.input_root.strip() or not task.output_root.strip():
         store.set_status(task_id, status="failed", phase="resume_failed", last_error="缺少输入或输出目录配置，无法继续")
@@ -2955,7 +2894,6 @@ def _resume_task_thread(task_id: str) -> None:
         ml_log_dir=ml_log_dir,
         ml_ws_dir=ml_ws_dir,
         env=env,
-        ml_service_base=ml_base,
         mlevolve_service_base=mlevolve_base,
         req_timeout=req_timeout,
         resume_existing=can_resume_automl,
@@ -3319,12 +3257,13 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "log_dir": str(log_dir),
         "workspace_dir": str(ws_dir) if ws_dir is not None else "",
         "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400)
-        or _parse_log_events_tail_local(log_dir / ("MLEvolve.log" if engine == "mlevolve" else "ml-master.log"), limit=400),
+        or _parse_log_events_tail_local(log_dir / "MLEvolve.log", limit=400),
         "nodes": nodes,
         "pending_nodes": pending_nodes,
         "best_node_id": best_id,
         "journal_source": journal_source,
-        "ml_log": safe_read_text_tail(log_dir / "ml-master.log", limit=60000),
+        "run_status": safe_read_json(log_dir / "run_status.json", {}),
+        "ml_log": safe_read_text_tail(log_dir / "MLEvolve.log", limit=60000),
         "verbose_log": safe_read_text_tail(log_dir / "MLEvolve.verbose.log", limit=60000),
         "frontend_stdout": safe_read_text_tail(log_dir / "_frontend_stdout.log", limit=60000),
         "frontend_stderr": safe_read_text_tail(log_dir / "_frontend_stderr.log", limit=60000),
@@ -3380,7 +3319,7 @@ def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     if not task.run_dir:
         return {}
     gs = get_global_settings()
-    ar_base, _ml_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    ar_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     try:
         payload = {"run_dir": str(task.run_dir)}
         return _json_post(ar_base, "/snapshot", payload, timeout_secs=req_timeout)
@@ -3393,7 +3332,7 @@ def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
 
 def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
-    _ar_base, ml_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     engine = _automl_engine(task)
     local = _build_local_automl_snapshot(task)
     if local:
@@ -3406,8 +3345,7 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "task_name": str(task.task_name or ""),
     }
     try:
-        base_url = mlevolve_base if engine == "mlevolve" else ml_base
-        remote = _json_post(base_url, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
+        remote = _json_post(mlevolve_base, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
         remote["snapshot_source"] = "remote"
         return remote
     except Exception:
@@ -3416,7 +3354,7 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
 
 def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
-    _ar_base, _ml_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
     report_dir = task.report_dir or (str(Path(task.run_dir).expanduser().resolve() / "report") if task.run_dir else "")
     if not report_dir:
         return {}
@@ -4156,5 +4094,6 @@ def list_python_environments(current: str = "") -> list[dict[str, Any]]:
     current_exe = current.strip() or str(gs.python.get("executable", "")).strip()
     envs = discover_python_environments(current=current_exe)
     return [x.model_dump() for x in envs]
+
 
 

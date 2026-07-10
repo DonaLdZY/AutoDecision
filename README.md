@@ -3,11 +3,10 @@
 AutoDecision 开发模式由多个本地服务组成：
 
 1. `AutoRealize API`：`http://127.0.0.1:18101`
-2. `ML-Master API`：`http://127.0.0.1:18102`
-3. `MLEvolve API`：`http://127.0.0.1:18103`
-4. `AutoReport API`：`http://127.0.0.1:18104`
-5. `Gateway API`：`http://127.0.0.1:18080`
-6. `Vue Frontend`：`http://127.0.0.1:5173`
+2. `MLEvolve API`：`http://127.0.0.1:18103`
+3. `AutoReport API`：`http://127.0.0.1:18104`
+4. `Gateway API`：`http://127.0.0.1:18080`
+5. `Vue Frontend`：`http://127.0.0.1:5173`
 
 前端只访问 Gateway API，Gateway 再通过 HTTP 调用各个 Core 服务。
 
@@ -114,13 +113,6 @@ cd core/AutoRealize
 uvicorn autorealize.service_api:app --host 127.0.0.1 --port 18101
 ```
 
-ML-Master API：
-
-```bash
-cd core/ML-Master-Alter
-uvicorn service_api:app --host 127.0.0.1 --port 18102
-```
-
 MLEvolve API：
 
 ```bash
@@ -160,3 +152,5 @@ http://127.0.0.1:5173
 1. 端口被占用：先运行 `scripts/dev-down.ps1` 或 `scripts/dev-down.sh`，必要时使用 `-Force` / `--force`。
 2. 前端报 502：通常是某个 Core API 没启动，用状态脚本或访问 `/health` 检查。
 3. 想看原始终端输出：后台启动时输出会写入 `.dev-state/logs/`，用 `dev-logs.ps1` 查看。
+
+

@@ -28,6 +28,7 @@ IMPORTANT_NAMES = {
     "report.json",
     "report.md",
     "run_summary.json",
+    "run_status.json",
     "current_state.json",
     "event_stream.jsonl",
     "journal.json",

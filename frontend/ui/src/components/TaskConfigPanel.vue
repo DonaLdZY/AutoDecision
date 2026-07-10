@@ -37,6 +37,7 @@ function normalizeLocalConfig() {
   localConfig.auto_realize.direct_automl_from_description = false
   localConfig.auto_realize.auto_generate_predict_split = false
   localConfig.auto_realize.cognition_workers = localConfig.auto_realize.llm_concurrency
+  localConfig.auto_ml.engine = 'mlevolve'
   localConfig.auto_ml.enabled = true
   localConfig.auto_ml.preprocess_data = true
   localConfig.auto_ml.data_preview = true
@@ -76,6 +77,7 @@ function propagateConfig() {
   localConfig.auto_realize.no_knowledge = false
   localConfig.auto_realize.no_telemetry = false
   localConfig.auto_realize.no_llm_cache = false
+  localConfig.auto_ml.engine = 'mlevolve'
   localConfig.auto_ml.enabled = true
   localConfig.auto_ml.preprocess_data = true
   localConfig.auto_ml.data_preview = true
@@ -102,7 +104,6 @@ const canResume = computed(() => {
   if (!localConfig.input_root.trim() || !localConfig.task_name.trim()) return false
   return ['failed', 'stopped'].includes(String(props.task.status))
 })
-const autoMlEngine = computed(() => String(localConfig.auto_ml.engine || 'mlevolve').toLowerCase())
 const embeddingEnabled = computed(() => !!localConfig.auto_ml.use_global_memory)
 const embeddingMode = computed({
   get: () => (String(localConfig.auto_ml.memory_embedding_backend || '').toLowerCase() === 'local' ? 'local' : 'remote'),
@@ -253,20 +254,13 @@ function onToggleEmbedding() {
     </div>
 
     <div class="sub-body" v-else-if="subTab.key === 'automl'">
-      <label>
-        <span>AutoML 引擎</span>
-        <select v-model="localConfig.auto_ml.engine" @change="propagateConfig">
-          <option value="ml_master">ML-Master</option>
-          <option value="mlevolve">MLEvolve</option>
-        </select>
-      </label>
       <div class="grid2">
         <label><span>搜索步数</span><input type="number" v-model.number="localConfig.auto_ml.steps" @input="propagateConfig" /></label>
         <label><span>总时限(秒)</span><input type="number" v-model.number="localConfig.auto_ml.time_limit_secs" @input="propagateConfig" /></label>
         <label><span>并行搜索数</span><input type="number" v-model.number="localConfig.auto_ml.parallel_search_num" @input="propagateConfig" /></label>
         <label><span>K折验证</span><input type="number" v-model.number="localConfig.auto_ml.k_fold_validation" @input="propagateConfig" /></label>
-        <label v-if="autoMlEngine === 'mlevolve'"><span>初始草稿数</span><input type="number" v-model.number="localConfig.auto_ml.initial_drafts" @input="propagateConfig" /></label>
-        <label v-if="autoMlEngine === 'mlevolve'"><span>执行超时(秒)</span><input type="number" v-model.number="localConfig.auto_ml.exec_timeout_secs" @input="propagateConfig" /></label>
+        <label><span>初始草稿数</span><input type="number" v-model.number="localConfig.auto_ml.initial_drafts" @input="propagateConfig" /></label>
+        <label><span>执行超时(秒)</span><input type="number" v-model.number="localConfig.auto_ml.exec_timeout_secs" @input="propagateConfig" /></label>
         <label><span>最大草稿数</span><input type="number" v-model.number="localConfig.auto_ml.search_num_drafts" @input="propagateConfig" /></label>
         <label><span>num_bugs</span><input type="number" v-model.number="localConfig.auto_ml.search_num_bugs" @input="propagateConfig" /></label>
         <label><span>num_improves</span><input type="number" v-model.number="localConfig.auto_ml.search_num_improves" @input="propagateConfig" /></label>
@@ -281,18 +275,15 @@ function onToggleEmbedding() {
         <input v-model="localConfig.auto_ml.eval" @input="propagateConfig" placeholder="补充评估约束，可空" />
       </label>
       <div class="switches">
-        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.check_format" @change="propagateConfig" /> 检查submission格式</label>
-        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.expose_prediction" @change="propagateConfig" /> 暴露predict函数</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.generate_submission" @change="propagateConfig" /> 生成最终 submission.csv</label>
-        <label v-if="autoMlEngine !== 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.steerable_reasoning" @change="propagateConfig" /> steerable reasoning</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.copy_data" @change="propagateConfig" /> 复制数据到工作区</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_diff_mode" @change="propagateConfig" /> 使用 diff patch 模式</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.check_data_leakage" @change="propagateConfig" /> 检查数据泄漏</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_global_memory" @change="onToggleEmbedding" /> 启用 Embedding 记忆</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_coldstart" @change="propagateConfig" /> 启用 cold-start</label>
-        <label v-if="autoMlEngine === 'mlevolve'"><input type="checkbox" v-model="localConfig.auto_ml.use_grading_server" @change="propagateConfig" /> 启用 grading server</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.generate_submission" @change="propagateConfig" /> 生成最终 submission.csv</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.copy_data" @change="propagateConfig" /> 复制数据到工作区</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.use_diff_mode" @change="propagateConfig" /> 使用 diff patch 模式</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.check_data_leakage" @change="propagateConfig" /> 检查数据泄漏</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.use_global_memory" @change="onToggleEmbedding" /> 启用 Embedding 记忆</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.use_coldstart" @change="propagateConfig" /> 启用 cold-start</label>
+        <label><input type="checkbox" v-model="localConfig.auto_ml.use_grading_server" @change="propagateConfig" /> 启用 grading server</label>
       </div>
-      <div v-if="autoMlEngine === 'mlevolve' && embeddingEnabled" class="grid2">
+      <div v-if="embeddingEnabled" class="grid2">
         <label><span>Memory 相似度阈值</span><input type="number" step="0.01" v-model.number="localConfig.auto_ml.memory_similarity_threshold" @input="propagateConfig" /></label>
         <label>
           <span>Embedding 类型</span>

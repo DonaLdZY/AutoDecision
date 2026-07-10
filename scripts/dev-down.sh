@@ -7,7 +7,7 @@ PID_FILE="$STATE_DIR/pids.sh"
 
 if [[ ! -f "$PID_FILE" ]]; then
   echo "State file not found: $PID_FILE"
-  echo "If processes still exist, check ports 18101/18102/18103/18104/18080/5173 manually."
+  echo "If processes still exist, check ports 18101/18103/18104/18080/5173 manually."
   exit 0
 fi
 
@@ -36,3 +36,4 @@ done
 
 rm -f "$PID_FILE"
 echo "State file removed."
+
