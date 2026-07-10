@@ -1,0 +1,3 @@
+[submodule "core/AutoReport"]
+	path = core/AutoReport
+	url = https://github.com/DonaLdZY/AutoReport.git
