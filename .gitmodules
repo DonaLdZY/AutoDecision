@@ -1,3 +1,9 @@
+[submodule "core/AutoRealize"]
+	path = core/AutoRealize
+	url = https://github.com/DonaLdZY/AutoRealize.git
+[submodule "core/MLEvolve-Alter"]
+	path = core/MLEvolve-Alter
+	url = https://github.com/DonaLdZY/MLEvolve-Alter.git
 [submodule "core/AutoReport"]
 	path = core/AutoReport
 	url = https://github.com/DonaLdZY/AutoReport.git
