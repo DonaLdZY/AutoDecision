@@ -13,8 +13,8 @@ Desktop.ini
 # Local environment and secrets
 .env
 .env.*
-!.env.example
-!.env.*.example
+replacements.txt
+gitleaks-report.*
 
 # Python bytecode, environments, and packaging
 __pycache__/
@@ -56,6 +56,7 @@ frontend/ui/dist/
 runs/
 .dev-state/
 frontend/backend/.state/
+frontend/config/global_settings.yaml
 *.log
 *.pid
 *.out

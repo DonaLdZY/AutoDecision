@@ -74,6 +74,16 @@ export interface AutoReportConfig {
   use_llm: boolean
 }
 
+export type AcceleratorMode = 'all' | 'selected' | 'none'
+
+export interface TaskResourceConfig {
+  cpu_cores: number
+  memory_limit_gb: number
+  accelerator_mode: AcceleratorMode
+  accelerator_device_ids: string[]
+  monitor_interval_seconds: number
+}
+
 export interface TaskConfig {
   task_name: string
   input_root: string
@@ -81,6 +91,7 @@ export interface TaskConfig {
   auto_realize: AutoRealizeConfig
   auto_ml: AutoMLConfig
   auto_report: AutoReportConfig
+  resources: TaskResourceConfig
 }
 
 export interface Task {
@@ -104,10 +115,6 @@ export interface Task {
 export interface GlobalSettings {
   python: {
     executable: string
-  }
-  resource: {
-    cpuLimit: number
-    memoryLimitGb: number
   }
   llm: {
     modelLibrary: ModelConfig[]
@@ -156,6 +163,7 @@ export interface GlobalSettings {
     pretrainModelDir: string
     embeddingBaseUrl: string
     embeddingApiKey: string
+    embeddingApiKeyConfigured?: boolean
     embeddingModel: string
   }
 }
@@ -166,6 +174,7 @@ export interface ModelConfig {
   model: string
   baseUrl: string
   apiKey: string
+  apiKeyConfigured?: boolean
   thinkingMode: 'default' | 'enabled' | 'disabled' | string
   reasoningEffort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string
   maxTokens: number | '' | null
@@ -221,6 +230,7 @@ export interface SnapshotPayload {
     frontend_stderr?: string
     service_stdout?: string
     service_stderr?: string
+    resource_usage?: Record<string, unknown>
   }
   auto_report?: {
     output_dir?: string
@@ -273,5 +283,72 @@ export interface PythonEnvironment {
   version: string
   source: string
   exists: boolean
+}
+
+export interface AcceleratorDevice {
+  id: string
+  backend: string
+  index: number
+  name: string
+  vendor: string
+  uuid: string
+  memory_mb: number
+  visibility_env: string
+  visibility_supported: boolean
+  runtime_available: boolean
+  source: string
+}
+
+export interface ResourceInventory {
+  platform?: {
+    system: string
+    release: string
+    machine: string
+    python_platform: string
+  }
+  cpu: {
+    logical_count: number
+    physical_count: number
+    available_ids: number[]
+    affinity_supported: boolean
+    enforcement?: {
+      backend: string
+      hard_limit: boolean
+      total_process_tree: boolean
+      exact_core_set: boolean
+    }
+  }
+  memory: {
+    total_bytes: number
+    total_gb: number
+    enforcement?: {
+      backend: string
+      hard_limit_supported: boolean
+      total_process_tree: boolean
+      over_limit_behavior: string
+      whole_task_termination: boolean
+    }
+  }
+  devices: AcceleratorDevice[]
+  accelerator?: {
+    backend: string
+    isolatable_device_ids: string[]
+    non_isolatable_device_ids: string[]
+    mode_none_fully_enforced: boolean
+    exclusive_reservation: boolean
+    vram_quota: boolean
+  }
+  torch: {
+    version: string
+    python_executable?: string
+    probe_source?: string
+    cuda_available: boolean
+    cuda_count: number
+    hip_version: string
+    xpu_available: boolean
+    xpu_count: number
+    mps_available: boolean
+    error?: string
+  }
 }
 

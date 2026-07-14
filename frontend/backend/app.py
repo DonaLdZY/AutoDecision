@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import csv
+import hmac
 import json
 import os
 import re
@@ -14,13 +15,16 @@ import time
 import uuid
 import locale
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+import yaml
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -36,13 +40,32 @@ LEGACY_AUTOREALIZE_RUNS_DIR = AUTOREALIZE_DIR / "runs"
 LEGACY_BACKEND_RUNS_DIR = BACKEND_DIR / "runs"
 STATE_DIR = BACKEND_DIR / ".state"
 TASKS_FILE = STATE_DIR / "tasks.json"
-GLOBAL_SETTINGS_FILE = STATE_DIR / "global_settings.json"
-DEFAULT_GLOBAL_SETTINGS_FILE = Path(__file__).resolve().parent / "default_global_settings.json"
+GLOBAL_SETTINGS_FILE = Path(
+    os.environ.get(
+        "AUTODECISION_GLOBAL_SETTINGS_PATH",
+        str(APP_ROOT / "frontend" / "config" / "global_settings.yaml"),
+    )
+).expanduser()
+if not GLOBAL_SETTINGS_FILE.is_absolute():
+    GLOBAL_SETTINGS_FILE = (APP_ROOT / GLOBAL_SETTINGS_FILE).resolve()
+LEGACY_GLOBAL_SETTINGS_FILE = STATE_DIR / "global_settings.json"
 NETWORK_RETRY_MAX_ATTEMPTS = 5
 SERVICE_POLL_RECONNECT_MAX_ATTEMPTS = 5
 SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS = 5.0
 SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS = 30.0
+SERVICE_START_READY_TIMEOUT_SECS = 30.0
+SERVICE_START_READY_POLL_SECS = 0.5
 _UNSET = object()
+DIRECTORY_PICKER_LOCK = threading.Lock()
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+)
+MLEVOLVE_SECRET_CONFIG_KEYS = {
+    "agent.code.api_key",
+    "agent.feedback.api_key",
+    "agent.memory_embedding_api_key",
+}
 
 
 def resolve_output_root(value: str | None) -> Path:
@@ -83,6 +106,15 @@ def safe_read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def safe_read_yaml(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or default
+    except Exception:
+        return default
+
+
 def read_mlevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
     payload = safe_read_json(log_dir / "pending_nodes.json", {})
     if not isinstance(payload, dict):
@@ -108,7 +140,7 @@ def read_mlevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
 
 def safe_read_text_tail(path: Path, limit: int = 60000, *, byte_multiplier: int = 4) -> str:
     """Read only the tail of a potentially huge UTF-8-ish text file."""
-    if not path.exists() or not path.is_file():
+    if limit <= 0 or not path.exists() or not path.is_file():
         return ""
     try:
         byte_limit = max(limit, limit * max(1, byte_multiplier))
@@ -136,9 +168,57 @@ def safe_read_tail_lines(path: Path, limit: int = 400, *, byte_limit: int = 512_
         return []
 
 
-def write_json(path: Path, payload: Any) -> None:
+def _restrict_sensitive_file(path: Path) -> None:
+    """Apply owner-only POSIX permissions where the host supports them."""
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        # Windows ACLs are inherited from the containing profile directory.
+        # chmod is still attempted, but it is not a substitute for OS account isolation.
+        pass
+
+
+def write_json(path: Path, payload: Any, *, sensitive: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    if sensitive:
+        _restrict_sensitive_file(path)
+
+
+def write_yaml(path: Path, payload: Any, *, sensitive: bool = False) -> None:
+    """Atomically write a human-readable YAML configuration file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# AutoDecision 前端全局设置。此文件由 Gateway 自动生成和维护。\n"
+        "# 文件可能包含明文 API Key，已被 Git 忽略，请勿提交或分享。\n"
+    )
+    text = header + yaml.safe_dump(
+        payload,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temp_path.write_text(text, encoding="utf-8")
+    if sensitive:
+        _restrict_sensitive_file(temp_path)
+    os.replace(temp_path, path)
+    if sensitive:
+        _restrict_sensitive_file(path)
+
+
+def write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    _restrict_sensitive_file(path)
+
+
+def _allowed_origins_from_env() -> list[str]:
+    raw = os.environ.get("AUTODECISION_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return list(DEFAULT_ALLOWED_ORIGINS)
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or list(DEFAULT_ALLOWED_ORIGINS)
 
 
 def normalize_automl_config_payload(config: Any) -> Any:
@@ -240,6 +320,14 @@ class AutoReportConfigPayload(BaseModel):
     use_llm: bool = True
 
 
+class TaskResourceConfigPayload(BaseModel):
+    cpu_cores: int = Field(default=4, ge=1, le=4096)
+    memory_limit_gb: float = Field(default=8.0, ge=0, le=1048576)
+    accelerator_mode: Literal["all", "selected", "none"] = "all"
+    accelerator_device_ids: list[str] = Field(default_factory=list)
+    monitor_interval_seconds: float = Field(default=0.5, ge=0.1, le=10.0)
+
+
 class TaskConfigPayload(BaseModel):
     task_name: str = Field(min_length=1)
     input_root: str = ""
@@ -247,6 +335,7 @@ class TaskConfigPayload(BaseModel):
     auto_realize: AutoRealizeConfigPayload = Field(default_factory=AutoRealizeConfigPayload)
     auto_ml: AutoMLConfigPayload = Field(default_factory=AutoMLConfigPayload)
     auto_report: AutoReportConfigPayload = Field(default_factory=AutoReportConfigPayload)
+    resources: TaskResourceConfigPayload = Field(default_factory=TaskResourceConfigPayload)
 
 
 class TaskModel(BaseModel):
@@ -307,7 +396,6 @@ class ResumeTaskRequest(BaseModel):
 
 class GlobalSettingsModel(BaseModel):
     python: dict[str, Any] = Field(default_factory=dict)
-    resource: dict[str, Any] = Field(default_factory=dict)
     llm: dict[str, Any] = Field(default_factory=dict)
     coreServices: dict[str, Any] = Field(default_factory=dict)
     mlevolve: dict[str, Any] = Field(default_factory=dict)
@@ -359,7 +447,7 @@ class TaskStore:
             self._persist()
 
     def _persist(self) -> None:
-        write_json(TASKS_FILE, {"tasks": [t.model_dump() for t in self._tasks.values()]})
+        write_json(TASKS_FILE, {"tasks": [t.model_dump() for t in self._tasks.values()]}, sensitive=True)
 
     def _reconcile_stale_running_on_boot(self) -> None:
         """
@@ -552,20 +640,128 @@ class TaskStore:
 
 store = TaskStore()
 app = FastAPI(title="AutoDecision Local API", version="0.1.0")
+_allowed_origins = _allowed_origins_from_env()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed_origins,
+    allow_credentials="*" not in _allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.middleware("http")
+async def require_optional_api_token(request: Request, call_next):
+    """Protect the Gateway when an operator explicitly configures a bearer token."""
+    expected = os.environ.get("AUTODECISION_API_TOKEN", "").strip()
+    if (
+        expected
+        and request.method.upper() != "OPTIONS"
+        and request.url.path.startswith("/api")
+        and request.url.path != "/api/health"
+    ):
+        authorization = request.headers.get("Authorization", "")
+        scheme, _, supplied = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip(), expected):
+            return JSONResponse(status_code=401, content={"detail": "invalid or missing API token"})
+    return await call_next(request)
+
+
+def _default_global_settings() -> dict[str, Any]:
+    return {
+        "python": {"executable": "python"},
+        "llm": {
+            "modelLibrary": [
+                {
+                    "id": "default-code",
+                    "name": "默认编码模型",
+                    "model": "deepseek-v4-pro",
+                    "baseUrl": "https://api.deepseek.com",
+                    "apiKey": "",
+                    "thinkingMode": "default",
+                    "reasoningEffort": "default",
+                    "maxTokens": 0,
+                },
+                {
+                    "id": "default-autorealize",
+                    "name": "默认 AutoRealize 模型",
+                    "model": "deepseek-v4-pro",
+                    "baseUrl": "https://api.deepseek.com",
+                    "apiKey": "",
+                    "thinkingMode": "default",
+                    "reasoningEffort": "default",
+                    "maxTokens": 0,
+                },
+                {
+                    "id": "default-feedback",
+                    "name": "默认反馈模型",
+                    "model": "deepseek-v4-pro",
+                    "baseUrl": "https://api.deepseek.com",
+                    "apiKey": "",
+                    "thinkingMode": "default",
+                    "reasoningEffort": "default",
+                    "maxTokens": 0,
+                },
+                {
+                    "id": "default-vllm",
+                    "name": "默认视觉模型",
+                    "model": "glm-4.6v-flashx",
+                    "baseUrl": "https://open.bigmodel.cn/api/paas/v4/",
+                    "apiKey": "",
+                    "thinkingMode": "default",
+                    "reasoningEffort": "default",
+                    "maxTokens": 0,
+                },
+                {
+                    "id": "default-embedding",
+                    "name": "默认向量化模型",
+                    "model": "text-embedding-v4",
+                    "baseUrl": "",
+                    "apiKey": "",
+                    "thinkingMode": "default",
+                    "reasoningEffort": "default",
+                    "maxTokens": 0,
+                },
+            ],
+            "roleModels": {
+                "autoRealize": "default-autorealize",
+                "autoRealizeVision": "default-vllm",
+                "autoMlCode": "default-code",
+                "autoMlFeedback": "default-feedback",
+                "embedding": "default-embedding",
+            },
+            "vllm": {"enabled": True},
+        },
+        "coreServices": {
+            "autoRealizeBaseUrl": "http://127.0.0.1:18101",
+            "mlevolveBaseUrl": "http://127.0.0.1:18103",
+            "autoReportBaseUrl": "http://127.0.0.1:18104",
+            "requestTimeoutSecs": 10,
+        },
+        "mlevolve": {
+            "torchHubDir": "",
+            "pretrainModelDir": "",
+            "embeddingBaseUrl": "",
+            "embeddingApiKey": "",
+            "embeddingModel": "",
+        },
+    }
+
+
+def _load_persisted_global_settings() -> tuple[dict[str, Any], bool]:
+    current = safe_read_yaml(GLOBAL_SETTINGS_FILE, {})
+    if isinstance(current, dict) and current:
+        return current, False
+    if not GLOBAL_SETTINGS_FILE.exists():
+        legacy = safe_read_json(LEGACY_GLOBAL_SETTINGS_FILE, {})
+        if isinstance(legacy, dict) and legacy:
+            return legacy, True
+    return {}, False
+
+
 def ensure_global_settings() -> dict[str, Any]:
-    defaults = safe_read_json(DEFAULT_GLOBAL_SETTINGS_FILE, {})
-    current = safe_read_json(GLOBAL_SETTINGS_FILE, {})
-    if not isinstance(defaults, dict):
-        defaults = {}
+    defaults = _default_global_settings()
+    current, migrated_legacy = _load_persisted_global_settings()
     if not isinstance(current, dict):
         current = {}
 
@@ -574,7 +770,6 @@ def ensure_global_settings() -> dict[str, Any]:
     merged["python"] = {
         "executable": str(py_merged.get("executable", "python")),
     }
-    merged["resource"] = {**defaults.get("resource", {}), **current.get("resource", {})}
     llm_defaults = defaults.get("llm", {})
     llm_current = current.get("llm", {})
     core_defaults = defaults.get("coreServices", {})
@@ -610,8 +805,37 @@ def ensure_global_settings() -> dict[str, Any]:
         merged["mlevolve"]["embeddingModel"] = str(embedding_model.get("model") or merged["mlevolve"].get("embeddingModel") or "")
         merged["mlevolve"]["embeddingBaseUrl"] = str(embedding_model.get("baseUrl") or merged["mlevolve"].get("embeddingBaseUrl") or "")
         merged["mlevolve"]["embeddingApiKey"] = str(embedding_model.get("apiKey") or merged["mlevolve"].get("embeddingApiKey") or "")
-    write_json(GLOBAL_SETTINGS_FILE, merged)
+    write_yaml(GLOBAL_SETTINGS_FILE, merged, sensitive=True)
+    if migrated_legacy:
+        try:
+            LEGACY_GLOBAL_SETTINGS_FILE.unlink()
+        except OSError:
+            pass
     return merged
+
+
+def _redact_global_settings_for_client(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return settings metadata without sending stored provider keys to the browser."""
+    redacted = json.loads(json.dumps(settings, ensure_ascii=False, default=str))
+    llm = redacted.get("llm") if isinstance(redacted.get("llm"), dict) else {}
+    library = llm.get("modelLibrary") if isinstance(llm.get("modelLibrary"), list) else []
+    for item in library:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("apiKey") or "")
+        item["apiKeyConfigured"] = bool(key)
+        item["apiKey"] = ""
+    for model_key in ("codeModel", "autoRealizeModel", "feedbackModel", "vllm"):
+        model = llm.get(model_key)
+        if isinstance(model, dict):
+            key = str(model.get("apiKey") or "")
+            model["apiKeyConfigured"] = bool(key)
+            model["apiKey"] = ""
+    mlevolve = redacted.get("mlevolve") if isinstance(redacted.get("mlevolve"), dict) else {}
+    embedding_key = str(mlevolve.get("embeddingApiKey") or "")
+    mlevolve["embeddingApiKeyConfigured"] = bool(embedding_key)
+    mlevolve["embeddingApiKey"] = ""
+    return redacted
 
 
 def _deep_merge_settings(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -896,9 +1120,15 @@ def save_global_settings(payload: GlobalSettingsModel) -> None:
     raw = payload.model_dump()
     raw = _deep_merge_settings(existing, raw)
     _preserve_sensitive_settings(raw, existing, payload.model_dump())
+    raw.pop("resource", None)
     py = raw.get("python", {}) if isinstance(raw, dict) else {}
     raw["python"] = {"executable": str((py or {}).get("executable", "python"))}
-    write_json(GLOBAL_SETTINGS_FILE, raw)
+    write_yaml(GLOBAL_SETTINGS_FILE, raw, sensitive=True)
+
+
+# Importing the Gateway application is its startup path under uvicorn. Ensure
+# the ignored local settings file exists before the browser requests it.
+ensure_global_settings()
 
 
 def _validate_start(task: TaskModel) -> tuple[Path, Path]:
@@ -1643,8 +1873,11 @@ def _build_automl_paths(
 
 
 def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
-    template_path = AUTOREALIZE_DIR / "tmp_default_config_check.json"
-    cfg = safe_read_json(template_path, {})
+    template_path = AUTOREALIZE_DIR / "config" / "config.yaml"
+    try:
+        cfg = yaml.safe_load(template_path.read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        cfg = {}
     ar = task.config.auto_realize
     cfg.setdefault("switches", {})
     cfg.setdefault("llm", {})
@@ -1659,7 +1892,6 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
 
     cfg["switches"]["run_data_cognition"] = True
     cfg["switches"]["run_task_definition"] = True
-    cfg["switches"]["run_data_cleaning"] = ar.run_data_cleaning
     cfg["switches"]["enable_fewshot"] = ar.enable_fewshot
     cfg["switches"]["generate_sample_submission"] = ar.generate_sample_submission
     cfg["switches"]["prefer_original_description"] = True
@@ -1670,8 +1902,6 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg["llm"]["reasoning_effort"] = ar.llm_reasoning_effort
     cfg["llm"]["structured_disable_thinking"] = ar.llm_structured_disable_thinking
     cfg["parallel"]["cognition_max_workers"] = llm_concurrency
-    cfg["parallel"]["cleaning_max_workers"] = ar.cleaning_workers
-    cfg["parallel"]["enable_parallel_cleaning"] = ar.parallel_cleaning
     cfg["telemetry"]["enabled"] = not ar.no_telemetry
     cfg["knowledge"]["enabled"] = not ar.no_knowledge
     cfg["llm"]["enable_cache"] = not ar.no_llm_cache
@@ -1685,8 +1915,9 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
         cfg["llm"]["base_url"] = autorealize_model.get("baseUrl")
     if autorealize_model.get("model"):
         cfg["llm"]["model_name"] = autorealize_model.get("model")
-    if autorealize_model.get("apiKey"):
-        cfg["llm"]["api_key"] = autorealize_model.get("apiKey")
+    # Secrets are injected through the service process environment and must not
+    # be persisted in task YAML under frontend/backend/.state.
+    cfg["llm"]["api_key"] = None
     cfg["llm"]["enable_thinking"] = _legacy_enable_thinking(autorealize_model.get("thinkingMode", autorealize_model.get("enableThinking")))
     effort = _normal_reasoning_effort(autorealize_model.get("reasoningEffort"))
     cfg["llm"]["reasoning_effort"] = None if effort == "default" else effort
@@ -1701,11 +1932,10 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
         cfg["vllm"]["base_url"] = vllm.get("baseUrl")
     if vllm.get("model"):
         cfg["vllm"]["model_name"] = vllm.get("model")
-    if vllm.get("apiKey"):
-        cfg["vllm"]["api_key"] = vllm.get("apiKey")
+    cfg["vllm"]["api_key"] = None
 
-    out = STATE_DIR / f"{task.id}.autorealize.config.json"
-    write_json(out, cfg)
+    out = STATE_DIR / f"{task.id}.autorealize.config.yaml"
+    write_private_text(out, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
     return out
 
 
@@ -1777,7 +2007,12 @@ def _build_mlevolve_command(
         "preprocess_data=true",
         f"copy_data={'true' if am.copy_data else 'false'}",
         f"start_cpu_id=0",
-        f"cpu_number={int(gs.resource.get('cpuLimit', 4))}",
+        f"cpu_number={int(task.config.resources.cpu_cores)}",
+        f"resources.cpu_cores={int(task.config.resources.cpu_cores)}",
+        f"resources.memory_limit_gb={float(task.config.resources.memory_limit_gb)}",
+        f"resources.accelerator_mode={_as_cli_str(task.config.resources.accelerator_mode, 'all')}",
+        f"resources.accelerator_device_ids={json.dumps(task.config.resources.accelerator_device_ids, ensure_ascii=False)}",
+        f"resources.monitor_interval_seconds={float(task.config.resources.monitor_interval_seconds)}",
         f"torch_hub_dir={_as_cli_str(global_mlevolve.get('torchHubDir', getattr(am, 'torch_hub_dir', '')))}",
         f"pretrain_model_dir={_as_cli_str(global_mlevolve.get('pretrainModelDir', getattr(am, 'pretrain_model_dir', '')))}",
         f"use_grading_server={'true' if am.use_grading_server else 'false'}",
@@ -1792,13 +2027,11 @@ def _build_mlevolve_command(
         f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         "agent.code.temp=0.5",
         f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.code.api_key={_as_cli_str(_model_cli_value(code_model, 'apiKey', ''), '')}",
         f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
         f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
         f"agent.feedback.model={_as_cli_str(_model_cli_value(feedback_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
         "agent.feedback.temp=0.5",
         f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
-        f"agent.feedback.api_key={_as_cli_str(_model_cli_value(feedback_model, 'apiKey', ''), '')}",
         f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
         f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
         f"agent.check_data_leakage={'true' if am.check_data_leakage else 'false'}",
@@ -1809,7 +2042,6 @@ def _build_mlevolve_command(
         f"agent.use_global_memory={'true' if am.use_global_memory else 'false'}",
         f"agent.memory_similarity_threshold={am.memory_similarity_threshold}",
         f"agent.memory_embedding_backend={_as_cli_str(am.memory_embedding_backend, 'openai')}",
-        f"agent.memory_embedding_api_key={_as_cli_str(_model_cli_value(embedding_model, 'apiKey', global_mlevolve.get('embeddingApiKey', getattr(am, 'memory_embedding_api_key', ''))))}",
         f"agent.memory_embedding_base_url={_as_cli_str(_model_cli_value(embedding_model, 'baseUrl', global_mlevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', ''))))}",
         f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_mlevolve.get('embeddingModel', getattr(am, 'memory_embedding_model', ''))))}",
         f"agent.memory_embedding_device={_as_cli_str(am.memory_embedding_device, 'cuda')}",
@@ -1862,6 +2094,69 @@ def _build_mlevolve_command(
     if am.eval:
         cmd.append(f"eval={_as_cli_str(am.eval)}")
     return cmd
+
+
+def _write_mlevolve_config(task_id: str, command: list[str]) -> Path:
+    """Compile frontend-selected dotted overrides into one task-level YAML."""
+    template_path = MLEVOLVE_DIR / "config" / "config.yaml"
+    try:
+        cfg = yaml.safe_load(template_path.read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        cfg = {}
+
+    for item in command[2:]:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        dotted_key, raw_value = item.split("=", 1)
+        dotted_key = dotted_key.strip()
+        if not dotted_key:
+            continue
+        if dotted_key in MLEVOLVE_SECRET_CONFIG_KEYS:
+            continue
+        try:
+            value = yaml.safe_load(raw_value)
+        except Exception:
+            value = raw_value
+        target = cfg
+        parts = dotted_key.split(".")
+        for part in parts[:-1]:
+            child = target.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                target[part] = child
+            target = child
+        target[parts[-1]] = value
+
+    agent_cfg = cfg.setdefault("agent", {})
+    agent_cfg.setdefault("code", {})["api_key"] = ""
+    agent_cfg.setdefault("feedback", {})["api_key"] = ""
+    agent_cfg["memory_embedding_api_key"] = ""
+
+    out = STATE_DIR / f"{task_id}.mlevolve.config.yaml"
+    write_private_text(out, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
+    return out
+
+
+def _without_mlevolve_secret_args(args: list[str]) -> list[str]:
+    return [
+        item
+        for item in args
+        if not any(item.startswith(f"{key}=") for key in MLEVOLVE_SECRET_CONFIG_KEYS)
+    ]
+
+
+def _mlevolve_secret_env(gs: GlobalSettingsModel) -> dict[str, str]:
+    code_model = _selected_model(gs.llm, "autoMlCode")
+    feedback_model = _selected_model(gs.llm, "autoMlFeedback", fallback_role="autoMlCode")
+    embedding_model = _selected_model(gs.llm, "embedding")
+    code_key = str(code_model.get("apiKey") or "")
+    values = {
+        "DEEPSEEK_API_KEY": code_key,
+        "MLEVOLVE_CODE_API_KEY": code_key,
+        "MLEVOLVE_FEEDBACK_API_KEY": str(feedback_model.get("apiKey") or ""),
+        "MLEVOLVE_EMBEDDING_API_KEY": str(embedding_model.get("apiKey") or ""),
+    }
+    return {key: value for key, value in values.items() if value}
 
 
 def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: int = 15) -> dict[str, Any]:
@@ -1958,6 +2253,40 @@ def _json_get(base_url: str, path: str, timeout_secs: int = 15) -> dict[str, Any
                 raise RuntimeError(f"GET {url} failed: {e}")
             time.sleep(min(30.0, 2.0 ** (attempt - 1)))
     raise RuntimeError(f"GET {url} failed: {last_error}")
+
+
+def _wait_for_service_ready(
+    base_url: str,
+    service_name: str,
+    *,
+    timeout_secs: float = SERVICE_START_READY_TIMEOUT_SECS,
+    poll_secs: float = SERVICE_START_READY_POLL_SECS,
+) -> None:
+    """Wait for a core service before creating stage outputs or starting a job."""
+
+    health_url = base_url.rstrip("/") + "/health"
+    deadline = time.monotonic() + max(0.1, float(timeout_secs))
+    last_error: Exception | None = None
+    while True:
+        try:
+            req = urllib.request.Request(url=health_url, method="GET")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if 200 <= int(getattr(resp, "status", 200)) < 300:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    payload = json.loads(body) if body else {}
+                    if not payload or str(payload.get("status") or "ok").lower() == "ok":
+                        return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+
+        if time.monotonic() >= deadline:
+            detail = f": {last_error}" if last_error else ""
+            raise RuntimeError(
+                f"{service_name} service is not ready at {health_url}{detail}. "
+                "请检查全局设置 coreServices 中的服务地址；本地开发请运行 "
+                "`powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-restart.ps1 -Wait`。"
+            )
+        time.sleep(max(0.05, float(poll_secs)))
 
 
 def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, int]:
@@ -2102,7 +2431,7 @@ def _run_report_stage(
             "llm": {
                 "model": str(report_model.get("model") or ""),
                 "base_url": str(report_model.get("baseUrl") or ""),
-                "api_key": report_api_key,
+                "api_key": None,
                 "temperature": 0.25,
                 "max_tokens": 8192,
                 "max_prompt_chars": 60000,
@@ -2163,6 +2492,7 @@ def _run_autorealize_stage(
     ar_cfg_path = _write_autorealize_config(task, gs)
     py = str(gs.python.get("executable", "python"))
     autorealize_model = _selected_model(gs.llm or {}, "autoRealize", fallback_role="autoMlCode")
+    vllm = _selected_model(gs.llm or {}, "autoRealizeVision")
 
     store.set_status(
         task_id,
@@ -2183,7 +2513,10 @@ def _run_autorealize_stage(
         "working_dir": str(AUTOREALIZE_DIR),
         "offline": bool(task.config.auto_realize.offline),
         "auto_generate_predict_split": False,
-        "env_overrides": {"DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or "")},
+        "env_overrides": {
+            "DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or ""),
+            "AUTOREALIZE_VISION_API_KEY": str(vllm.get("apiKey") or ""),
+        },
     }
     try:
         ar_start = _json_post(ar_base, "/jobs/start", ar_start_payload, timeout_secs=req_timeout)
@@ -2357,6 +2690,7 @@ def _run_automl_stage(
         automl_workspaces_root=mlevolve_workspace_dir,
         exp_name=exp_name,
     )
+    mlevolve_config_path = _write_mlevolve_config(task_id, ml_cmd)
     service_base = mlevolve_service_base
     working_dir = str(MLEVOLVE_DIR)
     graceful_shutdown_buffer_secs = 600
@@ -2374,8 +2708,9 @@ def _run_automl_stage(
             "task_id": task_id,
             "python_executable": str(gs.python.get("executable", "python")),
             "working_dir": working_dir,
-            "env_overrides": {"DEEPSEEK_API_KEY": str((_selected_model(gs.llm, "autoMlCode") or {}).get("apiKey") or "")},
-            "args": ml_cmd[2:],
+            "env_overrides": _mlevolve_secret_env(gs),
+            "config_path": str(mlevolve_config_path),
+            "args": _without_mlevolve_secret_args(ml_cmd[2:]),
             "log_dir": str(mlevolve_log_dir),
             "workspace_dir": str(mlevolve_workspace_dir),
             "graceful_shutdown_buffer_secs": graceful_shutdown_buffer_secs,
@@ -2437,6 +2772,12 @@ def _run_automl_stage(
         if ml_stderr:
             (ml_log_dir / "_frontend_stderr.log").write_text(ml_stderr[-200000:], encoding="utf-8", errors="ignore")
     except Exception:
+        pass
+    try:
+        _persist_resolved_automl_paths(task_id)
+    except Exception:
+        # Path reconciliation improves snapshots/resume, but must never turn a
+        # completed expensive search into a failed task.
         pass
     if ml_budget_exhausted and ml_state in {"completed", "stopped"}:
         store.set_status(task_id, status="running", phase="automl_completed", last_error=None)
@@ -2600,6 +2941,16 @@ def _rerun_automl_thread(task_id: str) -> None:
     _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     autorealize_dir, automl_logs_root, automl_workspaces_root, _old_ml_log_dir, _old_ml_ws_dir = _validate_automl_rerun(task)
     run_dir = _resolve_task_run_dir_for_rerun(task)
+    try:
+        _wait_for_service_ready(mlevolve_base, "AutoML")
+    except Exception as e:
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="automl_failed",
+            last_error=str(e),
+        )
+        return
     if _direct_mode_enabled(task):
         input_root = Path(task.input_root).expanduser().resolve()
         ok_direct = _prepare_direct_autorealize_output(
@@ -3111,28 +3462,112 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     return out
 
 
-def _pick_local_automl_log_dir(task: TaskModel) -> Path | None:
+def _automl_run_identity(path: Path) -> str:
+    """Normalize service-wrapper and MLEvolve artifact directory names."""
+    name = path.name
+    wrapper = re.match(r"^(\d{8})_(\d{6})_(.+)$", name)
+    if wrapper:
+        return f"{wrapper.group(1)}{wrapper.group(2)}|{wrapper.group(3)}"
+    engine = re.match(r"^(\d{14})_(.+)$", name)
+    if engine:
+        return f"{engine.group(1)}|{engine.group(2)}"
+    return ""
+
+
+def _automl_log_dir_score(path: Path) -> tuple[int, float]:
+    """Prefer actual engine artifacts over service/frontend wrapper folders."""
+    score = 0
+    if (path / "journal.json").is_file():
+        score += 1000
+    if (path / "filtered_journal.json").is_file():
+        score += 700
+    if (path / "run_status.json").is_file():
+        score += 300
+    if (path / "MLEvolve.log").is_file():
+        score += 200
+    if (path / "pending_nodes.json").is_file():
+        score += 100
+    if (path / "best_solution.py").is_file():
+        score += 80
+    if (path / "_service_stdout.log").is_file() or (path / "_frontend_stdout.log").is_file():
+        score += 10
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        modified = 0.0
+    return score, modified
+
+
+def _automl_log_candidates(task: TaskModel) -> tuple[list[Path], Path | None]:
+    preferred: Path | None = None
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            return
+        key = str(resolved)
+        if key in seen or not resolved.exists() or not resolved.is_dir():
+            return
+        seen.add(key)
+        candidates.append(resolved)
+
     if task.auto_ml_log_dir:
-        p = Path(task.auto_ml_log_dir).expanduser().resolve()
-        if p.exists() and p.is_dir():
-            return p
+        preferred = Path(task.auto_ml_log_dir).expanduser().resolve()
+        _add(preferred)
+        if preferred.parent.is_dir():
+            for child in preferred.parent.iterdir():
+                if child.is_dir():
+                    _add(child)
     for run_dir in _candidate_task_run_dirs(task):
         logs_root = run_dir / "automl" / "logs"
         if not logs_root.exists() or not logs_root.is_dir():
             continue
-        candidates = [x for x in logs_root.iterdir() if x.is_dir()]
-        if not candidates:
-            continue
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return candidates[0]
-    return None
+        for child in logs_root.iterdir():
+            if child.is_dir():
+                _add(child)
+    return candidates, preferred
+
+
+def _pick_local_automl_log_dir(task: TaskModel) -> Path | None:
+    candidates, preferred = _automl_log_candidates(task)
+    if not candidates:
+        return None
+
+    preferred_identity = _automl_run_identity(preferred) if preferred is not None else ""
+    preferred_parent = preferred.parent if preferred is not None else None
+    matching = [
+        candidate
+        for candidate in candidates
+        if (
+            preferred_identity
+            and preferred_parent is not None
+            and candidate.parent == preferred_parent
+            and _automl_run_identity(candidate) == preferred_identity
+        )
+    ]
+    # A real MLEvolve directory has at least a journal, run log, pending state,
+    # or run status. Wrapper folders contain only service/frontend tail logs.
+    meaningful = [candidate for candidate in matching if _automl_log_dir_score(candidate)[0] >= 100]
+    if meaningful:
+        return max(meaningful, key=_automl_log_dir_score)
+    if preferred is not None and preferred.exists() and preferred.is_dir():
+        return preferred
+
+    meaningful = [candidate for candidate in candidates if _automl_log_dir_score(candidate)[0] >= 100]
+    if meaningful:
+        return max(meaningful, key=_automl_log_dir_score)
+    return max(candidates, key=_automl_log_dir_score)
 
 
 def _pick_local_automl_workspace_dir(task: TaskModel, exp_name: str | None) -> Path | None:
-    if task.auto_ml_workspace_dir:
-        p = Path(task.auto_ml_workspace_dir).expanduser().resolve()
-        if p.exists() and p.is_dir():
-            return p
+    preferred = (
+        Path(task.auto_ml_workspace_dir).expanduser().resolve()
+        if task.auto_ml_workspace_dir
+        else None
+    )
     for run_dir in _candidate_task_run_dirs(task):
         ws_root = run_dir / "automl" / "workspaces"
         if not ws_root.exists() or not ws_root.is_dir():
@@ -3141,12 +3576,49 @@ def _pick_local_automl_workspace_dir(task: TaskModel, exp_name: str | None) -> P
             p = ws_root / exp_name
             if p.exists() and p.is_dir():
                 return p
+        if preferred is not None:
+            preferred_identity = _automl_run_identity(preferred)
+            if preferred_identity:
+                matching = [
+                    candidate
+                    for candidate in ws_root.iterdir()
+                    if candidate.is_dir() and _automl_run_identity(candidate) == preferred_identity
+                ]
+                if matching:
+                    matching.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    return matching[0]
+    if preferred is not None and preferred.exists() and preferred.is_dir():
+        return preferred
+    for run_dir in _candidate_task_run_dirs(task):
+        ws_root = run_dir / "automl" / "workspaces"
+        if not ws_root.exists() or not ws_root.is_dir():
+            continue
         candidates = [x for x in ws_root.iterdir() if x.is_dir()]
         if not candidates:
             continue
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return candidates[0]
     return None
+
+
+def _persist_resolved_automl_paths(task_id: str) -> None:
+    """Replace service-wrapper paths with the directories containing artifacts."""
+    task = store.get(task_id)
+    log_dir = _pick_local_automl_log_dir(task)
+    if log_dir is None:
+        return
+    workspace_dir = _pick_local_automl_workspace_dir(task, exp_name=log_dir.name)
+    if str(log_dir) == str(task.auto_ml_log_dir or "") and (
+        workspace_dir is None or str(workspace_dir) == str(task.auto_ml_workspace_dir or "")
+    ):
+        return
+    store.set_status(
+        task_id,
+        status=task.status,
+        phase=task.phase,
+        auto_ml_log_dir=str(log_dir),
+        auto_ml_workspace_dir=str(workspace_dir) if workspace_dir is not None else None,
+    )
 
 
 def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
@@ -3263,6 +3735,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "best_node_id": best_id,
         "journal_source": journal_source,
         "run_status": safe_read_json(log_dir / "run_status.json", {}),
+        "resource_usage": safe_read_json(log_dir / "resource_usage.json", {}),
         "ml_log": safe_read_text_tail(log_dir / "MLEvolve.log", limit=60000),
         "verbose_log": safe_read_text_tail(log_dir / "MLEvolve.verbose.log", limit=60000),
         "frontend_stdout": safe_read_text_tail(log_dir / "_frontend_stdout.log", limit=60000),
@@ -3303,15 +3776,29 @@ def _build_local_report_snapshot(task: TaskModel) -> dict[str, Any]:
     report_dir = _pick_local_report_dir(task)
     if report_dir is None:
         return {}
+    resolved_path = report_dir / "resolved_config.yaml"
+    if not resolved_path.exists():
+        resolved_path = next(iter(sorted(report_dir.glob("*config*.yaml"))), resolved_path)
+    resolved = safe_read_yaml(resolved_path, {})
+    if not resolved:
+        resolved = safe_read_json(report_dir / "resolved_config.json", {})
+    runtime = dict(resolved.get("runtime") or {})
+    generation = dict(resolved.get("generation") or {})
+    state_name = str(runtime.get("current_state_filename") or "current_state.json")
+    event_name = str(runtime.get("event_stream_filename") or "event_stream.jsonl")
+    event_limit = max(1, int(runtime.get("snapshot_event_limit") or 500))
+    text_tail = max(0, int(runtime.get("snapshot_text_tail_chars") or 60000))
+    report_json_name = str(generation.get("report_json_filename") or "report.json")
+    report_md_name = str(generation.get("report_markdown_filename") or "report.md")
     return {
         "output_dir": str(report_dir),
-        "current_state": safe_read_json(report_dir / "current_state.json", {}),
-        "events": _parse_jsonl_local(report_dir / "event_stream.jsonl", limit=500),
-        "report": safe_read_json(report_dir / "report.json", {}),
-        "report_markdown": (report_dir / "report.md").read_text(encoding="utf-8", errors="ignore") if (report_dir / "report.md").exists() else "",
-        "resolved_config": safe_read_json(report_dir / "resolved_config.json", {}),
-        "stdout": (report_dir / "_service_stdout.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (report_dir / "_service_stdout.log").exists() else "",
-        "stderr": (report_dir / "_service_stderr.log").read_text(encoding="utf-8", errors="ignore")[-60000:] if (report_dir / "_service_stderr.log").exists() else "",
+        "current_state": safe_read_json(report_dir / state_name, {}),
+        "events": _parse_jsonl_local(report_dir / event_name, limit=event_limit),
+        "report": safe_read_json(report_dir / report_json_name, {}),
+        "report_markdown": (report_dir / report_md_name).read_text(encoding="utf-8", errors="ignore") if (report_dir / report_md_name).exists() else "",
+        "resolved_config": resolved,
+        "stdout": safe_read_text_tail(report_dir / "_service_stdout.log", limit=text_tail),
+        "stderr": safe_read_text_tail(report_dir / "_service_stderr.log", limit=text_tail),
     }
 
 
@@ -3367,46 +3854,61 @@ def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
         raise
 
 
-def _pick_dir_tkinter(initial_path: str, title: str) -> str | None:
+def _pick_dir_tkinter(initial_path: str, title: str) -> tuple[str | None, str]:
     import tkinter as tk
     from tkinter import filedialog
 
     root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    selected = filedialog.askdirectory(
-        title=title or "Select Directory",
-        initialdir=initial_path or None,
-        mustexist=True,
-    )
-    root.destroy()
+    try:
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        selected = filedialog.askdirectory(
+            parent=root,
+            title=title or "Select Directory",
+            initialdir=initial_path or None,
+            mustexist=True,
+        )
+    finally:
+        root.destroy()
     if selected:
-        return selected
-    return None
+        return selected, "selected"
+    return None, "cancelled"
 
 
-def _pick_dir_macos_osascript(initial_path: str, title: str) -> str | None:
-    prompt = title.replace('"', "'")
+def _escape_applescript_text(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _pick_dir_macos_osascript(initial_path: str, title: str) -> tuple[str | None, str]:
+    if not shutil.which("osascript"):
+        return None, "unavailable"
+    prompt = _escape_applescript_text(title or "Select Directory")
+    lines = [
+        'tell application "System Events" to activate',
+        "delay 0.15",
+    ]
     if initial_path and Path(initial_path).exists():
-        script = (
-            f'set theFolder to choose folder with prompt "{prompt}" default location POSIX file "{initial_path}"\n'
-            "POSIX path of theFolder"
+        initial = _escape_applescript_text(str(Path(initial_path).expanduser().resolve()))
+        lines.append(
+            f'set theFolder to choose folder with prompt "{prompt}" default location POSIX file "{initial}"'
         )
     else:
-        script = (
-            f'set theFolder to choose folder with prompt "{prompt}"\n'
-            "POSIX path of theFolder"
-        )
+        lines.append(f'set theFolder to choose folder with prompt "{prompt}"')
+    lines.append("POSIX path of theFolder")
     proc = subprocess.run(
-        ["osascript", "-e", script],
+        ["osascript", "-e", "\n".join(lines)],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=900,
     )
     if proc.returncode == 0:
         out = proc.stdout.strip()
-        return out or None
-    return None
+        return (out, "selected") if out else (None, "cancelled")
+    error = (proc.stderr or "").lower()
+    if proc.returncode == 1 or "user canceled" in error or "-128" in error:
+        return None, "cancelled"
+    return None, "unavailable"
 
 
 def _run_powershell_hidden(command: str, timeout: int = 900) -> tuple[int, str, str]:
@@ -3479,17 +3981,38 @@ def _extract_picker_output(raw: str) -> tuple[str | None, str]:
     return None, "cancelled"
 
 
+def _windows_dialog_owner_powershell() -> str:
+    return (
+        "Add-Type -TypeDefinition @'\n"
+        "using System;\n"
+        "using System.Runtime.InteropServices;\n"
+        "using System.Windows.Forms;\n"
+        "public sealed class AutoDecisionDialogOwner : IWin32Window {\n"
+        "  public IntPtr Handle { get; private set; }\n"
+        "  public AutoDecisionDialogOwner(IntPtr handle) { Handle = handle; }\n"
+        "  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();\n"
+        "  [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n"
+        "}\n"
+        "'@ -ReferencedAssemblies 'System.Windows.Forms.dll';\n"
+        "$ownerHandle=[AutoDecisionDialogOwner]::GetForegroundWindow();\n"
+        "if($ownerHandle -ne [IntPtr]::Zero){[AutoDecisionDialogOwner]::SetForegroundWindow($ownerHandle)|Out-Null};\n"
+        "$owner=[AutoDecisionDialogOwner]::new($ownerHandle);\n"
+    )
+
+
 def _pick_dir_windows_shell(title: str) -> tuple[str | None, str]:
     desc = title.replace("'", " ").replace('"', " ")
     ps = (
         "$ErrorActionPreference='Stop';"
-        "$shell=New-Object -ComObject Shell.Application;"
-        f"$folder=$shell.BrowseForFolder(0,'{desc}',0x41,0);"
-        "if($folder -ne $null -and $folder.Self -and $folder.Self.Path){"
-        "  Write-Output ('__PICKED_PATH__' + $folder.Self.Path)"
-        "}else{"
-        "  Write-Output '__CANCELLED__'"
-        "}"
+        "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');\n"
+        + _windows_dialog_owner_powershell()
+        + "$shell=New-Object -ComObject Shell.Application;"
+        + f"$folder=$shell.BrowseForFolder($ownerHandle.ToInt64(),'{desc}',0x41,0);"
+        + "if($folder -ne $null -and $folder.Self -and $folder.Self.Path){"
+        + "  Write-Output ('__PICKED_PATH__' + $folder.Self.Path)"
+        + "}else{"
+        + "  Write-Output '__CANCELLED__'"
+        + "}"
     )
     rc, out, _err = _run_powershell_hidden(ps, timeout=900)
     if rc != 0:
@@ -3509,17 +4032,25 @@ def _pick_dir_windows_modern(initial_path: str, title: str) -> tuple[str | None,
     ps = (
         "$ErrorActionPreference='Stop';"
         "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
-        "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
-        f"$d.Description='{safe_title}';"
-        f"$d.SelectedPath='{init_ps}';"
-        "$d.ShowNewFolderButton=$true;"
-        "try{$d.AutoUpgradeEnabled=$true}catch{};"
-        "$r=$d.ShowDialog();"
-        "if($r -eq [System.Windows.Forms.DialogResult]::OK -and $d.SelectedPath){"
-        "  Write-Output ('__PICKED_PATH__' + $d.SelectedPath)"
-        "}else{"
-        "  Write-Output '__CANCELLED__'"
-        "}"
+        + _windows_dialog_owner_powershell()
+        + "$d=New-Object System.Windows.Forms.OpenFileDialog;"
+        + f"$d.Title='{safe_title}';"
+        + f"$d.InitialDirectory='{init_ps}';"
+        + "$d.CheckFileExists=$false;"
+        + "$d.CheckPathExists=$true;"
+        + "$d.ValidateNames=$false;"
+        + "$d.Multiselect=$false;"
+        + "$d.RestoreDirectory=$true;"
+        + "$d.DereferenceLinks=$true;"
+        + "$d.AutoUpgradeEnabled=$true;"
+        + "$d.Filter='文件夹|*.autodecision_folder';"
+        + "$d.FileName='选择此文件夹';"
+        + "$r=if($ownerHandle -ne [IntPtr]::Zero){$d.ShowDialog($owner)}else{$d.ShowDialog()};"
+        + "if($r -eq [System.Windows.Forms.DialogResult]::OK -and $d.FileName){"
+        + "  Write-Output ('__PICKED_PATH__' + $d.FileName)"
+        + "}else{"
+        + "  Write-Output '__CANCELLED__'"
+        + "}"
     )
     rc, out, _err = _run_powershell_hidden(ps, timeout=900)
     if rc != 0:
@@ -3530,33 +4061,61 @@ def _pick_dir_windows_modern(initial_path: str, title: str) -> tuple[str | None,
     return None, "cancelled"
 
 
-def _pick_dir_linux_zenity(initial_path: str, title: str) -> str | None:
-    cmd = ["zenity", "--file-selection", "--directory", "--title", title]
-    if initial_path:
+def _linux_graphical_session_available() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _pick_dir_linux_zenity(initial_path: str, title: str) -> tuple[str | None, str]:
+    executable = shutil.which("zenity")
+    if not executable or not _linux_graphical_session_available():
+        return None, "unavailable"
+    cmd = [executable, "--file-selection", "--directory", "--title", title]
+    if initial_path and Path(initial_path).exists():
         cmd.extend(["--filename", initial_path if initial_path.endswith("/") else f"{initial_path}/"])
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     if proc.returncode == 0:
         out = proc.stdout.strip()
-        return out or None
-    return None
+        return (out, "selected") if out else (None, "cancelled")
+    if proc.returncode == 1:
+        return None, "cancelled"
+    return None, "unavailable"
+
+
+def _pick_dir_linux_kdialog(initial_path: str, title: str) -> tuple[str | None, str]:
+    executable = shutil.which("kdialog")
+    if not executable or not _linux_graphical_session_available():
+        return None, "unavailable"
+    start = initial_path if initial_path and Path(initial_path).exists() else str(Path.home())
+    proc = subprocess.run(
+        [executable, "--getexistingdirectory", start, "--title", title],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if proc.returncode == 0:
+        out = proc.stdout.strip()
+        return (out, "selected") if out else (None, "cancelled")
+    if proc.returncode == 1:
+        return None, "cancelled"
+    return None, "unavailable"
 
 
 def _pick_directory_native(initial_path: str, title: str) -> tuple[str | None, str, str]:
     # 1) OS-specific first (more stable in service/threaded contexts)
     if sys.platform == "darwin":
         try:
-            picked = _pick_dir_macos_osascript(initial_path=initial_path, title=title)
+            picked, status = _pick_dir_macos_osascript(initial_path=initial_path, title=title)
             if picked:
                 return picked, "osascript", "selected"
         except Exception:
-            pass
-        return None, "osascript", "cancelled_or_unavailable"
+            status = "unavailable"
+        return None, "osascript", status
     elif os.name == "nt":
         picked, status = _pick_dir_windows_modern(initial_path=initial_path, title=title)
         if picked:
-            return picked, "windows-folderbrowser", "selected"
+            return picked, "windows-explorer-folder-picker", "selected"
         if status == "cancelled":
-            return None, "windows-folderbrowser", "cancelled"
+            return None, "windows-explorer-folder-picker", "cancelled"
         # fallback on shell picker only when primary native API unavailable
         picked2, status2 = _pick_dir_windows_shell(title=title)
         if picked2:
@@ -3566,18 +4125,30 @@ def _pick_directory_native(initial_path: str, title: str) -> tuple[str | None, s
         return None, "none", "cancelled_or_unavailable"
     else:
         try:
-            picked = _pick_dir_linux_zenity(initial_path=initial_path, title=title)
+            picked, status = _pick_dir_linux_zenity(initial_path=initial_path, title=title)
             if picked:
                 return picked, "zenity", "selected"
+            if status == "cancelled":
+                return None, "zenity", "cancelled"
+        except Exception:
+            pass
+        try:
+            picked, status = _pick_dir_linux_kdialog(initial_path=initial_path, title=title)
+            if picked:
+                return picked, "kdialog", "selected"
+            if status == "cancelled":
+                return None, "kdialog", "cancelled"
         except Exception:
             pass
 
     # 2) tkinter fallback (non-Windows only)
-    if os.name != "nt":
+    if os.name != "nt" and (sys.platform == "darwin" or _linux_graphical_session_available()):
         try:
-            picked = _pick_dir_tkinter(initial_path=initial_path, title=title)
+            picked, status = _pick_dir_tkinter(initial_path=initial_path, title=title)
             if picked:
                 return picked, "tkinter", "selected"
+            if status == "cancelled":
+                return None, "tkinter", "cancelled"
         except Exception:
             pass
 
@@ -3593,7 +4164,7 @@ def _normalize_selected_directory(path: str) -> str | None:
 
     # Some IFileDialog-based folder pickers may return an artificial file token.
     lowered_name = p.name.lower()
-    if lowered_name in {"select folder", "[select this folder]"}:
+    if lowered_name in {"select folder", "[select this folder]", "选择此文件夹"}:
         candidates.append(p.parent)
 
     for c in candidates:
@@ -3847,13 +4418,29 @@ def health() -> dict[str, str]:
 
 @app.get("/api/settings/global")
 def get_settings() -> dict[str, Any]:
-    return get_global_settings().model_dump()
+    return _redact_global_settings_for_client(get_global_settings().model_dump())
 
 
 @app.put("/api/settings/global")
 def put_settings(payload: GlobalSettingsModel) -> dict[str, str]:
     save_global_settings(payload)
     return {"status": "ok"}
+
+
+@app.get("/api/resources/inventory")
+def get_resource_inventory() -> dict[str, Any]:
+    gs = get_global_settings()
+    _autorealize_base, mlevolve_base, _report_base, request_timeout = _service_base_urls(gs)
+    python_executable = str(gs.python.get("executable") or "python").strip() or "python"
+    query = urllib.parse.urlencode({"python_executable": python_executable})
+    try:
+        return _json_get(
+            mlevolve_base,
+            f"/resources/inventory?{query}",
+            timeout_secs=max(30, request_timeout),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"MLEvolve resource detection failed: {exc}") from exc
 
 
 @app.get("/api/tasks")
@@ -3906,6 +4493,12 @@ def rerun_automl(payload: RerunAutoMLRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="confirm=true required for rerun automl")
     task = store.get(payload.task_id)
     _validate_automl_rerun(task)
+    gs = get_global_settings()
+    _ar_base, mlevolve_base, _report_base, _req_timeout = _service_base_urls(gs)
+    try:
+        _wait_for_service_ready(mlevolve_base, "AutoML")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     thread = threading.Thread(target=_rerun_automl_thread, args=(payload.task_id,), daemon=True)
     thread.start()
     return {"status": "started", "task_id": payload.task_id, "mode": "automl_only"}
@@ -4069,14 +4662,40 @@ def list_roots() -> dict[str, Any]:
 def pick_directory(payload: PickDirectoryRequest) -> dict[str, Any]:
     initial_path = payload.initial_path.strip()
     title = payload.title.strip() or "Select Directory"
-    picked, method, status = _pick_directory_native(initial_path=initial_path, title=title)
+    if not DIRECTORY_PICKER_LOCK.acquire(blocking=False):
+        return {
+            "ok": False,
+            "path": None,
+            "method": "none",
+            "reason": "picker_busy",
+            "raw_path": None,
+            "platform": sys.platform,
+        }
+    try:
+        picked, method, status = _pick_directory_native(initial_path=initial_path, title=title)
+    finally:
+        DIRECTORY_PICKER_LOCK.release()
     normalized = _normalize_selected_directory(picked or "")
     if normalized:
-        return {"ok": True, "path": normalized, "method": method, "reason": "selected", "raw_path": picked}
+        return {
+            "ok": True,
+            "path": normalized,
+            "method": method,
+            "reason": "selected",
+            "raw_path": picked,
+            "platform": sys.platform,
+        }
     reason = status
     if status == "selected" and picked:
         reason = "invalid_selection"
-    return {"ok": False, "path": None, "method": method, "reason": reason, "raw_path": picked}
+    return {
+        "ok": False,
+        "path": None,
+        "method": method,
+        "reason": reason,
+        "raw_path": picked,
+        "platform": sys.platform,
+    }
 
 
 @app.post("/api/fs/open-directory")

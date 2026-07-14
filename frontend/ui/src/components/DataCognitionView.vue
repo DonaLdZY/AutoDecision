@@ -1,8 +1,10 @@
 ﻿<script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import type { SnapshotPayload } from '../types'
+import { deriveCognitionProgress } from '../utils/cognitionProgress'
 import CognitionProbePanel from './CognitionProbePanel.vue'
 import CognitionTreeNode from './CognitionTreeNode.vue'
+import QDIWorkbench from './QDIWorkbench.vue'
 import type { CognitionTreeNode as TreeNode, ReadState } from './cognition-tree-types'
 
 type FileCognitionPayload = {
@@ -37,9 +39,9 @@ const report = computed(() => asRecord(ar.value.data_cognition_report))
 const events = computed(() => (ar.value.events as Record<string, unknown>[] | undefined) ?? [])
 const fileCognitionIndex = computed<Record<string, FileCognitionPayload>>(() => ar.value.file_cognition_index ?? {})
 const dataDescriptionText = computed(() => String(ar.value.data_description_text ?? ''))
+const currentState = computed(() => asRecord(ar.value.current_state))
 const cognitionCompleted = computed(() => {
-  const state = asRecord(ar.value.current_state)
-  return String(state.status ?? '').toLowerCase() === 'completed'
+  return String(currentState.value.status ?? '').toLowerCase() === 'completed'
 })
 
 const normalizedIndex = computed(() => {
@@ -75,69 +77,6 @@ const investigatorEnabled = computed(() => {
   const value = questionInvestigation.value.enabled
   return typeof value === 'boolean' ? value : props.snapshot?.task?.config?.auto_realize?.enable_question_investigator !== false
 })
-
-const investigatorQuestions = computed(() => {
-  return asArray(questionInvestigation.value.questions)
-    .map((item) => asRecord(item))
-    .filter((item) => Object.keys(item).length > 0)
-})
-
-const investigatorScripts = computed(() => {
-  return asArray(questionInvestigation.value.script_requests)
-    .map((item) => asRecord(item))
-    .filter((item) => Object.keys(item).length > 0)
-})
-
-const investigatorResults = computed(() => {
-  return asArray(questionInvestigation.value.step_results)
-    .map((item) => asRecord(item))
-    .filter((item) => Object.keys(item).length > 0)
-})
-
-const investigatorAnswers = computed(() => {
-  return asArray(questionInvestigation.value.answers)
-    .map((item) => asRecord(item))
-    .filter((item) => Object.keys(item).length > 0)
-})
-
-const investigatorUnresolved = computed(() => asArray(questionInvestigation.value.unresolved_questions).map((item) => String(item)).filter(Boolean))
-
-const investigatorSummary = computed(() => String(questionInvestigation.value.summary ?? '').trim())
-
-const investigatorStatus = computed(() => {
-  if (!investigatorEnabled.value) return '已关闭'
-  if (investigatorAnswers.value.length > 0) return '已形成结论'
-  if (investigatorResults.value.some((item) => String(item.status ?? '') === 'failed')) return '脚本失败待处理'
-  if (investigatorResults.value.length > 0) return '脚本已执行'
-  if (investigatorQuestions.value.length > 0 || investigatorScripts.value.length > 0) return '调查中'
-  return '等待启动'
-})
-
-const investigatorResultCounts = computed(() => {
-  const counts = { completed: 0, failed: 0, other: 0, repairs: 0 }
-  for (const item of investigatorResults.value) {
-    const status = String(item.status ?? '').toLowerCase()
-    if (status === 'completed') counts.completed += 1
-    else if (status === 'failed') counts.failed += 1
-    else counts.other += 1
-    const result = asRecord(item.result)
-    const attempt = Number(result.attempt ?? 1)
-    if (Number.isFinite(attempt) && attempt > 1) counts.repairs = Math.max(counts.repairs, attempt - 1)
-  }
-  return counts
-})
-
-function compactResultPreview(item: Record<string, unknown>) {
-  const result = asRecord(item.result)
-  const error = String(item.error ?? '').trim()
-  const payload = Object.keys(result).length > 0 ? result : error
-  try {
-    const text = typeof payload === 'string' ? payload : JSON.stringify(payload)
-    return text.length > 240 ? `${text.slice(0, 240)}...` : text
-  } catch {
-    return String(payload).slice(0, 240)
-  }
-}
 
 const filenameSampleGroups = computed(() => {
   return asArray(report.value.filename_sample_groups)
@@ -298,6 +237,12 @@ function countStates(node: TreeNode | null) {
 }
 
 const stateCounts = computed(() => countStates(tree.value))
+const cognitionProgress = computed(() => deriveCognitionProgress(events.value, {
+  totalFiles: Object.values(stateCounts.value).reduce((sum, count) => sum + count, 0),
+  completedFiles: stateCounts.value.read,
+  failedFiles: stateCounts.value.failed,
+  reportAvailable: Object.keys(report.value).length > 0,
+}))
 const traceCount = computed(() => {
   let count = 0
   for (const payload of Object.values(normalizedIndex.value)) {
@@ -305,15 +250,6 @@ const traceCount = computed(() => {
     if (Object.keys(asRecord(metadata.cognition_trace)).length > 0) count += 1
   }
   return count
-})
-const recentCognitionEvents = computed(() => {
-  return [...events.value]
-    .filter((row) => {
-      const component = String(row.component ?? '').toLowerCase()
-      return component.includes('data_cognition') || component.includes('file_cognition') || component.includes('stage.p1')
-    })
-    .slice(-10)
-    .reverse()
 })
 const selectedPayload = computed<FileCognitionPayload | null>(() => {
   if (selectedPath.value === '__root__') return { markdown: dataDescriptionText.value }
@@ -335,19 +271,47 @@ function onRootDblclick() {
   selectedPath.value = '__root__'
 }
 
-function eventTitle(row: Record<string, unknown>) {
-  return `${String(row.component ?? '-')}.${String(row.event ?? '-')}`
-}
-
-function eventFile(row: Record<string, unknown>) {
-  const fields = asRecord(row.fields)
-  return String(fields.file ?? fields.source ?? '')
-}
 </script>
 
 <template>
   <section class="page">
-    <aside class="left">
+    <section class="overall-progress" :class="cognitionProgress.status">
+      <div class="progress-heading">
+        <div>
+          <p class="eyebrow">Live Cognition Progress</p>
+          <div class="progress-title-row">
+            <h3>数据总体认知</h3>
+            <span class="overall-state" :class="cognitionProgress.status">{{ cognitionProgress.statusLabel }}</span>
+          </div>
+          <p class="current-activity">
+            <span v-if="cognitionProgress.status === 'running'" class="activity-pulse" aria-hidden="true"></span>
+            {{ cognitionProgress.activityLabel }}
+          </p>
+        </div>
+        <div class="progress-number">
+          <strong>{{ cognitionProgress.percent }}%</strong>
+          <span v-if="cognitionProgress.lastUpdate">更新于 {{ cognitionProgress.lastUpdate }}</span>
+        </div>
+      </div>
+
+      <div class="progress-track" aria-label="数据总体认知进度">
+        <span :style="{ width: `${cognitionProgress.percent}%` }"></span>
+      </div>
+
+      <div class="stage-strip">
+        <article v-for="(stage, index) in cognitionProgress.stages" :key="stage.key" :class="stage.status">
+          <span class="stage-index">{{ String(index + 1).padStart(2, '0') }}</span>
+          <div>
+            <strong>{{ stage.label }}</strong>
+            <small>{{ stage.detail }}</small>
+          </div>
+          <span class="stage-dot" aria-hidden="true"></span>
+        </article>
+      </div>
+    </section>
+
+    <div class="cognition-grid">
+      <aside class="left">
       <header class="section-header">
         <div>
           <p class="eyebrow">Data Cognition</p>
@@ -399,76 +363,240 @@ function eventFile(row: Record<string, unknown>) {
         </div>
       </section>
 
-      <section class="investigator-panel">
-        <div class="investigator-head">
-          <h5>Question-Driven Investigator</h5>
-          <span class="investigator-pill" :class="{ off: !investigatorEnabled }">{{ investigatorStatus }}</span>
-        </div>
-        <p v-if="investigatorSummary" class="investigator-summary">{{ investigatorSummary }}</p>
-        <p v-else class="investigator-summary muted">
-          {{ investigatorEnabled ? '默认开启：等待数据认知阶段生成疑问、只读脚本和结论。' : '已在任务配置中关闭。' }}
-        </p>
-        <div class="investigator-stats">
-          <span>疑问 {{ investigatorQuestions.length }}</span>
-          <span>脚本 {{ investigatorScripts.length }}</span>
-          <span>成功 {{ investigatorResultCounts.completed }}</span>
-          <span>失败 {{ investigatorResultCounts.failed }}</span>
-          <span>修复 {{ investigatorResultCounts.repairs }}</span>
-        </div>
-        <div v-if="investigatorQuestions.length > 0" class="investigator-list">
-          <strong>当前疑问</strong>
-          <article v-for="item in investigatorQuestions.slice(0, 4)" :key="String(item.question_id ?? item.question)">
-            <span>{{ String(item.question ?? '') }}</span>
-            <small>{{ String(item.category ?? 'other') }} · {{ String(item.priority ?? 'medium') }}</small>
-          </article>
-        </div>
-        <div v-if="investigatorResults.length > 0" class="investigator-list">
-          <strong>脚本执行摘要</strong>
-          <article v-for="item in investigatorResults.slice(-4).reverse()" :key="String(item.request_id ?? item.question_id)">
-            <span>{{ String(item.question_id ?? '-') }} · {{ String(item.status ?? '-') }}</span>
-            <small>{{ compactResultPreview(item) }}</small>
-          </article>
-        </div>
-        <div v-if="investigatorAnswers.length > 0" class="investigator-list">
-          <strong>最终结论</strong>
-          <article v-for="item in investigatorAnswers.slice(0, 4)" :key="String(item.question_id ?? item.answer)">
-            <span>{{ String(item.answer ?? '') }}</span>
-            <small>{{ String(item.confidence ?? 'medium') }} · {{ asArray(item.evidence).slice(0, 2).join('；') }}</small>
-          </article>
-        </div>
-        <div v-if="investigatorUnresolved.length > 0" class="investigator-list unresolved">
-          <strong>未解决问题</strong>
-          <article v-for="item in investigatorUnresolved.slice(0, 4)" :key="item">
-            <span>{{ item }}</span>
-          </article>
-        </div>
-      </section>
+        <p class="tip">单击目录展开/收起；双击加粗节点预览认知文档；目录有目录级认知时也可双击预览。</p>
+      </aside>
 
-      <section v-if="recentCognitionEvents.length > 0" class="event-panel">
-        <h5>最近认知事件</h5>
-        <article v-for="eventRow in recentCognitionEvents" :key="`${String(eventRow.seq ?? '')}-${String(eventRow.ts ?? '')}`">
-          <strong>{{ eventTitle(eventRow) }}</strong>
-          <span>{{ eventFile(eventRow) }}</span>
-        </article>
-      </section>
+      <main class="right">
+        <CognitionProbePanel
+          :path="selectedDisplayPath"
+          :payload="selectedPayload"
+          :is-root="selectedIsRoot"
+        />
+        <p v-if="!selectedPayload" class="empty">请选择左侧已加粗的认知节点。</p>
+        <p class="trace-footnote">本任务已有 {{ traceCount }} 个文件保存了结构化 agent 探查轨迹。</p>
+      </main>
+    </div>
 
-      <p class="tip">单击目录展开/收起；双击加粗节点预览认知文档；目录有目录级认知时也可双击预览。</p>
-    </aside>
-
-    <main class="right">
-      <CognitionProbePanel
-        :path="selectedDisplayPath"
-        :payload="selectedPayload"
-        :is-root="selectedIsRoot"
-      />
-      <p v-if="!selectedPayload" class="empty">请选择左侧已加粗的认知节点。</p>
-      <p class="trace-footnote">本任务已有 {{ traceCount }} 个文件保存了结构化 agent 探查轨迹。</p>
-    </main>
+    <QDIWorkbench
+      :report="questionInvestigation"
+      :events="events"
+      :current-state="currentState"
+      :enabled="investigatorEnabled"
+    />
   </section>
 </template>
 
 <style scoped>
 .page {
+  display: grid;
+  gap: 16px;
+}
+
+.overall-progress {
+  overflow: hidden;
+  border: 1px solid #c7dce4;
+  border-radius: 20px;
+  padding: 20px 22px;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(12, 128, 119, 0.14), transparent 27%),
+    linear-gradient(140deg, #f8fcfb 0%, #f0f7fa 58%, #edf5f4 100%);
+  box-shadow: 0 16px 38px rgba(27, 76, 96, 0.07);
+}
+
+.overall-progress.completed {
+  border-color: #b9d9ca;
+}
+
+.overall-progress.failed {
+  border-color: #efc5bd;
+}
+
+.progress-heading,
+.progress-title-row,
+.current-activity,
+.stage-strip article {
+  display: flex;
+  align-items: center;
+}
+
+.progress-heading {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.progress-title-row {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.progress-title-row h3 {
+  margin: 2px 0 0;
+  color: #173f55;
+  font-size: 22px;
+}
+
+.overall-state {
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #e8eef1;
+  color: #587181;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.overall-state.running {
+  background: #dff3ef;
+  color: #08766d;
+}
+
+.overall-state.completed {
+  background: #dff2e7;
+  color: #267052;
+}
+
+.overall-state.failed {
+  background: #fde8e4;
+  color: #a24439;
+}
+
+.current-activity {
+  gap: 8px;
+  margin: 9px 0 0;
+  color: #4b6c7e;
+  font-size: 13px;
+}
+
+.activity-pulse {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #0b8f83;
+  box-shadow: 0 0 0 0 rgba(11, 143, 131, 0.35);
+  animation: cognition-pulse 1.8s infinite;
+}
+
+.progress-number {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  color: #6b8492;
+  font-size: 11px;
+}
+
+.progress-number strong {
+  color: #164f62;
+  font-family: Georgia, serif;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.progress-track {
+  height: 7px;
+  margin-top: 17px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dce8eb;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #197c86, #0d9b81);
+  transition: width 500ms ease;
+}
+
+.stage-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.stage-strip article {
+  position: relative;
+  min-width: 0;
+  gap: 9px;
+  border: 1px solid #d5e2e6;
+  border-radius: 12px;
+  padding: 10px 28px 10px 10px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.stage-strip article.running {
+  border-color: #8fc9c2;
+  background: #ecf8f5;
+}
+
+.stage-strip article.completed {
+  border-color: #c1dece;
+  background: #f2faf5;
+}
+
+.stage-strip article.failed {
+  border-color: #efc7c0;
+  background: #fff4f1;
+}
+
+.stage-index {
+  color: #87a0ab;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.stage-strip article > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.stage-strip strong {
+  overflow: hidden;
+  color: #31596c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-strip small {
+  overflow: hidden;
+  color: #738b98;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-dot {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b6c4ca;
+}
+
+.running .stage-dot {
+  background: #0c9284;
+  animation: cognition-pulse 1.8s infinite;
+}
+
+.completed .stage-dot {
+  background: #3d9a69;
+}
+
+.failed .stage-dot {
+  background: #c45243;
+}
+
+@keyframes cognition-pulse {
+  70% { box-shadow: 0 0 0 7px rgba(11, 143, 131, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(11, 143, 131, 0); }
+}
+
+.cognition-grid {
   display: grid;
   grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.2fr);
   gap: 12px;
@@ -611,118 +739,6 @@ h5 {
   padding: 10px;
 }
 
-.event-panel {
-  margin-top: 10px;
-  border: 1px solid #d8e3f2;
-  border-radius: 12px;
-  background: #fffdf8;
-  padding: 10px;
-}
-
-.investigator-panel {
-  margin-top: 10px;
-  border: 1px solid #cfe0d6;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f4fff8 0%, #f8fbff 100%);
-  padding: 10px;
-}
-
-.investigator-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.investigator-pill {
-  border-radius: 999px;
-  background: #dff6e7;
-  color: #21613a;
-  font-size: 11px;
-  padding: 3px 8px;
-}
-
-.investigator-pill.off {
-  background: #eef1f5;
-  color: #67788f;
-}
-
-.investigator-summary {
-  margin: 8px 0;
-  color: #365f48;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.investigator-summary.muted {
-  color: #667f94;
-}
-
-.investigator-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.investigator-stats span {
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid #d4e6dc;
-  color: #315b45;
-  font-size: 11px;
-  padding: 3px 7px;
-}
-
-.investigator-list {
-  display: grid;
-  gap: 6px;
-  margin-top: 8px;
-  color: #365f48;
-  font-size: 12px;
-}
-
-.investigator-list article {
-  display: grid;
-  gap: 2px;
-  border-top: 1px dashed #cfdfd5;
-  padding-top: 6px;
-}
-
-.investigator-list small {
-  color: #61798e;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.investigator-list.unresolved {
-  color: #8a542f;
-}
-
-.event-panel article {
-  display: grid;
-  gap: 2px;
-  padding: 6px 0;
-  border-bottom: 1px dashed #d9e2ef;
-  color: #405f84;
-  font-size: 12px;
-}
-
-.event-panel article:last-child {
-  border-bottom: 0;
-}
-
-.event-panel strong {
-  color: #244b78;
-}
-
-.event-panel span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sampling-list {
   display: grid;
   gap: 7px;
@@ -764,12 +780,28 @@ h5 {
 }
 
 @media (max-width: 1100px) {
-  .page {
+  .stage-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cognition-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 720px) {
+  .progress-heading {
+    align-items: flex-start;
+  }
+
+  .progress-number {
+    flex: 0 0 auto;
+  }
+
+  .stage-strip {
+    grid-template-columns: 1fr;
+  }
+
   .status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

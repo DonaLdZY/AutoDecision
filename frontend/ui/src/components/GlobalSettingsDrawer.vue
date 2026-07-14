@@ -195,7 +195,16 @@ function saveCurrent() {
                   <label><span>备注名</span><input v-model="model.name" placeholder="例如 DeepSeek 主力模型" /></label>
                   <label><span>model_name</span><input v-model="model.model" placeholder="例如 deepseek-v4-pro" /></label>
                   <label><span>Base URL</span><input v-model="model.baseUrl" placeholder="https://api.deepseek.com" /></label>
-                  <label><span>API Key</span><input v-model="model.apiKey" placeholder="留空保存时会保留旧 key" /></label>
+                  <label>
+                    <span>API Key</span>
+                    <input
+                      v-model="model.apiKey"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="model.apiKeyConfigured ? '已配置，输入新值可替换' : '输入 API Key'"
+                    />
+                    <small v-if="model.apiKeyConfigured">已配置，后端不会将原值返回浏览器。</small>
+                  </label>
                   <label>
                     <span>Thinking Mode</span>
                     <select v-model="model.thinkingMode">
@@ -231,12 +240,6 @@ function saveCurrent() {
           </section>
 
           <section v-else-if="activePage === 'runtime'" class="page">
-            <h4>资源限制</h4>
-            <div class="grid2">
-              <label><span>CPU 限制</span><input type="number" v-model.number="local.resource.cpuLimit" /></label>
-              <label><span>内存限制(GB)</span><input type="number" v-model.number="local.resource.memoryLimitGb" /></label>
-            </div>
-
             <h4>Python 环境</h4>
             <label><span>Python 可执行文件</span><input v-model="local.python.executable" placeholder="例如 /usr/bin/python3 或 C:\\Python311\\python.exe" /></label>
             <div class="py-env-panel">

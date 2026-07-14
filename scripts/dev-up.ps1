@@ -190,13 +190,11 @@ try {
 
   $payload | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $pidFile
 
-  if ($Wait) {
-    Wait-HttpReady -Name "AutoRealize API" -Url "http://127.0.0.1:18101/health" -TimeoutSec 30
-    Wait-HttpReady -Name "MLEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
-    Wait-HttpReady -Name "AutoReport API" -Url "http://127.0.0.1:18104/health" -TimeoutSec 30
-    Wait-HttpReady -Name "Gateway API" -Url "http://127.0.0.1:18080/api/health" -TimeoutSec 30
-    Wait-HttpReady -Name "Frontend UI" -Url "http://127.0.0.1:5173" -TimeoutSec 45
-  }
+  Wait-HttpReady -Name "AutoRealize API" -Url "http://127.0.0.1:18101/health" -TimeoutSec 30
+  Wait-HttpReady -Name "MLEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
+  Wait-HttpReady -Name "AutoReport API" -Url "http://127.0.0.1:18104/health" -TimeoutSec 30
+  Wait-HttpReady -Name "Gateway API" -Url "http://127.0.0.1:18080/api/health" -TimeoutSec 30
+  Wait-HttpReady -Name "Frontend UI" -Url "http://127.0.0.1:5173" -TimeoutSec 45
 } catch {
   Write-Host "Startup failed: $($_.Exception.Message)"
   foreach ($j in $jobs) {
@@ -217,12 +215,7 @@ Write-Host "4) Gateway API:     http://127.0.0.1:18080/api/health"
 Write-Host "5) Frontend UI:     http://127.0.0.1:5173"
 Write-Host "Logs: .dev-state/logs/*.log"
 Write-Host ""
-if ($Wait) {
-  Write-Host "Health checks passed."
-} else {
-  Write-Host "Returned immediately. Check readiness with: powershell -ExecutionPolicy Bypass -File .\scripts\dev-status.ps1"
-  Write-Host "Wait for health checks next time: powershell -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Wait"
-}
+Write-Host "Health checks passed."
 Write-Host "Stop all: powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1"
 Write-Host "Restart:  powershell -ExecutionPolicy Bypass -File .\scripts\dev-restart.ps1"
 Write-Host "Logs:     powershell -ExecutionPolicy Bypass -File .\scripts\dev-logs.ps1"

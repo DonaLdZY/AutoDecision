@@ -305,6 +305,7 @@ async function onRerunAutoRealize(taskId: string) {
 async function onRerunAutoML(taskId: string) {
   if (!window.confirm('确认仅重跑 AutoML 吗？这会复用 AutoRealize 已生成的输出，但不会重新生成或删除 AutoReport 报告。')) return
   try {
+    message.value = '正在检查 AutoML 服务并启动任务...'
     const task = workingCopies[taskId]
     if (!task) return
     await onSaveTask(taskId)

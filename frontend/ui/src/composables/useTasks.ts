@@ -1,6 +1,8 @@
 ﻿import { computed, reactive, shallowRef } from 'vue'
 import { api } from '../api'
 import type { AutoMLConfig, AutoRealizeConfig, AutoReportConfig, SnapshotPayload, Task, TaskConfig } from '../types'
+import { defaultTaskResources } from '../utils/taskResources'
+import { latestCreatedTaskId } from '../utils/taskSelection'
 
 function defaultAutoRealize(): AutoRealizeConfig {
   return {
@@ -88,6 +90,7 @@ function defaultTaskConfig(index: number): TaskConfig {
     auto_realize: defaultAutoRealize(),
     auto_ml: defaultAutoML(),
     auto_report: defaultAutoReport(),
+    resources: defaultTaskResources(),
   }
 }
 
@@ -115,11 +118,10 @@ export function useTasks() {
       tasks.value = list
       if (silent && isConnectivityError(error.value)) error.value = ''
       if (!silent) error.value = ''
-      if (!activeTaskId.value && list.length > 0) {
-        activeTaskId.value = list[0].id
-      }
-      if (activeTaskId.value && !list.some((x) => x.id === activeTaskId.value) && list.length > 0) {
-        activeTaskId.value = list[0].id
+      if (list.length === 0) {
+        activeTaskId.value = ''
+      } else if (!activeTaskId.value || !list.some((task) => task.id === activeTaskId.value)) {
+        activeTaskId.value = latestCreatedTaskId(list)
       }
     } catch (e) {
       if (!silent) error.value = (e as Error).message
@@ -151,7 +153,7 @@ export function useTasks() {
     await api.deleteTask(taskId)
     tasks.value = tasks.value.filter((t) => t.id !== taskId)
     if (activeTaskId.value === taskId) {
-      activeTaskId.value = tasks.value[0]?.id ?? ''
+      activeTaskId.value = latestCreatedTaskId(tasks.value)
     }
     delete snapshots[taskId]
   }

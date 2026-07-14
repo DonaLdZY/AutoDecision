@@ -1,9 +1,11 @@
 ﻿<script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, shallowRef, watch } from 'vue'
 import type { SnapshotPayload, Task, TaskConfig } from '../types'
 import { cloneDeep } from '../utils/clone'
 import DirectoryPicker from './DirectoryPicker.vue'
+import TaskResourceSettings from './TaskResourceSettings.vue'
 import { api } from '../api'
+import { normalizeTaskResources } from '../utils/taskResources'
 
 const props = defineProps<{
   task: Task
@@ -30,6 +32,7 @@ const subTab = reactive({ key: 'basic' })
 const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
 
 function normalizeLocalConfig() {
+  localConfig.resources = normalizeTaskResources(localConfig.resources)
   localConfig.auto_realize.run_data_cognition = true
   localConfig.auto_realize.run_task_definition = true
   localConfig.auto_realize.enable_question_investigator = localConfig.auto_realize.enable_question_investigator !== false
@@ -132,9 +135,9 @@ const dirPicker = reactive({
   visible: false,
   mode: 'input' as 'input' | 'output',
 })
-const pickerMessage = reactive({
-  text: '',
-})
+const nativePickerPending = shallowRef(false)
+const pickerMessage = shallowRef('')
+const pickerMessageKind = shallowRef<'info' | 'warning' | 'error'>('info')
 
 const pickerInitialPath = computed(() => {
   if (dirPicker.mode === 'input') return localConfig.input_root
@@ -144,12 +147,15 @@ const pickerInitialPath = computed(() => {
 const pickerTitle = computed(() => (dirPicker.mode === 'input' ? '选择输入文件夹' : '选择输出文件夹'))
 
 function openDirPicker(mode: 'input' | 'output') {
+  if (nativePickerPending.value) return
   void openDirPickerAsync(mode)
 }
 
 async function openDirPickerAsync(mode: 'input' | 'output') {
   dirPicker.mode = mode
-  pickerMessage.text = ''
+  nativePickerPending.value = true
+  pickerMessageKind.value = 'info'
+  pickerMessage.value = '正在打开系统目录选择器，请查看任务栏、Dock 或当前桌面...'
   const initial = mode === 'input' ? localConfig.input_root : localConfig.output_root
   const title = mode === 'input' ? '选择输入文件夹' : '选择输出文件夹'
   try {
@@ -159,12 +165,18 @@ async function openDirPickerAsync(mode: 'input' | 'output') {
       return
     }
     if (res.reason === 'cancelled') {
+      pickerMessageKind.value = 'info'
+      pickerMessage.value = '已取消目录选择。'
       return
     }
     const detail = [res.method, res.reason, res.raw_path || ''].filter(Boolean).join(' | ')
-    pickerMessage.text = `系统目录选择器不可用，已切换内置选择器（${detail}）`
-  } catch {
-    pickerMessage.text = '系统目录选择器调用失败，已切换内置选择器'
+    pickerMessageKind.value = 'warning'
+    pickerMessage.value = `系统目录选择器不可用，已切换内置选择器（${detail || res.platform || 'unknown'}）`
+  } catch (error) {
+    pickerMessageKind.value = 'error'
+    pickerMessage.value = `系统目录选择器调用失败，已切换内置选择器：${(error as Error).message || String(error)}`
+  } finally {
+    nativePickerPending.value = false
   }
   dirPicker.visible = true
 }
@@ -177,7 +189,7 @@ function onDirSelected(path: string) {
   }
   propagateConfig()
   dirPicker.visible = false
-  pickerMessage.text = ''
+  pickerMessage.value = ''
 }
 
 async function openRunDirectory() {
@@ -210,6 +222,7 @@ function onToggleEmbedding() {
 
     <div class="sub-tabs">
       <button :class="{ active: subTab.key === 'basic' }" @click="subTab.key = 'basic'">基础配置</button>
+      <button :class="{ active: subTab.key === 'resources' }" @click="subTab.key = 'resources'">任务资源</button>
       <button :class="{ active: subTab.key === 'autorealize' }" @click="subTab.key = 'autorealize'">AutoRealize</button>
       <button :class="{ active: subTab.key === 'automl' }" @click="subTab.key = 'automl'">AutoML</button>
       <button :class="{ active: subTab.key === 'report' }" @click="subTab.key = 'report'">AutoReport</button>
@@ -224,20 +237,53 @@ function onToggleEmbedding() {
         <span>输入文件夹</span>
         <div class="path-input-row">
           <input v-model="localConfig.input_root" @input="propagateConfig" placeholder="数据文件夹路径" />
-          <button type="button" class="path-btn" @click="openDirPicker('input')">浏览...</button>
+          <button
+            type="button"
+            class="path-btn"
+            :disabled="nativePickerPending"
+            :aria-busy="nativePickerPending && dirPicker.mode === 'input'"
+            @click="openDirPicker('input')"
+          >
+            {{ nativePickerPending && dirPicker.mode === 'input' ? '正在打开...' : '浏览...' }}
+          </button>
         </div>
       </label>
       <label>
         <span>输出文件夹</span>
         <div class="path-input-row">
           <input v-model="localConfig.output_root" @input="propagateConfig" placeholder="默认 AutoDecision/runs" />
-          <button type="button" class="path-btn" @click="openDirPicker('output')">浏览...</button>
+          <button
+            type="button"
+            class="path-btn"
+            :disabled="nativePickerPending"
+            :aria-busy="nativePickerPending && dirPicker.mode === 'output'"
+            @click="openDirPicker('output')"
+          >
+            {{ nativePickerPending && dirPicker.mode === 'output' ? '正在打开...' : '浏览...' }}
+          </button>
         </div>
       </label>
+      <div
+        v-if="pickerMessage"
+        class="picker-msg"
+        :class="pickerMessageKind"
+        role="status"
+        aria-live="polite"
+      >
+        {{ pickerMessage }}
+      </div>
       <label>
-        <span>任务自然语言需求</span>
-        <textarea v-model="localConfig.auto_realize.task_hint" @input="propagateConfig" rows="4" placeholder="一句话任务需求或文档摘要" />
+        <span>任务需求</span>
+        <textarea v-model="localConfig.auto_realize.task_hint" @input="propagateConfig" rows="4" placeholder="例如：预测下个月销量" />
       </label>
+    </div>
+
+    <div class="sub-body" v-else-if="subTab.key === 'resources'">
+      <TaskResourceSettings
+        v-model="localConfig.resources"
+        :disabled="task.status === 'running'"
+        @update:model-value="propagateConfig"
+      />
     </div>
 
     <div class="sub-body" v-else-if="subTab.key === 'autorealize'">
@@ -356,7 +402,6 @@ function onToggleEmbedding() {
       @close="dirPicker.visible = false"
       @select="onDirSelected"
     />
-    <div v-if="pickerMessage.text" class="picker-msg">{{ pickerMessage.text }}</div>
   </section>
 </template>
 
@@ -487,6 +532,11 @@ textarea {
   cursor: pointer;
 }
 
+.path-btn:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .switches {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -574,6 +624,18 @@ textarea {
   border: 1px solid #efd681;
   border-radius: 8px;
   padding: 6px 10px;
+}
+
+.picker-msg.info {
+  color: #244d78;
+  background: #eaf3ff;
+  border-color: #b8d3f2;
+}
+
+.picker-msg.error {
+  color: #8b2525;
+  background: #ffeded;
+  border-color: #efb5b5;
 }
 
 @media (max-width: 900px) {

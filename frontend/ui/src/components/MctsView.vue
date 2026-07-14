@@ -251,15 +251,15 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
           <h5>运行结果</h5>
           <pre>{{ selectedNode.result || '-' }}</pre>
         </article>
-        <article>
-          <h5>LLM Insight</h5>
+        <article class="insight-block">
+          <h5>方案洞察</h5>
           <pre>{{ displayInsight(selectedNode) }}</pre>
         </article>
-        <details v-if="hasParserDetails(selectedNode)" class="parser-details">
-          <summary>程序解析事实（给后续节点看的硬事实）</summary>
-          <h5 v-if="selectedNode.parser_analysis">Parser Analysis</h5>
+        <details v-if="hasParserDetails(selectedNode)" class="diagnostic-details">
+          <summary>运行诊断详情</summary>
+          <h5 v-if="selectedNode.parser_analysis">解析摘要</h5>
           <pre v-if="selectedNode.parser_analysis">{{ selectedNode.parser_analysis }}</pre>
-          <h5 v-if="selectedNode.decision_signals">Decision Signals</h5>
+          <h5 v-if="selectedNode.decision_signals">结构化信号</h5>
           <pre v-if="selectedNode.decision_signals">{{ formatDecisionSignals(selectedNode.decision_signals) }}</pre>
         </details>
       </div>
@@ -401,26 +401,45 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
   min-height: 120px;
 }
 
-.blocks .parser-details {
-  border: 1px solid #d4e9d2;
-  border-radius: 8px;
-  padding: 8px;
-  min-height: 120px;
+.blocks .insight-block {
+  border-color: #bcdcbc;
+  background: #fbfffa;
+}
+
+.blocks .diagnostic-details {
+  grid-column: 1 / -1;
+  padding: 5px 8px;
+  border-top: 1px solid #e1ece0;
+  color: #728272;
 }
 
 .blocks h5 {
   margin: 0 0 6px;
 }
 
-.parser-details summary {
+.diagnostic-details summary {
   cursor: pointer;
-  color: #2e5933;
-  font-size: 12px;
-  font-weight: 700;
+  width: fit-content;
+  color: #718271;
+  font-size: 11px;
+  font-weight: 500;
 }
 
-.parser-details h5 {
+.diagnostic-details h5 {
   margin-top: 8px;
+  color: #647664;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.blocks .diagnostic-details pre {
+  margin: 0;
+  max-height: 150px;
+  overflow: auto;
+  color: #718271;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .blocks pre {

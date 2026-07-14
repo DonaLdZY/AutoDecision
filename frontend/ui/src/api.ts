@@ -1,11 +1,13 @@
-import type { GlobalSettings, PythonEnvironment, SnapshotPayload, Task, TaskConfig } from './types'
+import type { GlobalSettings, PythonEnvironment, ResourceInventory, SnapshotPayload, Task, TaskConfig } from './types'
 
-const API_BASE = 'http://127.0.0.1:18080/api'
+const API_BASE = import.meta.env.VITE_AUTODECISION_API_BASE || 'http://127.0.0.1:18080/api'
+const API_TOKEN = import.meta.env.VITE_AUTODECISION_API_TOKEN || ''
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
+      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
       ...(init?.headers ?? {}),
     },
     ...init,
@@ -65,10 +67,11 @@ export const api = {
   getSnapshot: (taskId: string) => request<SnapshotPayload>(`/tasks/${taskId}/snapshot`),
   getGlobalSettings: () => request<GlobalSettings>('/settings/global'),
   saveGlobalSettings: (payload: GlobalSettings) => request<{ status: string }>('/settings/global', { method: 'PUT', body: JSON.stringify(payload) }),
+  getResourceInventory: () => request<ResourceInventory>('/resources/inventory'),
   listDir: (path: string) => request<{ path: string; children: { name: string; path: string; is_dir: boolean }[] }>(`/fs/list?path=${encodeURIComponent(path)}`),
   listRoots: () => request<{ roots: string[] }>('/fs/roots'),
   pickDirectory: (initialPath: string, title: string) =>
-    request<{ ok: boolean; path: string | null; method: string; reason?: string; raw_path?: string | null }>('/fs/pick-directory', {
+    request<{ ok: boolean; path: string | null; method: string; reason?: string; raw_path?: string | null; platform?: string }>('/fs/pick-directory', {
       method: 'POST',
       body: JSON.stringify({ initial_path: initialPath, title }),
     }),

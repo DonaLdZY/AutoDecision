@@ -280,12 +280,12 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
         <article class="block"><h5>Plan</h5><pre>{{ selectedNode.plan || '-' }}</pre></article>
         <article class="block"><h5>Code</h5><pre>{{ selectedNode.code || '-' }}</pre></article>
         <article class="block"><h5>运行结果</h5><pre>{{ selectedNode.result || '-' }}</pre></article>
-        <article class="block"><h5>LLM Insight</h5><pre>{{ displayInsight(selectedNode) }}</pre></article>
-        <details v-if="hasParserDetails(selectedNode)" class="block parser-details">
-          <summary>程序解析事实（给后续节点看的硬事实）</summary>
-          <h5 v-if="selectedNode.parser_analysis">Parser Analysis</h5>
+        <article class="block insight-block"><h5>方案洞察</h5><pre>{{ displayInsight(selectedNode) }}</pre></article>
+        <details v-if="hasParserDetails(selectedNode)" class="diagnostic-details">
+          <summary>运行诊断详情</summary>
+          <h5 v-if="selectedNode.parser_analysis">解析摘要</h5>
           <pre v-if="selectedNode.parser_analysis">{{ selectedNode.parser_analysis }}</pre>
-          <h5 v-if="selectedNode.decision_signals">Decision Signals</h5>
+          <h5 v-if="selectedNode.decision_signals">结构化信号</h5>
           <pre v-if="selectedNode.decision_signals">{{ formatDecisionSignals(selectedNode.decision_signals) }}</pre>
         </details>
       </div>
@@ -491,15 +491,41 @@ h4 {
   margin: 0 0 6px;
 }
 
-.parser-details summary {
-  cursor: pointer;
-  color: #294b70;
-  font-size: 12px;
-  font-weight: 700;
+.insight-block {
+  border-color: #bfd3ea;
+  background: #f8fbff;
 }
 
-.parser-details h5 {
+.diagnostic-details {
+  margin: 2px 0 8px;
+  padding: 5px 8px;
+  border-top: 1px solid #e3eaf3;
+  color: #6f8095;
+}
+
+.diagnostic-details summary {
+  cursor: pointer;
+  width: fit-content;
+  color: #718198;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.diagnostic-details h5 {
   margin-top: 8px;
+  color: #64758b;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.diagnostic-details pre {
+  margin: 0;
+  max-height: 150px;
+  overflow: auto;
+  color: #718198;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .block pre {
