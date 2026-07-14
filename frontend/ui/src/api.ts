@@ -1,17 +1,26 @@
 import type { GlobalSettings, PythonEnvironment, ResourceInventory, SnapshotPayload, Task, TaskConfig } from './types'
 
-const API_BASE = import.meta.env.VITE_AUTODECISION_API_BASE || 'http://127.0.0.1:18080/api'
+// Keep browser requests same-origin by default. Vite proxies /api to the local
+// Gateway during development, which also works when Vite selects a port other
+// than 5173 or the page is opened through localhost instead of 127.0.0.1.
+const API_BASE = (import.meta.env.VITE_AUTODECISION_API_BASE || '/api').replace(/\/$/, '')
 const API_TOKEN = import.meta.env.VITE_AUTODECISION_API_TOKEN || ''
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`无法连接 AutoDecision Gateway（${API_BASE}）：${detail}。请确认已运行项目根目录的统一启动脚本。`)
+  }
   if (!res.ok) {
     const text = await res.text()
     let message = text

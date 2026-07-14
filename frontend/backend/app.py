@@ -669,7 +669,12 @@ async def require_optional_api_token(request: Request, call_next):
 
 def _default_global_settings() -> dict[str, Any]:
     return {
-        "python": {"executable": "python"},
+        # Persist the exact interpreter that launched Gateway. When the service
+        # runs inside Conda this keeps task subprocesses in the same environment
+        # instead of falling back to macOS /usr/bin/python3.
+        "python": {
+            "executable": os.environ.get("AUTODECISION_PYTHON_EXECUTABLE", sys.executable),
+        },
         "llm": {
             "modelLibrary": [
                 {
@@ -2281,10 +2286,15 @@ def _wait_for_service_ready(
 
         if time.monotonic() >= deadline:
             detail = f": {last_error}" if last_error else ""
+            restart_command = (
+                "`powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-restart.ps1 -Wait`"
+                if os.name == "nt"
+                else "`./scripts/dev-restart.sh`"
+            )
             raise RuntimeError(
                 f"{service_name} service is not ready at {health_url}{detail}. "
                 "请检查全局设置 coreServices 中的服务地址；本地开发请运行 "
-                "`powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-restart.ps1 -Wait`。"
+                f"{restart_command}。"
             )
         time.sleep(max(0.05, float(poll_secs)))
 
@@ -4713,6 +4723,4 @@ def list_python_environments(current: str = "") -> list[dict[str, Any]]:
     current_exe = current.strip() or str(gs.python.get("executable", "")).strip()
     envs = discover_python_environments(current=current_exe)
     return [x.model_dump() for x in envs]
-
-
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import urllib.error
 
 import pytest
@@ -60,4 +61,4 @@ def test_wait_for_service_ready_returns_actionable_error(monkeypatch) -> None:
 
     message = str(exc_info.value)
     assert "http://127.0.0.1:18103/health" in message
-    assert "dev-restart.ps1" in message
+    assert ("dev-restart.ps1" if os.name == "nt" else "dev-restart.sh") in message

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import yaml
@@ -23,6 +24,7 @@ def test_missing_global_settings_file_is_created(tmp_path: Path, monkeypatch) ->
 
     assert settings_path.is_file()
     saved = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    assert saved["python"]["executable"] == sys.executable
     assert saved["llm"]["roleModels"]["autoMlCode"] == "default-code"
     assert settings["coreServices"]["mlevolveBaseUrl"] == "http://127.0.0.1:18103"
 

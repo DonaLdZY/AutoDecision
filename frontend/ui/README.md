@@ -15,13 +15,15 @@ npm install
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-也可以从 AutoDecision 根目录运行统一启动脚本；详见根目录 [README](../../README.md)。
+单独运行 `npm run dev` 不会启动 Gateway。完整开发环境建议从 AutoDecision 根目录运行统一启动脚本；详见根目录 [README](../../README.md)。
+
+Vite 开发服务器会将同源 `/api` 请求代理到 Gateway。如需修改代理目标，启动 Vite 前设置 `AUTODECISION_GATEWAY_TARGET`。
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `VITE_AUTODECISION_API_BASE` | `http://127.0.0.1:18080/api` | Gateway API 根地址 |
+| `VITE_AUTODECISION_API_BASE` | `/api` | Gateway API 根地址；开发时由 Vite 代理 |
 | `VITE_AUTODECISION_API_TOKEN` | 空 | Gateway 启用 `AUTODECISION_API_TOKEN` 后使用的 Bearer token |
 
 `VITE_*` 变量会被打包进浏览器资源，不能用来保存模型 API Key 或其他长期服务器密钥。

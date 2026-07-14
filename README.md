@@ -138,9 +138,20 @@ git submodule update --init --recursive
 
 ## 安装
 
-### 1. 创建 Python 虚拟环境
+### 1. 创建 Python 环境
 
-Windows PowerShell：
+macOS/Linux 推荐使用 Conda 和 Python 3.12：
+
+```bash
+conda env create -f environment.yml
+conda activate automl
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+环境已存在时可直接 `conda activate automl`，再执行上述 `pip install` 命令同步依赖。
+
+也可以使用 `venv`。Windows PowerShell：
 
 ```powershell
 python -m venv .venv
@@ -149,7 +160,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Linux/macOS：
+Linux/macOS `venv`：
 
 ```bash
 python3 -m venv .venv
@@ -242,17 +253,27 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1
 ### Linux/macOS
 
 ```bash
-chmod +x scripts/dev-up.sh scripts/dev-down.sh
-./scripts/dev-up.sh
+./scripts/dev-up.sh --open
 ```
 
-停止服务：
+脚本会优先读取 `frontend/config/global_settings.yaml` 中的 `python.executable`，其次使用当前 Conda 环境。因此全局设置指向 Conda Python 3.12 后，无需每次传入 `--python`。如需临时覆盖解释器：
 
 ```bash
+./scripts/dev-up.sh --python /path/to/python3.12
+# 或
+AUTODECISION_PYTHON=/path/to/python3.12 ./scripts/dev-up.sh
+```
+
+常用管理命令：
+
+```bash
+./scripts/dev-status.sh
+./scripts/dev-logs.sh gateway-api --follow
+./scripts/dev-restart.sh
 ./scripts/dev-down.sh
 ```
 
-启动后访问 `http://127.0.0.1:5173`。
+脚本会等待五个服务的健康检查；任一服务导入失败或端口未就绪时会停止已启动进程并显示对应日志，不再误报“已全部启动”。启动成功后访问 `http://127.0.0.1:5173`。
 
 ## 手动启动
 
@@ -378,7 +399,21 @@ npm run build
 
 ### 前端出现 502 或任务服务不可用
 
-先检查 `scripts/dev-status.ps1` 或逐个访问服务 `/health`。后台日志位于 `.dev-state/logs/`。
+先检查 `scripts/dev-status.ps1` / `scripts/dev-status.sh` 或逐个访问服务 `/health`。后台日志位于 `.dev-state/logs/`。
+
+### macOS 前端显示 `Failed to fetch`
+
+这表示 Gateway 没有在 `127.0.0.1:18080` 就绪，常见原因是只运行了 `npm run dev`，或 `.venv` 误用了 macOS/Xcode 的 Python 3.9。请在项目根目录运行 `./scripts/dev-up.sh`；如果脚本报告 Python 版本过低，用 Python 3.11/3.12 重建虚拟环境：
+
+```bash
+deactivate 2>/dev/null || true
+rm -rf .venv  # 确认虚拟环境中没有需保留的内容后再执行
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+./scripts/dev-up.sh
+```
 
 ### 配置了 API Key 但后端仍提示缺失
 
