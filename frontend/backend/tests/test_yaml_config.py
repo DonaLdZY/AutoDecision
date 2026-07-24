@@ -9,23 +9,30 @@ import app
 
 def test_autorealize_runtime_config_is_yaml_and_keeps_frontend_keys_out_of_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(app, "STATE_DIR", tmp_path)
-    auto_realize = SimpleNamespace(
-        llm_concurrency=100,
-        enable_fewshot=False,
-        generate_sample_submission=True,
-        llm_timeout=180,
-        llm_enable_thinking=None,
-        llm_reasoning_effort=None,
-        llm_structured_disable_thinking=True,
-        no_telemetry=False,
-        no_knowledge=False,
-        no_llm_cache=False,
-        enable_question_investigator=True,
-        enable_vllm=True,
+    config = app.TaskConfigPayload(
+        task_name="task-1",
+        output_language="en",
+        auto_realize=app.AutoRealizeConfigPayload(
+            llm_concurrency=24,
+            llm_timeout=240,
+            optimize_llm_cost=False,
+            llm_file_cognition_mode="documents_only",
+            table_profile_sample_rows=5000,
+            investigation_max_questions=7,
+            investigation_max_rounds_per_question=4,
+            investigation_max_scripts_per_question=2,
+            investigation_script_timeout_secs=45,
+            prompt_token_budget=16000,
+            artifact_consistency_enabled=True,
+            artifact_consistency_max_rounds=3,
+            cross_stage_memory_enabled=True,
+            cross_stage_headroom_ratio=0.68,
+            cross_stage_retrieval_enabled=False,
+        ),
     )
     task = SimpleNamespace(
         id="task-1",
-        config=SimpleNamespace(auto_realize=auto_realize),
+        config=config,
     )
     llm = {
         "modelLibrary": [
@@ -58,8 +65,25 @@ def test_autorealize_runtime_config_is_yaml_and_keeps_frontend_keys_out_of_file(
     assert path.suffix == ".yaml"
     assert raw["llm"]["api_key"] is None
     assert raw["vllm"]["api_key"] is None
-    assert raw["llm"]["max_concurrent_requests"] == 100
-    assert raw["parallel"]["cognition_max_workers"] == 100
+    assert raw["llm"]["max_concurrent_requests"] == 24
+    assert raw["llm"]["minimum_output_tokens"] == 32768
+    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["llm"]["structured_max_tokens"] == 32768
+    assert raw["llm"]["constraint_memory_max_tokens"] == 32768
+    assert raw["parallel"]["cognition_max_workers"] == 24
+    assert raw["switches"]["optimize_llm_cost"] is False
+    assert raw["data"]["llm_file_cognition_mode"] == "documents_only"
+    assert raw["data"]["table_profile_sample_rows"] == 5000
+    assert raw["investigation"]["max_questions"] == 7
+    assert raw["investigation"]["max_rounds_per_run"] == 4
+    assert raw["investigation"]["max_scripts_per_question"] == 2
+    assert raw["investigation"]["custom_python_timeout_seconds"] == 45
+    assert raw["prompt"]["prompt_token_budget"] == 16000
+    assert raw["prompt"]["output_language"] == "en"
+    assert raw["prompt"]["control_language"] == "en"
+    assert raw["prompt"]["artifact_consistency_max_rounds"] == 3
+    assert raw["context"]["cross_stage_headroom_ratio"] == 0.68
+    assert raw["context"]["cross_stage_retrieval_enabled"] is False
 
 
 def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> None:
@@ -73,6 +97,7 @@ def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> No
         'agent.feedback.api_key="fb-key"',
         'agent.memory_embedding_api_key="vec-key"',
         "agent.steps=12",
+        "runtime.resume_budget_mode=additional",
     ]
 
     path = app._write_mlevolve_config("task-1", command)
@@ -83,6 +108,7 @@ def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> No
     assert raw["agent"]["feedback"]["api_key"] != "fb-key"
     assert raw["agent"]["memory_embedding_api_key"] != "vec-key"
     assert raw["agent"]["steps"] == 12
+    assert raw["runtime"]["resume_budget_mode"] == "additional"
     assert not any("api_key=" in item for item in filtered)
 
 

@@ -45,7 +45,8 @@ function createModelConfig(): ModelConfig {
     apiKey: '',
     thinkingMode: 'default',
     reasoningEffort: 'default',
-    maxTokens: 0,
+    maxTokens: 32768,
+    contextWindowTokens: 0,
   }
 }
 
@@ -62,7 +63,8 @@ function ensureModelSettings(target: GlobalSettings) {
     target.llm.modelLibrary.push(createModelConfig())
   }
   for (const model of target.llm.modelLibrary) {
-    model.maxTokens = Number(model.maxTokens || 0)
+    model.maxTokens = Math.max(32768, Number(model.maxTokens || 0))
+    model.contextWindowTokens = Number(model.contextWindowTokens || 0)
   }
   const firstId = target.llm.modelLibrary[0]?.id || ''
   for (const role of roleLabels) {
@@ -228,11 +230,22 @@ function saveCurrent() {
                     <input
                       v-model.number="model.maxTokens"
                       type="number"
+                      min="32768"
+                      step="1024"
+                      placeholder="至少 32768"
+                    />
+                    <small>正常业务 LLM 调用的输出上限不得低于 32768；更高值会原样保留。</small>
+                  </label>
+                  <label>
+                    <span>Context Window Tokens</span>
+                    <input
+                      v-model.number="model.contextWindowTokens"
+                      type="number"
                       min="0"
                       step="1024"
-                      placeholder="0 或留空表示 API 默认"
+                      placeholder="例如 131072"
                     />
-                    <small>单次 LLM 输出上限；0/空表示不传，由 API/provider 默认决定。</small>
+                    <small>用于 MLEvolve 在超出上下文前预留推理和输出空间；0 表示使用内置默认值。</small>
                   </label>
                 </div>
               </article>

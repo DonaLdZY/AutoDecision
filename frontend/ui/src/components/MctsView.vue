@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import type { MctsNode } from '../types'
+import { isPendingNode, nodeReviewState } from '../utils/nodeReviewState'
 
 const props = defineProps<{
   nodes: MctsNode[]
@@ -146,8 +147,7 @@ function edgePath(from: string, to: string): string {
 
 function nodeClass(node: MctsNode): string[] {
   const cls = ['node-card']
-  cls.push(`stage-${node.stage ?? 'other'}`)
-  if (isPendingNode(node)) cls.push('pending')
+  cls.push(`review-${nodeReviewState(node)}`)
   if (node.id === selectedNodeId.value) cls.push('selected')
   if (props.bestNodeId && node.id === props.bestNodeId) cls.push('best')
   return cls
@@ -156,11 +156,6 @@ function nodeClass(node: MctsNode): string[] {
 function shortMetric(v: number | null | undefined): string {
   if (v === null || v === undefined) return '-'
   return Number(v).toFixed(4)
-}
-
-function isPendingNode(node: MctsNode): boolean {
-  const status = String(node.status ?? '')
-  return Boolean(node.pending_execution) || ['generating', 'pending_execution', 'executing', 'cancelled', 'failed'].includes(status)
 }
 
 function nodeMetricLabel(node: MctsNode): string {
@@ -237,6 +232,10 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
         <span>reward: {{ selectedNode.total_reward ?? 0 }}</span>
         <span>is_buggy: {{ selectedNode.is_buggy }}</span>
         <span>is_valid: {{ selectedNode.is_valid }}</span>
+        <span>search: {{ selectedNode.search_eligible }}</span>
+        <span>delivery: {{ selectedNode.delivery_ready }}</span>
+        <span>certified: {{ selectedNode.delivery_certified }}</span>
+        <span>method: {{ selectedNode.method_mode || '-' }}</span>
       </div>
       <div class="blocks">
         <article>
@@ -314,30 +313,27 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
 }
 
 .node-card {
+  fill: #f2f2f2;
+  stroke: #a9b1b8;
   stroke-width: 1.4;
 }
 
-.stage-draft {
-  fill: #e8f1ff;
-  stroke: #7da7df;
-}
-
-.stage-improve {
+.review-success {
   fill: #e8fff1;
   stroke: #75b684;
 }
 
-.stage-debug {
+.review-bug {
   fill: #ffe9e9;
   stroke: #d98b8b;
 }
 
-.stage-other {
+.review-unreviewed {
   fill: #f2f2f2;
   stroke: #b6b6b6;
 }
 
-.pending {
+.review-pending {
   fill: #f1f3f5;
   stroke: #8d98a7;
   stroke-dasharray: 5 4;
@@ -349,8 +345,8 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
 }
 
 .best {
-  stroke: #1c6e89;
-  stroke-width: 2.4;
+  stroke: #b88300;
+  stroke-width: 2.8;
 }
 
 .node-title {

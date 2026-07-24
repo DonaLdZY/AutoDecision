@@ -40,7 +40,17 @@ export const api = {
   listTasks: () => request<Task[]>('/tasks'),
   createTask: (payload: TaskConfig) => request<Task>('/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   updateTask: (taskId: string, payload: TaskConfig) => request<Task>(`/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteTask: (taskId: string) => request<{ status: string }>(`/tasks/${taskId}`, { method: 'DELETE' }),
+  deleteTask: async (taskId: string, deleteFiles = false) => {
+    if (deleteFiles) {
+      // A legacy Gateway silently ignores the query flag and would delete only
+      // the task record. Probe a new action endpoint before destructive cleanup.
+      await request(`/tasks/${taskId}/automl-readiness`)
+    }
+    return request<{ status: string; deleted_files: string[] }>(
+      `/tasks/${taskId}?delete_files=${deleteFiles ? 'true' : 'false'}`,
+      { method: 'DELETE' },
+    )
+  },
   startTask: (taskId: string) => request<{ status: string; task_id: string }>('/tasks/start', { method: 'POST', body: JSON.stringify({ task_id: taskId }) }),
   rerunAutoRealize: (taskId: string) =>
     request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-autorealize', {
@@ -57,6 +67,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId, confirm: true }),
     }),
+  getAutoMLReadiness: (taskId: string) => request<{
+    ready: boolean
+    source: string
+    detail: string
+    autorealize_description: string
+    input_description: string
+    configured_goal: boolean
+    configured_eval: boolean
+  }>(`/tasks/${taskId}/automl-readiness`),
+  continueAutoML: (taskId: string) =>
+    request<{ status: string; task_id: string; mode: string }>('/tasks/continue-automl', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId }),
+    }),
   rerunAutoReport: (taskId: string) =>
     request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-autoreport', {
       method: 'POST',
@@ -72,7 +96,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId }),
     }),
-  stopTask: (taskId: string) => request<{ status: string }>('/tasks/stop', { method: 'POST', body: JSON.stringify({ task_id: taskId, confirm: true }) }),
+  stopTask: (taskId: string) => request<{ status: string; checkpoint_ready?: boolean; resumable?: boolean }>('/tasks/stop', { method: 'POST', body: JSON.stringify({ task_id: taskId, confirm: true }) }),
   getSnapshot: (taskId: string) => request<SnapshotPayload>(`/tasks/${taskId}/snapshot`),
   getGlobalSettings: () => request<GlobalSettings>('/settings/global'),
   saveGlobalSettings: (payload: GlobalSettings) => request<{ status: string }>('/settings/global', { method: 'PUT', body: JSON.stringify(payload) }),

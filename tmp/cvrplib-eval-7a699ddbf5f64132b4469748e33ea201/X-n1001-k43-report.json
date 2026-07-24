@@ -1,0 +1,274 @@
+{
+  "instance": "X-n1001-k43",
+  "feasible": true,
+  "objective_name": "total_tsplib_euc_2d_distance",
+  "objective": 72355,
+  "reference_cost": 72355.0,
+  "absolute_gap": 0.0,
+  "gap_percent": 0.0,
+  "route_count": 43,
+  "max_vehicles": 43,
+  "visited_customer_rows": 1000,
+  "expected_customers": 1000,
+  "violations": [],
+  "route_details": [
+    {
+      "route_id": "1",
+      "customers": 30,
+      "load": 131,
+      "distance": 1881
+    },
+    {
+      "route_id": "2",
+      "customers": 21,
+      "load": 131,
+      "distance": 1420
+    },
+    {
+      "route_id": "3",
+      "customers": 24,
+      "load": 131,
+      "distance": 1092
+    },
+    {
+      "route_id": "4",
+      "customers": 24,
+      "load": 131,
+      "distance": 1589
+    },
+    {
+      "route_id": "5",
+      "customers": 30,
+      "load": 131,
+      "distance": 2215
+    },
+    {
+      "route_id": "6",
+      "customers": 21,
+      "load": 131,
+      "distance": 1109
+    },
+    {
+      "route_id": "7",
+      "customers": 29,
+      "load": 131,
+      "distance": 1744
+    },
+    {
+      "route_id": "8",
+      "customers": 23,
+      "load": 131,
+      "distance": 2144
+    },
+    {
+      "route_id": "9",
+      "customers": 20,
+      "load": 131,
+      "distance": 1843
+    },
+    {
+      "route_id": "10",
+      "customers": 26,
+      "load": 131,
+      "distance": 1389
+    },
+    {
+      "route_id": "11",
+      "customers": 21,
+      "load": 131,
+      "distance": 789
+    },
+    {
+      "route_id": "12",
+      "customers": 9,
+      "load": 64,
+      "distance": 241
+    },
+    {
+      "route_id": "13",
+      "customers": 21,
+      "load": 131,
+      "distance": 1637
+    },
+    {
+      "route_id": "14",
+      "customers": 22,
+      "load": 131,
+      "distance": 1140
+    },
+    {
+      "route_id": "15",
+      "customers": 21,
+      "load": 131,
+      "distance": 1473
+    },
+    {
+      "route_id": "16",
+      "customers": 27,
+      "load": 131,
+      "distance": 2108
+    },
+    {
+      "route_id": "17",
+      "customers": 27,
+      "load": 131,
+      "distance": 2599
+    },
+    {
+      "route_id": "18",
+      "customers": 19,
+      "load": 131,
+      "distance": 740
+    },
+    {
+      "route_id": "19",
+      "customers": 24,
+      "load": 131,
+      "distance": 1718
+    },
+    {
+      "route_id": "20",
+      "customers": 23,
+      "load": 131,
+      "distance": 1234
+    },
+    {
+      "route_id": "21",
+      "customers": 23,
+      "load": 131,
+      "distance": 2013
+    },
+    {
+      "route_id": "22",
+      "customers": 25,
+      "load": 131,
+      "distance": 2418
+    },
+    {
+      "route_id": "23",
+      "customers": 26,
+      "load": 131,
+      "distance": 2324
+    },
+    {
+      "route_id": "24",
+      "customers": 23,
+      "load": 131,
+      "distance": 1665
+    },
+    {
+      "route_id": "25",
+      "customers": 24,
+      "load": 131,
+      "distance": 2062
+    },
+    {
+      "route_id": "26",
+      "customers": 26,
+      "load": 131,
+      "distance": 2223
+    },
+    {
+      "route_id": "27",
+      "customers": 23,
+      "load": 130,
+      "distance": 924
+    },
+    {
+      "route_id": "28",
+      "customers": 19,
+      "load": 131,
+      "distance": 1694
+    },
+    {
+      "route_id": "29",
+      "customers": 22,
+      "load": 131,
+      "distance": 1315
+    },
+    {
+      "route_id": "30",
+      "customers": 25,
+      "load": 131,
+      "distance": 2113
+    },
+    {
+      "route_id": "31",
+      "customers": 26,
+      "load": 131,
+      "distance": 1716
+    },
+    {
+      "route_id": "32",
+      "customers": 26,
+      "load": 131,
+      "distance": 1929
+    },
+    {
+      "route_id": "33",
+      "customers": 22,
+      "load": 131,
+      "distance": 2240
+    },
+    {
+      "route_id": "34",
+      "customers": 22,
+      "load": 131,
+      "distance": 1916
+    },
+    {
+      "route_id": "35",
+      "customers": 24,
+      "load": 131,
+      "distance": 1227
+    },
+    {
+      "route_id": "36",
+      "customers": 20,
+      "load": 131,
+      "distance": 1473
+    },
+    {
+      "route_id": "37",
+      "customers": 21,
+      "load": 130,
+      "distance": 793
+    },
+    {
+      "route_id": "38",
+      "customers": 21,
+      "load": 124,
+      "distance": 645
+    },
+    {
+      "route_id": "39",
+      "customers": 19,
+      "load": 131,
+      "distance": 2033
+    },
+    {
+      "route_id": "40",
+      "customers": 27,
+      "load": 131,
+      "distance": 2512
+    },
+    {
+      "route_id": "41",
+      "customers": 23,
+      "load": 131,
+      "distance": 2297
+    },
+    {
+      "route_id": "42",
+      "customers": 20,
+      "load": 131,
+      "distance": 1861
+    },
+    {
+      "route_id": "43",
+      "customers": 31,
+      "load": 131,
+      "distance": 2857
+    }
+  ]
+}

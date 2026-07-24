@@ -18,3 +18,19 @@ export function latestCreatedTaskId(tasks: Task[]) {
   }
   return latest?.id ?? ''
 }
+
+export function latestStartedTask(tasks: Task[]) {
+  let latest: Task | undefined
+  for (const task of tasks) {
+    const startedAt = timestamp(task.run_started_at)
+    if (startedAt <= 0) continue
+    if (!latest) {
+      latest = task
+      continue
+    }
+    const startedDelta = startedAt - timestamp(latest.run_started_at)
+    const updatedDelta = timestamp(task.updated_at) - timestamp(latest.updated_at)
+    if (startedDelta > 0 || (startedDelta === 0 && updatedDelta > 0)) latest = task
+  }
+  return latest
+}

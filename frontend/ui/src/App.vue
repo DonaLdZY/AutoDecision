@@ -5,11 +5,12 @@ import AutoMLView from './components/AutoMLView.vue'
 import DataCognitionView from './components/DataCognitionView.vue'
 import GlobalSettingsDrawer from './components/GlobalSettingsDrawer.vue'
 import ReportView from './components/ReportView.vue'
+import TaskConfirmDialog from './components/TaskConfirmDialog.vue'
 import TaskConfigPanel from './components/TaskConfigPanel.vue'
 import TaskDefinitionView from './components/TaskDefinitionView.vue'
 import TaskTabs from './components/TaskTabs.vue'
 import WorkflowStepper, { type StepKey } from './components/WorkflowStepper.vue'
-import { useTasks } from './composables/useTasks'
+import { defaultTaskConfig, useTasks } from './composables/useTasks'
 import type { GlobalSettings, SnapshotPayload, Task, TaskConfig } from './types'
 import { cloneDeep } from './utils/clone'
 
@@ -23,10 +24,9 @@ const {
   createTask,
   saveTask,
   deleteTask,
-  startTask,
   rerunAutoRealize,
-  rerunAutoML,
   startAutoML,
+  continueAutoML,
   rerunAutoReport,
   rerunFull,
   resumeTask,
@@ -46,6 +46,80 @@ const dirtyTaskIds = reactive<Record<string, boolean>>({})
 const taskStatusMemory = reactive<Record<string, string>>({})
 const activeStep = shallowRef<StepKey>('data_cognition')
 const AUTO_STEP_DELAY_MS = 10_000
+
+interface ActionDialogOptions {
+  title: string
+  message: string
+  confirmLabel?: string
+  cancelLabel?: string
+  confirmTone?: 'positive' | 'danger' | 'primary'
+  cancelTone?: 'neutral' | 'danger'
+  checkboxLabel?: string
+  showCancel?: boolean
+}
+
+const actionDialog = reactive({
+  open: false,
+  title: '',
+  message: '',
+  confirmLabel: '确认',
+  cancelLabel: '取消',
+  confirmTone: 'primary' as 'positive' | 'danger' | 'primary',
+  cancelTone: 'neutral' as 'neutral' | 'danger',
+  checkboxLabel: '',
+  showCancel: true,
+})
+const actionDialogChecked = shallowRef(false)
+const pendingDialogAction = shallowRef<((checked: boolean) => Promise<void> | void) | null>(null)
+
+function openActionDialog(
+  options: ActionDialogOptions,
+  action: (checked: boolean) => Promise<void> | void,
+) {
+  Object.assign(actionDialog, {
+    open: true,
+    title: options.title,
+    message: options.message,
+    confirmLabel: options.confirmLabel ?? '确认',
+    cancelLabel: options.cancelLabel ?? '取消',
+    confirmTone: options.confirmTone ?? 'primary',
+    cancelTone: options.cancelTone ?? 'neutral',
+    checkboxLabel: options.checkboxLabel ?? '',
+    showCancel: options.showCancel ?? true,
+  })
+  actionDialogChecked.value = false
+  pendingDialogAction.value = action
+}
+
+function openActionAlert(title: string, detail: string) {
+  openActionDialog(
+    {
+      title,
+      message: detail,
+      confirmLabel: '知道了',
+      showCancel: false,
+    },
+    () => undefined,
+  )
+}
+
+function closeActionDialog() {
+  actionDialog.open = false
+  pendingDialogAction.value = null
+  actionDialogChecked.value = false
+}
+
+async function confirmActionDialog() {
+  const action = pendingDialogAction.value
+  const checked = actionDialogChecked.value
+  closeActionDialog()
+  if (!action) return
+  try {
+    await action(checked)
+  } catch (e) {
+    message.value = formatActionError('操作', e)
+  }
+}
 
 const stepLabels: Record<StepKey, string> = {
   data_cognition: '数据理解',
@@ -255,6 +329,15 @@ function onUpdateConfig(taskId: string, config: TaskConfig) {
   dirtyTaskIds[taskId] = true
 }
 
+function onRestoreDefaultConfig(taskId: string) {
+  const target = workingCopies[taskId]
+  if (!target || target.status === 'running') return
+  const taskIndex = Math.max(1, tasks.value.findIndex((task) => task.id === taskId) + 1)
+  target.config = defaultTaskConfig(taskIndex)
+  dirtyTaskIds[taskId] = true
+  message.value = '已还原系统默认配置，保存后生效'
+}
+
 async function onSaveTask(taskId: string) {
   const task = workingCopies[taskId]
   if (!task) return
@@ -265,24 +348,32 @@ async function onSaveTask(taskId: string) {
   message.value = `任务 ${task.config.task_name} 已保存`
 }
 
-async function onStartTask(taskId: string) {
-  const task = workingCopies[taskId]
-  if (!task) return
-  await onSaveTask(taskId)
-  await startTask(taskId)
-  await refreshSnapshot(taskId)
-  message.value = '任务已启动'
+function requestStopTask(taskId: string) {
+  openActionDialog(
+    {
+      title: '中断当前任务',
+      message: '系统会先保存搜索树、在途动作和 Top-K 方案。检查点保存完成后，可以继续任务或直接生成报告。',
+      confirmLabel: '确认中断',
+      confirmTone: 'danger',
+    },
+    () => onStopTask(taskId),
+  )
 }
 
 async function onStopTask(taskId: string) {
-  if (!window.confirm('确认终止任务吗？终止后如需继续，需要重新启动或重跑。')) return
-  await stopTask(taskId)
+  message.value = '正在保存 AutoML 检查点...'
+  const result = await stopTask(taskId)
   await refreshSnapshot(taskId)
-  message.value = '任务已终止'
+  if (result.status === 'interrupted_resumable') {
+    message.value = '任务已中断，可继续搜索或生成报告'
+  } else if (result.status === 'stopping') {
+    message.value = '终止信号已发送，正在保存搜索树与 Top-K 检查点'
+  } else {
+    message.value = '任务已停止'
+  }
 }
 
-async function onRerunAutoRealize(taskId: string) {
-  if (!window.confirm('确认仅重跑 AutoRealize 吗？这只会清理并重建当前任务的 AutoRealize 输出，不会删除 AutoML 或 AutoReport 已有结果。')) return
+async function onRunAutoRealize(taskId: string) {
   try {
     const task = workingCopies[taskId]
     if (!task) return
@@ -296,40 +387,34 @@ async function onRerunAutoRealize(taskId: string) {
     } catch {
       // AutoRealize may still be recreating its output directory.
     }
-    message.value = '已启动仅重跑 AutoRealize'
+    message.value = '已启动 AutoRealize'
   } catch (e) {
-    message.value = formatActionError('仅重跑 AutoRealize', e)
+    message.value = formatActionError('执行 AutoRealize', e)
   }
 }
 
-async function onRerunAutoML(taskId: string) {
-  if (!window.confirm('确认仅重跑 AutoML 吗？这会复用 AutoRealize 已生成的输出，但不会重新生成或删除 AutoReport 报告。')) return
+function requestRunAutoML(taskId: string) {
+  openActionDialog(
+    {
+      title: '执行 AutoML',
+      message: 'AutoML 不要求先执行 AutoRealize，但必须满足以下任一条件：\n1. 已执行 AutoRealize；\n2. 输入目录已有 description.md；\n3. AutoML 配置中已同时填写 Goal 和 Eval。\n\n确认后系统会再次检查。',
+      confirmLabel: '检查并执行',
+      confirmTone: 'positive',
+    },
+    () => onRunAutoML(taskId),
+  )
+}
+
+async function onRunAutoML(taskId: string) {
   try {
-    message.value = '正在检查 AutoML 服务并启动任务...'
     const task = workingCopies[taskId]
     if (!task) return
     await onSaveTask(taskId)
-    activeStep.value = 'automl'
-    await rerunAutoML(taskId)
-    await refreshTasks()
-    syncWorkingCopies()
-    try {
-      await refreshSnapshot(taskId)
-    } catch {
-      // AutoML output may still be initializing.
+    const readiness = await api.getAutoMLReadiness(taskId)
+    if (!readiness.ready) {
+      openActionAlert('AutoML 输入未就绪', readiness.detail)
+      return
     }
-    message.value = '已启动仅重跑 AutoML'
-  } catch (e) {
-    message.value = formatActionError('仅重跑 AutoML', e)
-  }
-}
-
-async function onStartAutoML(taskId: string) {
-  if (!window.confirm('确认直接运行 AutoML 吗？这会跳过 AutoRealize，并要求输入文件夹内已有 description.md。')) return
-  try {
-    const task = workingCopies[taskId]
-    if (!task) return
-    await onSaveTask(taskId)
     activeStep.value = 'automl'
     await startAutoML(taskId)
     await refreshTasks()
@@ -339,31 +424,62 @@ async function onStartAutoML(taskId: string) {
     } catch {
       // AutoML output may still be initializing.
     }
-    message.value = '已启动直接运行 AutoML'
+    message.value = '已启动 AutoML'
   } catch (e) {
-    message.value = formatActionError('直接运行 AutoML', e)
+    message.value = formatActionError('执行 AutoML', e)
   }
 }
 
-async function onRerunAutoReport(taskId: string) {
-  if (!window.confirm('确认仅重跑 AutoReport 吗？这会复用当前 AutoRealize 与 AutoML 的已有输出，只重新生成报告。')) return
+async function onContinueAutoML(taskId: string) {
+  try {
+    const task = workingCopies[taskId]
+    if (!task) return
+    await onSaveTask(taskId)
+    activeStep.value = 'automl'
+    await continueAutoML(taskId)
+    await refreshTasks()
+    syncWorkingCopies()
+    message.value = '已在原搜索树上继续执行 AutoML'
+  } catch (e) {
+    message.value = formatActionError('继续执行 AutoML', e)
+  }
+}
+
+async function onRunReport(taskId: string) {
   const task = workingCopies[taskId]
   if (!task) return
-  await onSaveTask(taskId)
-  activeStep.value = 'report'
-  await rerunAutoReport(taskId)
-  await refreshTasks()
-  syncWorkingCopies()
   try {
-    await refreshSnapshot(taskId)
-  } catch {
-    // Report directory may be recreated asynchronously.
+    await onSaveTask(taskId)
+    activeStep.value = 'report'
+    await rerunAutoReport(taskId)
+    await refreshTasks()
+    syncWorkingCopies()
+    try {
+      await refreshSnapshot(taskId)
+    } catch {
+      // Report directory may be recreated asynchronously.
+    }
+    message.value = '已启动报告生成'
+  } catch (e) {
+    message.value = formatActionError('执行报告生成', e)
   }
-  message.value = '已启动仅重跑 AutoReport'
 }
 
-async function onRerunFull(taskId: string) {
-  if (!window.confirm('确认完全重跑该任务吗？这会清理当前任务目录下的已有结果，并按当前配置从头开始。')) return
+function requestRunTask(taskId: string) {
+  openActionDialog(
+    {
+      title: '执行完整任务',
+      message: '这会删除该任务原有的执行过程和阶段产物，然后按当前配置从 AutoRealize 开始完整执行。此操作不可撤销。',
+      confirmLabel: '确认执行',
+      cancelLabel: '取消任务',
+      confirmTone: 'positive',
+      cancelTone: 'danger',
+    },
+    () => onRunTask(taskId),
+  )
+}
+
+async function onRunTask(taskId: string) {
   const task = workingCopies[taskId]
   if (!task) return
   await onSaveTask(taskId)
@@ -375,7 +491,7 @@ async function onRerunFull(taskId: string) {
   } catch {
     // cleanup + restart interval
   }
-  message.value = '已按当前配置完全重跑任务'
+  message.value = '已按当前配置执行完整任务'
 }
 
 async function onResumeTask(taskId: string) {
@@ -390,14 +506,42 @@ async function onResumeTask(taskId: string) {
   } catch {
     // poll will retry
   }
-  message.value = '已启动继续任务'
+  message.value = '已从中断处继续任务'
 }
 
-async function onDeleteTask(taskId: string) {
-  if (!window.confirm('确认删除这个任务标签页吗？')) return
-  await deleteTask(taskId)
-  delete dirtyTaskIds[taskId]
-  message.value = '任务已删除'
+function requestDeleteTask(taskId: string) {
+  openActionDialog(
+    {
+      title: '删除任务',
+      message: '确认删除当前任务标签吗？默认只删除任务记录，已有运行文件会保留。',
+      confirmLabel: '确认删除',
+      cancelLabel: '取消删除',
+      confirmTone: 'danger',
+      cancelTone: 'neutral',
+      checkboxLabel: '同时删除该任务的相关运行文件',
+    },
+    (deleteFiles) => onDeleteTask(taskId, deleteFiles),
+  )
+}
+
+function explainDeleteBlocked(taskId: string) {
+  const task = tasks.value.find((candidate) => candidate.id === taskId)
+  const taskName = task?.config.task_name || task?.task_name || '当前任务'
+  openActionAlert(
+    '无法删除运行中的任务',
+    `任务 ${taskName} 仍在运行。请先点击“中断任务”，等待检查点保存完成后再删除。`,
+  )
+}
+
+async function onDeleteTask(taskId: string, deleteFiles: boolean) {
+  try {
+    const result = await deleteTask(taskId, deleteFiles)
+    delete dirtyTaskIds[taskId]
+    const removed = result.deleted_files?.length ?? 0
+    message.value = deleteFiles ? `任务已删除，并清理 ${removed} 个任务目录` : '任务已删除，运行文件已保留'
+  } catch (e) {
+    message.value = formatActionError('删除任务', e)
+  }
 }
 
 async function onRefreshTask(taskId: string) {
@@ -484,7 +628,15 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <TaskTabs :tasks="tasks" :active-task-id="activeTaskId" :dirty-task-ids="dirtyTaskIds" @select="onSelectTask" @create="onCreateTask" />
+    <TaskTabs
+      :tasks="tasks"
+      :active-task-id="activeTaskId"
+      :dirty-task-ids="dirtyTaskIds"
+      @select="onSelectTask"
+      @create="onCreateTask"
+      @remove="requestDeleteTask"
+      @remove-blocked="explainDeleteBlocked"
+    />
 
     <main v-if="activeWorkingTask" class="main-layout">
       <TaskConfigPanel
@@ -492,16 +644,15 @@ onUnmounted(() => {
         :snapshot="activeSnapshot"
         :is-dirty="!!dirtyTaskIds[activeWorkingTask.id]"
         @update-config="onUpdateConfig"
+        @restore-defaults="onRestoreDefaultConfig"
         @save="onSaveTask"
-        @start="onStartTask"
-        @rerun-full="onRerunFull"
-        @rerun-auto-realize="onRerunAutoRealize"
-        @rerun-auto-m-l="onRerunAutoML"
-        @start-auto-m-l="onStartAutoML"
-        @rerun-auto-report="onRerunAutoReport"
-        @resume="onResumeTask"
-        @stop="onStopTask"
-        @remove="onDeleteTask"
+        @run-auto-realize="onRunAutoRealize"
+        @run-auto-m-l="requestRunAutoML"
+        @continue-auto-m-l="onContinueAutoML"
+        @run-report="onRunReport"
+        @run-task="requestRunTask"
+        @resume-task="onResumeTask"
+        @stop="requestStopTask"
         @refresh="onRefreshTask"
       />
 
@@ -541,6 +692,21 @@ onUnmounted(() => {
       :model-value="globalSettings"
       @close="settingsVisible = false"
       @save="saveSettings"
+    />
+
+    <TaskConfirmDialog
+      v-model:checked="actionDialogChecked"
+      :open="actionDialog.open"
+      :title="actionDialog.title"
+      :message="actionDialog.message"
+      :confirm-label="actionDialog.confirmLabel"
+      :cancel-label="actionDialog.cancelLabel"
+      :confirm-tone="actionDialog.confirmTone"
+      :cancel-tone="actionDialog.cancelTone"
+      :checkbox-label="actionDialog.checkboxLabel"
+      :show-cancel="actionDialog.showCancel"
+      @confirm="confirmActionDialog"
+      @cancel="closeActionDialog"
     />
   </div>
 </template>

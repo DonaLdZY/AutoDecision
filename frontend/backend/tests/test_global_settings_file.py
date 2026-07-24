@@ -26,6 +26,9 @@ def test_missing_global_settings_file_is_created(tmp_path: Path, monkeypatch) ->
     saved = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
     assert saved["python"]["executable"] == sys.executable
     assert saved["llm"]["roleModels"]["autoMlCode"] == "default-code"
+    code_model = next(item for item in saved["llm"]["modelLibrary"] if item["id"] == "default-code")
+    assert code_model["contextWindowTokens"] == 131072
+    assert code_model["maxTokens"] == 32768
     assert settings["coreServices"]["mlevolveBaseUrl"] == "http://127.0.0.1:18103"
 
 

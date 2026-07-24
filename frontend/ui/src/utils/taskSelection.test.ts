@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../types'
-import { latestCreatedTaskId } from './taskSelection'
+import { latestCreatedTaskId, latestStartedTask } from './taskSelection'
 
 function task(id: string, createdAt: number, updatedAt = createdAt): Task {
   return {
@@ -31,5 +31,19 @@ describe('latestCreatedTaskId', () => {
       task('second', 30, 35),
     ])).toBe('second')
     expect(latestCreatedTaskId([])).toBe('')
+  })
+})
+
+describe('latestStartedTask', () => {
+  it('selects the task with the most recent actual start time', () => {
+    const neverStarted = task('edited-later', 40, 100)
+    const olderStart = { ...task('older-start', 10, 80), run_started_at: 50 }
+    const latestStart = { ...task('latest-start', 20, 60), run_started_at: 70 }
+
+    expect(latestStartedTask([neverStarted, latestStart, olderStart])?.id).toBe('latest-start')
+  })
+
+  it('returns undefined when no task has ever started', () => {
+    expect(latestStartedTask([task('idle', 10)])).toBeUndefined()
   })
 })

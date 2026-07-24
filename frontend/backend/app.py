@@ -17,9 +17,10 @@ import locale
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -55,6 +56,7 @@ SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS = 5.0
 SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS = 30.0
 SERVICE_START_READY_TIMEOUT_SECS = 30.0
 SERVICE_START_READY_POLL_SECS = 0.5
+MINIMUM_LLM_OUTPUT_TOKENS = 32768
 _UNSET = object()
 DIRECTORY_PICKER_LOCK = threading.Lock()
 DEFAULT_ALLOWED_ORIGINS = (
@@ -132,7 +134,8 @@ def read_mlevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
         row = dict(row)
         row["id"] = node_id
         row["pending_execution"] = bool(
-            row.get("pending_execution") or row.get("status") in {"generating", "pending_execution", "executing"}
+            row.get("pending_execution")
+            or row.get("status") in {"generating", "pending_execution", "executing", "reviewing"}
         )
         out.append(row)
     return out
@@ -222,10 +225,12 @@ def _allowed_origins_from_env() -> list[str]:
 
 
 def normalize_automl_config_payload(config: Any) -> Any:
-    """Migrate legacy AutoML engine selections to the only supported engine."""
+    """Migrate task-level settings that must stay consistent across stages."""
     try:
         config.auto_ml.engine = "mlevolve"
         config.auto_ml.enabled = True
+        language = str(getattr(config, "output_language", "zh") or "zh").strip().lower()
+        config.output_language = "en" if language.startswith("en") else "zh"
     except Exception:
         pass
     return config
@@ -245,79 +250,113 @@ class RuntimeHandle:
 
 
 class AutoRealizeConfigPayload(BaseModel):
-    run_data_cognition: bool = True
-    run_task_definition: bool = True
-    run_data_cleaning: bool = False
     enable_question_investigator: bool = True
     enable_fewshot: bool = False
     generate_sample_submission: bool = True
-    prefer_original_description: bool = True
     direct_automl_from_description: bool = False
-    no_knowledge: bool = False
-    no_telemetry: bool = False
-    no_llm_cache: bool = False
     enable_vllm: bool = True
-    offline: bool = False
-    auto_generate_predict_split: bool = False
-    parallel_cleaning: bool = True
     task_hint: str = ""
     llm_timeout: float = 180.0
     llm_concurrency: int = 100
-    llm_enable_thinking: bool | None = None
-    llm_reasoning_effort: str | None = None
-    llm_structured_disable_thinking: bool = True
-    cognition_workers: int = 100
-    cleaning_workers: int = 2
+    optimize_llm_cost: bool = True
+    llm_file_cognition_mode: Literal["all", "documents_only", "none"] = "all"
+    table_profile_sample_rows: int = 20000
+    investigation_max_questions: int = 20
+    investigation_max_rounds_per_question: int = 10
+    investigation_max_scripts_per_question: int = 3
+    investigation_script_timeout_secs: float = 30.0
+    prompt_token_budget: int = 12000
+    artifact_consistency_enabled: bool = True
+    artifact_consistency_max_rounds: int = 2
+    cross_stage_memory_enabled: bool = True
+    cross_stage_headroom_ratio: float = 0.72
+    cross_stage_retrieval_enabled: bool = True
 
 
 class AutoMLConfigPayload(BaseModel):
     engine: str = "mlevolve"
     enabled: bool = True
+    goal: str = ""
+    eval: str = ""
     steps: int = 50
     time_limit_secs: int = 10800
     parallel_search_num: int = 4
-    k_fold_validation: int = 1
-    check_format: bool = False
-    expose_prediction: bool = True
     generate_submission: bool = True
-    steerable_reasoning: bool = False
     search_num_drafts: int = 8
     search_num_bugs: int = 1
     search_num_improves: int = 5
     search_max_debug_depth: int = 20
     search_back_debug_depth: int = 3
     metric_improvement_threshold: float = 0.0001
-    invalid_metric_upper_bound: int = 100
     max_improve_failure: int = 3
-    decay_type: str = "piecewise"
     exploration_constant: float = 1.414
     lower_bound: float = 0.5
-    goal: str = ""
-    eval: str = ""
     initial_drafts: int = 3
-    preprocess_data: bool = True
     copy_data: bool = False
-    data_preview: bool = True
     use_diff_mode: bool = True
     check_data_leakage: bool = True
     use_global_memory: bool = True
     memory_similarity_threshold: float = 0.7
     memory_embedding_backend: str = "openai"
-    memory_embedding_model: str = ""
     memory_embedding_device: str = "cuda"
     memory_embedding_model_path: str = "BAAI/bge-base-en-v1.5"
     use_coldstart: bool = True
-    use_grading_server: bool = False
-    exec_timeout_secs: int = 32400
+    exec_timeout_secs: int = 1800
+    auto_install_missing_dependencies: bool = True
+    dependency_install_timeout_secs: int = 600
+    dependency_install_max_packages: int = 3
+    code_temperature: float = 0.5
+    feedback_temperature: float = 0.5
+    code_request_timeout_secs: float = 1200.0
+    feedback_request_timeout_secs: float = 1200.0
+    code_generation_max_retries: int = 5
+    feedback_generation_max_retries: int = 5
+    code_continuation_max_rounds: int = 2
+    feedback_continuation_max_rounds: int = 2
+    code_review_max_attempts: int = 2
+    preflight_regeneration_max_attempts: int = 2
+    code_review_escalate_to_code: bool = True
+    code_generation_extract_max_attempts: int = 2
+    metric_direction_max_attempts: int = 3
+    result_review_max_attempts: int = 3
+    refine_plan_max_attempts: int = 3
+    result_adjudicator_on_anomaly: bool = True
+    fast_first_draft: bool = True
+    fast_first_draft_skip_pre_review: bool = True
+    use_stepwise_after_first: bool = True
+    stepwise_context_max_tokens: int = 90000
+    stepwise_compaction_keep_recent_steps: int = 2
+    stepwise_compaction_max_tokens: int = 32768
+    stepwise_context_headroom_ratio: float = 0.15
+    search_topk_max_improves: int = 10
+    search_debug_prob: float = 1.0
+    search_branch_stagnation_threshold: int = 3
+    search_topk_stagnation_threshold: int = 6
+    search_stagnation_window: int = 4
+    search_top_candidates_size: int = 20
+    search_explore_switch_start: float = 0.5
+    search_explore_switch_end: float = 0.7
+    search_min_exploration_weight: float = 0.2
+    search_root_new_draft_probability: float = 0.25
+    fusion_vs_evolution_prob: float = 0.3
+    branch_fusion_trigger_prob: float = 1.0
+    max_fusion_drafts: int = 2
+    search_fusion_min_remaining_seconds: int = 300
+    search_fusion_min_successful_nodes: int = 2
+    search_fusion_min_branches: int = 2
+    use_optimization_experience_library: bool = True
+    optimization_experience_max_cards: int = 2
+    optimization_experience_min_score: float = 3.0
+    optimization_experience_max_chars: int = 6000
 
 
 class AutoReportConfigPayload(BaseModel):
     enabled: bool = True
-    audience: str = "technical"
-    language: str = "zh-CN"
-    include_raw_logs: bool = True
-    include_code_excerpt: bool = True
-    use_llm: bool = True
+    audience: Literal["technical", "executive", "delivery"] = "technical"
+    detail_level: Literal["concise", "standard", "detailed"] = "detailed"
+    comparison_candidate_limit: int = Field(default=6, ge=2, le=12)
+    max_retrieval_rounds: int = Field(default=2, ge=0, le=4)
+    enable_report_audit: bool = True
 
 
 class TaskResourceConfigPayload(BaseModel):
@@ -332,6 +371,7 @@ class TaskConfigPayload(BaseModel):
     task_name: str = Field(min_length=1)
     input_root: str = ""
     output_root: str = str(PROJECT_RUNS_DIR)
+    output_language: Literal["zh", "en"] = "zh"
     auto_realize: AutoRealizeConfigPayload = Field(default_factory=AutoRealizeConfigPayload)
     auto_ml: AutoMLConfigPayload = Field(default_factory=AutoMLConfigPayload)
     auto_report: AutoReportConfigPayload = Field(default_factory=AutoReportConfigPayload)
@@ -352,6 +392,7 @@ class TaskModel(BaseModel):
     run_started_at: float | None = None
     auto_ml_log_dir: str | None = None
     auto_ml_workspace_dir: str | None = None
+    auto_ml_service_job_id: str | None = None
     report_dir: str | None = None
     last_error: str | None = None
 
@@ -373,6 +414,10 @@ class RerunAutoMLRequest(BaseModel):
 class StartDirectAutoMLRequest(BaseModel):
     task_id: str
     confirm: bool = False
+
+
+class ContinueAutoMLRequest(BaseModel):
+    task_id: str
 
 
 class RerunAutoRealizeRequest(BaseModel):
@@ -435,8 +480,18 @@ class TaskStore:
                     task.config.output_root = normalized_output_root
                     task.updated_at = now_ts()
                     changed = True
-                if str(task.config.auto_ml.engine or "").lower() != "mlevolve" or not task.config.auto_ml.enabled:
-                    normalize_automl_config_payload(task.config)
+                automl_policy_before = (
+                    str(task.config.auto_ml.engine or "").lower(),
+                    bool(task.config.auto_ml.enabled),
+                    str(task.config.output_language or "").lower(),
+                )
+                normalize_automl_config_payload(task.config)
+                automl_policy_after = (
+                    str(task.config.auto_ml.engine or "").lower(),
+                    bool(task.config.auto_ml.enabled),
+                    str(task.config.output_language or "").lower(),
+                )
+                if automl_policy_before != automl_policy_after:
                     task.updated_at = now_ts()
                     changed = True
                 tasks[task.id] = task
@@ -458,6 +513,15 @@ class TaskStore:
             changed = False
             for task in self._tasks.values():
                 if task.status == "running":
+                    if task.auto_ml_service_job_id:
+                        task.phase = "automl_reconnecting"
+                        task.last_error = (
+                            "Gateway restarted while AutoML was running; "
+                            "reconnecting to the existing MLEvolve job."
+                        )
+                        task.updated_at = now_ts()
+                        changed = True
+                        continue
                     task.status = "failed"
                     task.phase = "interrupted"
                     if not task.last_error:
@@ -478,6 +542,8 @@ class TaskStore:
                 if task.status != "running":
                     continue
                 if task_id in self._handles:
+                    continue
+                if task.auto_ml_service_job_id and task.phase == "automl_reconnecting":
                     continue
                 # Startup is asynchronous. Give freshly-started tasks a grace period
                 # before treating missing handles as stale.
@@ -566,6 +632,7 @@ class TaskStore:
         auto_ml_log_dir: str | None = None,
         auto_ml_workspace_dir: str | None = None,
         report_dir: str | None = None,
+        auto_ml_service_job_id: Any = _UNSET,
         last_error: Any = _UNSET,
     ) -> TaskModel:
         with self._lock:
@@ -585,6 +652,8 @@ class TaskStore:
                 task.auto_ml_workspace_dir = auto_ml_workspace_dir
             if report_dir is not None:
                 task.report_dir = report_dir
+            if auto_ml_service_job_id is not _UNSET:
+                task.auto_ml_service_job_id = auto_ml_service_job_id
             if last_error is not _UNSET:
                 task.last_error = last_error
             task.updated_at = now_ts()
@@ -603,6 +672,7 @@ class TaskStore:
             task.run_started_at = None
             task.auto_ml_log_dir = None
             task.auto_ml_workspace_dir = None
+            task.auto_ml_service_job_id = None
             task.report_dir = None
             task.last_error = last_error
             task.updated_at = now_ts()
@@ -618,6 +688,7 @@ class TaskStore:
             if auto_ml:
                 task.auto_ml_log_dir = None
                 task.auto_ml_workspace_dir = None
+                task.auto_ml_service_job_id = None
             if report:
                 task.report_dir = None
             task.updated_at = now_ts()
@@ -637,9 +708,32 @@ class TaskStore:
         with self._lock:
             return self._handles.get(task_id)
 
+    def recoverable_remote_tasks(self) -> list[TaskModel]:
+        """Return persisted AutoML jobs that may still be alive in MLEvolve."""
+        with self._lock:
+            candidates: list[TaskModel] = []
+            for task in self._tasks.values():
+                if task.status in {"completed", "stopped"}:
+                    continue
+                poll_failure = (
+                    task.phase == "automl_failed"
+                    and "AutoML service poll failed" in str(task.last_error or "")
+                )
+                if task.auto_ml_service_job_id or poll_failure:
+                    candidates.append(task.model_copy(deep=True))
+            return candidates
+
 
 store = TaskStore()
-app = FastAPI(title="AutoDecision Local API", version="0.1.0")
+
+
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    threading.Thread(target=_recover_persisted_automl_jobs, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="AutoDecision Local API", version="0.1.0", lifespan=app_lifespan)
 _allowed_origins = _allowed_origins_from_env()
 app.add_middleware(
     CORSMiddleware,
@@ -685,7 +779,8 @@ def _default_global_settings() -> dict[str, Any]:
                     "apiKey": "",
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
-                    "maxTokens": 0,
+                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
+                    "contextWindowTokens": 131072,
                 },
                 {
                     "id": "default-autorealize",
@@ -695,7 +790,8 @@ def _default_global_settings() -> dict[str, Any]:
                     "apiKey": "",
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
-                    "maxTokens": 0,
+                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
+                    "contextWindowTokens": 131072,
                 },
                 {
                     "id": "default-feedback",
@@ -705,7 +801,8 @@ def _default_global_settings() -> dict[str, Any]:
                     "apiKey": "",
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
-                    "maxTokens": 0,
+                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
+                    "contextWindowTokens": 131072,
                 },
                 {
                     "id": "default-vllm",
@@ -716,6 +813,7 @@ def _default_global_settings() -> dict[str, Any]:
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
                     "maxTokens": 0,
+                    "contextWindowTokens": 0,
                 },
                 {
                     "id": "default-embedding",
@@ -726,6 +824,7 @@ def _default_global_settings() -> dict[str, Any]:
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
                     "maxTokens": 0,
+                    "contextWindowTokens": 0,
                 },
             ],
             "roleModels": {
@@ -903,6 +1002,9 @@ def _role_model_to_legacy(model: dict[str, Any], *, structured_disable: bool | N
         "enableThinking": _legacy_enable_thinking(model.get("thinkingMode")),
         "reasoningEffort": None if _normal_reasoning_effort(model.get("reasoningEffort")) == "default" else _normal_reasoning_effort(model.get("reasoningEffort")),
         "maxTokens": _normal_max_tokens(model.get("maxTokens", model.get("max_tokens"))) or 0,
+        "contextWindowTokens": _normal_max_tokens(
+            model.get("contextWindowTokens", model.get("context_window_tokens"))
+        ) or 0,
     }
     if structured_disable is not None:
         out["structuredDisableThinking"] = bool(structured_disable)
@@ -926,6 +1028,9 @@ def _legacy_model_to_library_item(
         "thinkingMode": _thinking_mode_from_legacy(merged.get("enableThinking")),
         "reasoningEffort": _normal_reasoning_effort(merged.get("reasoningEffort")),
         "maxTokens": _normal_max_tokens(merged.get("maxTokens", merged.get("max_tokens"))) or 0,
+        "contextWindowTokens": _normal_max_tokens(
+            merged.get("contextWindowTokens", merged.get("context_window_tokens"))
+        ) or 0,
     }
 
 
@@ -958,6 +1063,9 @@ def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str
             "thinkingMode": _thinking_mode_from_legacy(raw.get("thinkingMode", raw.get("enableThinking"))),
             "reasoningEffort": _normal_reasoning_effort(raw.get("reasoningEffort")),
             "maxTokens": _normal_max_tokens(raw.get("maxTokens", raw.get("max_tokens"))) or 0,
+            "contextWindowTokens": _normal_max_tokens(
+                raw.get("contextWindowTokens", raw.get("context_window_tokens"))
+            ) or 0,
         }
 
     legacy_specs = [
@@ -1071,7 +1179,7 @@ def _model_reasoning_cli(model: dict[str, Any]) -> str:
 
 def _model_max_tokens_cli(model: dict[str, Any]) -> str | None:
     tokens = _normal_max_tokens(model.get("maxTokens", model.get("max_tokens")))
-    return str(tokens) if tokens is not None else None
+    return str(max(MINIMUM_LLM_OUTPUT_TOKENS, int(tokens or 0)))
 
 
 def _preserve_sensitive_settings(merged: dict[str, Any], existing: dict[str, Any], incoming: dict[str, Any]) -> None:
@@ -1171,6 +1279,56 @@ def _find_original_description(input_root: Path) -> Path | None:
     return sorted(candidates, key=_rank)[0]
 
 
+def _configured_automl_contract(task: TaskModel) -> tuple[str, str]:
+    goal = str(getattr(task.config.auto_ml, "goal", "") or "").strip()
+    evaluation = str(getattr(task.config.auto_ml, "eval", "") or "").strip()
+    return goal, evaluation
+
+
+def _automl_input_readiness(task: TaskModel) -> dict[str, Any]:
+    input_root = Path(task.input_root).expanduser().resolve() if task.input_root.strip() else None
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    autorealize_description = run_dir / "autorealize" / "description.md"
+    original_description = (
+        _find_original_description(input_root)
+        if input_root is not None and input_root.exists() and input_root.is_dir()
+        else None
+    )
+    goal, evaluation = _configured_automl_contract(task)
+    configured_contract = bool(goal and evaluation)
+
+    if autorealize_description.is_file():
+        source = "autorealize_description"
+    elif original_description is not None:
+        source = "input_description"
+    elif configured_contract:
+        source = "configured_goal_eval"
+    else:
+        source = ""
+
+    ready = bool(source) and input_root is not None and input_root.is_dir()
+    detail = ""
+    if input_root is None:
+        detail = "请先配置输入文件夹。"
+    elif not input_root.is_dir():
+        detail = f"输入文件夹不存在: {input_root}"
+    elif not source:
+        detail = (
+            "AutoML 输入未就绪：请先执行 AutoRealize，或在输入目录提供 description.md，"
+            "或在 AutoML 配置中同时填写 Goal 和 Eval。"
+        )
+
+    return {
+        "ready": ready,
+        "source": source,
+        "detail": detail,
+        "autorealize_description": str(autorealize_description),
+        "input_description": str(original_description) if original_description else "",
+        "configured_goal": bool(goal),
+        "configured_eval": bool(evaluation),
+    }
+
+
 def _is_sample_submission_like(path: Path) -> bool:
     compact = "".join(ch for ch in path.stem.lower() if ch.isalnum())
     return "samplesubmission" in compact or path.name.lower() == "sample_submission.csv"
@@ -1215,12 +1373,17 @@ def _prepare_direct_autorealize_output(
     clean: bool = False,
 ) -> bool:
     desc_src = _find_original_description(input_root)
-    if desc_src is None:
+    configured_goal, configured_eval = _configured_automl_contract(task)
+    config_contract = bool(configured_goal and configured_eval)
+    if desc_src is None and not config_contract:
         store.set_status(
             task_id,
             status="failed",
             phase="prepare_automl_input_failed",
-            last_error="直接启动 AutoML 需要输入目录中存在 description.md；请放入人工确认的赛题说明后重试。",
+            last_error=(
+                "AutoML 输入未就绪：请先执行 AutoRealize，或在输入目录提供 description.md，"
+                "或在 AutoML 配置中同时填写 Goal 和 Eval。"
+            ),
         )
         return False
 
@@ -1255,11 +1418,33 @@ def _prepare_direct_autorealize_output(
             shutil.copytree(source, target, dirs_exist_ok=True)
 
         prepared_desc = target / "description.md"
-        if desc_src.resolve() != prepared_desc.resolve():
-            shutil.copy2(desc_src, prepared_desc)
         origin_desc = target / "description_origin.md"
-        if desc_src.resolve() != origin_desc.resolve():
-            shutil.copy2(desc_src, origin_desc)
+        generated_from_config = desc_src is None
+        if generated_from_config:
+            configured_description = "\n".join(
+                [
+                    "# AutoML Task Contract",
+                    "",
+                    "## Goal",
+                    configured_goal,
+                    "",
+                    "## Evaluation",
+                    configured_eval,
+                    "",
+                    "## Data",
+                    "Use the files in this directory as the task input.",
+                ]
+            )
+            prepared_desc.write_text(configured_description, encoding="utf-8")
+            origin_desc.write_text(configured_description, encoding="utf-8")
+            desc_src = prepared_desc
+            description_rel = "description.md"
+        else:
+            if desc_src.resolve() != prepared_desc.resolve():
+                shutil.copy2(desc_src, prepared_desc)
+            if desc_src.resolve() != origin_desc.resolve():
+                shutil.copy2(desc_src, origin_desc)
+            description_rel = str(desc_src.relative_to(input_root)).replace("\\", "/")
 
         sample_candidates = [
             p
@@ -1286,7 +1471,6 @@ def _prepare_direct_autorealize_output(
 
         sample_files = [x for x in file_list if _is_sample_submission_like(Path(x))]
         root_sample_rel = "sample_submission.csv" if root_sample.exists() else (sample_files[0] if sample_files else None)
-        description_rel = str(desc_src.relative_to(input_root)).replace("\\", "/")
         sample_columns = _read_csv_header(root_sample) if root_sample.exists() else []
         submission_contract = {
             "is_defined": bool(sample_columns),
@@ -1306,15 +1490,23 @@ def _prepare_direct_autorealize_output(
         }
         authoritative_memory = {
             "has_authoritative_sources": True,
-            "summary": "直接使用输入目录中的 description.md 作为任务定义。",
-            "task_goal": task.config.auto_realize.task_hint,
+            "summary": (
+                "直接使用 AutoML 配置中的 Goal/Eval 作为任务定义。"
+                if generated_from_config
+                else "直接使用输入目录中的 description.md 作为任务定义。"
+            ),
+            "task_goal": configured_goal or task.config.auto_realize.task_hint,
             "input_requirements": ["以输入目录和原始 description.md 说明为准。"],
             "output_requirements": (
                 [f"提交列以 `{root_sample_rel}` 为准: {', '.join(sample_columns)}"]
                 if sample_columns
                 else ["未发现可解析的官方 sample_submission；输出协议以原始 description.md 为准。"]
             ),
-            "evaluation_requirements": ["以原始 description.md 中的评估协议为准。"],
+            "evaluation_requirements": (
+                [configured_eval]
+                if generated_from_config
+                else ["以原始 description.md 中的评估协议为准。"]
+            ),
             "constraints": ["不得由 AutoRealize 重新发明任务定义、提交格式或评估协议。"],
             "leakage_guards": [],
             "submission_contract": submission_contract,
@@ -1429,7 +1621,7 @@ def _prepare_direct_autorealize_output(
                 "输入目录中的 `description.md` 被视为人工确认的最高优先级任务说明；AutoDecision 未重新生成赛题描述、提交格式或评估协议。",
                 "",
                 "## 原始任务说明",
-                f"- 来源: `{str(desc_src.relative_to(input_root)).replace(chr(92), '/')}`",
+                f"- 来源: `{description_rel}`",
                 "",
                 "## 文件清单",
                 *[f"- `{x}`" for x in file_list[:300]],
@@ -1595,12 +1787,11 @@ def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Pat
             detail=f"AutoRealize outputs are incomplete; missing files: {missing}",
         )
     if missing and _direct_mode_enabled(task):
-        input_root = Path(task.input_root).expanduser().resolve()
-        desc_src = _find_original_description(input_root) if input_root.exists() else None
-        if desc_src is None:
+        readiness = _automl_input_readiness(task)
+        if not readiness["ready"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"直接 AutoML 模式需要 input_root 中存在 description.md；当前 AutoRealize 输出缺失: {missing}",
+                detail=f"{readiness['detail']} 当前 AutoRealize 输出缺失: {missing}",
             )
 
     layout = _task_layout(task)
@@ -1622,10 +1813,11 @@ def _validate_direct_automl_start(task: TaskModel) -> tuple[Path, Path, Path, Pa
     input_root = Path(task.input_root).expanduser().resolve()
     if not input_root.exists() or not input_root.is_dir():
         raise HTTPException(status_code=400, detail=f"input_root does not exist: {input_root}")
-    if _find_original_description(input_root) is None:
+    readiness = _automl_input_readiness(task)
+    if not readiness["ready"]:
         raise HTTPException(
             status_code=400,
-            detail="直接启动 AutoML 需要输入目录中存在 description.md；请放入人工确认的赛题说明后重试。",
+            detail=str(readiness["detail"]),
         )
 
     run_dir = _resolve_task_run_dir_for_rerun(task)
@@ -1640,6 +1832,31 @@ def _validate_direct_automl_start(task: TaskModel) -> tuple[Path, Path, Path, Pa
         run_dir / "autorealize",
         run_dir / "automl" / "logs",
         run_dir / "automl" / "workspaces",
+    )
+
+
+def _validate_continue_automl(task: TaskModel) -> tuple[Path, Path, Path, Path, Path, Path]:
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="task is running; cannot continue AutoML")
+    if not task.auto_ml_log_dir or not task.auto_ml_workspace_dir:
+        raise HTTPException(status_code=400, detail="尚未执行过 AutoML，无法在原搜索树上继续。")
+
+    ml_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve()
+    ml_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve()
+    if not ml_log_dir.is_dir() or not ml_ws_dir.is_dir():
+        raise HTTPException(status_code=400, detail="原 AutoML 搜索日志或工作区不存在，无法继续搜索。")
+
+    run_dir = _resolve_task_run_dir_for_rerun(task)
+    autorealize_dir = run_dir / "autorealize"
+    if not (autorealize_dir / "description.md").is_file():
+        raise HTTPException(status_code=400, detail="原 AutoML 任务说明 description.md 缺失，无法继续搜索。")
+    return (
+        run_dir,
+        autorealize_dir,
+        run_dir / "automl" / "logs",
+        run_dir / "automl" / "workspaces",
+        ml_log_dir,
+        ml_ws_dir,
     )
 
 
@@ -1683,27 +1900,25 @@ def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path 
             detail=f"Refused to rewrite unsafe task directory: {run_dir}",
         )
     autorealize_dir = run_dir / "autorealize"
-    require_sample = _sample_submission_required(
-        autorealize_dir,
-        task.config.auto_realize.generate_sample_submission,
-    )
-    if not _autorealize_outputs_ready(autorealize_dir, require_sample_submission=require_sample):
-        if _direct_mode_enabled(task):
-            input_root = Path(task.input_root).expanduser().resolve()
-            desc_src = _find_original_description(input_root) if input_root.exists() else None
-            if desc_src is not None:
-                automl_root = run_dir / "automl"
-                ml_log_dir = _pick_local_automl_log_dir(task)
-                ml_ws_dir = _pick_local_automl_workspace_dir(task, exp_name=ml_log_dir.name if ml_log_dir else None)
-                return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
-        raise HTTPException(
-            status_code=400,
-            detail=f"AutoRealize outputs are incomplete; cannot rerun AutoReport: {autorealize_dir}",
-        )
-
     automl_root = run_dir / "automl"
     ml_log_dir = _pick_local_automl_log_dir(task)
-    ml_ws_dir = _pick_local_automl_workspace_dir(task, exp_name=ml_log_dir.name if ml_log_dir else None)
+    ml_ws_dir = _pick_local_automl_workspace_dir(
+        task,
+        exp_name=ml_log_dir.name if ml_log_dir else None,
+    )
+    if ml_log_dir is None or not ml_log_dir.is_dir() or ml_ws_dir is None or not ml_ws_dir.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="请先执行 AutoML；报告生成需要已有的 AutoML 搜索日志和工作区，中断后的检查点也可以使用。",
+        )
+    if not (autorealize_dir / "description.md").is_file():
+        if _direct_mode_enabled(task) and _automl_input_readiness(task)["ready"]:
+            return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
+        raise HTTPException(
+            status_code=400,
+            detail=f"AutoML 使用的 description.md 已缺失，无法生成报告: {autorealize_dir}",
+        )
+
     return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
 
 
@@ -1892,26 +2107,47 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg.setdefault("knowledge", {})
     cfg.setdefault("investigation", {})
     cfg.setdefault("data", {})
+    cfg.setdefault("prompt", {})
+    cfg.setdefault("context", {})
 
     llm_concurrency = max(1, int(ar.llm_concurrency or 1))
 
     cfg["switches"]["run_data_cognition"] = True
     cfg["switches"]["run_task_definition"] = True
     cfg["switches"]["enable_fewshot"] = ar.enable_fewshot
+    cfg["switches"]["optimize_llm_cost"] = ar.optimize_llm_cost
     cfg["switches"]["generate_sample_submission"] = ar.generate_sample_submission
     cfg["switches"]["prefer_original_description"] = True
     cfg["switches"]["direct_automl_from_description"] = False
     cfg["llm"]["request_timeout_seconds"] = ar.llm_timeout
     cfg["llm"]["max_concurrent_requests"] = llm_concurrency
-    cfg["llm"]["enable_thinking"] = ar.llm_enable_thinking
-    cfg["llm"]["reasoning_effort"] = ar.llm_reasoning_effort
-    cfg["llm"]["structured_disable_thinking"] = ar.llm_structured_disable_thinking
     cfg["parallel"]["cognition_max_workers"] = llm_concurrency
-    cfg["telemetry"]["enabled"] = not ar.no_telemetry
-    cfg["knowledge"]["enabled"] = not ar.no_knowledge
-    cfg["llm"]["enable_cache"] = not ar.no_llm_cache
+    cfg["telemetry"]["enabled"] = True
+    cfg["knowledge"]["enabled"] = True
+    cfg["llm"]["enable_cache"] = True
     cfg["investigation"]["enabled"] = bool(ar.enable_question_investigator)
+    cfg["investigation"]["max_questions"] = max(1, int(ar.investigation_max_questions))
+    cfg["investigation"]["max_rounds_per_run"] = max(1, int(ar.investigation_max_rounds_per_question))
+    cfg["investigation"]["max_scripts_per_question"] = max(0, int(ar.investigation_max_scripts_per_question))
+    cfg["investigation"]["custom_python_timeout_seconds"] = max(1.0, float(ar.investigation_script_timeout_secs))
     cfg["data"]["auto_generate_predict_split"] = False
+    cfg["data"]["llm_file_cognition_mode"] = ar.llm_file_cognition_mode
+    cfg["data"]["table_profile_sample_rows"] = (
+        max(1, int(ar.table_profile_sample_rows))
+        if int(ar.table_profile_sample_rows) > 0
+        else None
+    )
+    cfg["prompt"]["prompt_token_budget"] = max(2000, int(ar.prompt_token_budget))
+    cfg["prompt"]["output_language"] = task.config.output_language
+    cfg["prompt"]["control_language"] = task.config.output_language
+    cfg["prompt"]["artifact_consistency_enabled"] = bool(ar.artifact_consistency_enabled)
+    cfg["prompt"]["artifact_consistency_max_rounds"] = max(1, int(ar.artifact_consistency_max_rounds))
+    cfg["context"]["cross_stage_memory_enabled"] = bool(ar.cross_stage_memory_enabled)
+    cfg["context"]["cross_stage_headroom_ratio"] = min(
+        0.9,
+        max(0.4, float(ar.cross_stage_headroom_ratio)),
+    )
+    cfg["context"]["cross_stage_retrieval_enabled"] = bool(ar.cross_stage_retrieval_enabled)
 
     llm = gs.llm
     autorealize_model = _selected_model(llm, "autoRealize", fallback_role="autoMlCode")
@@ -1927,9 +2163,12 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     effort = _normal_reasoning_effort(autorealize_model.get("reasoningEffort"))
     cfg["llm"]["reasoning_effort"] = None if effort == "default" else effort
     max_tokens = _normal_max_tokens(autorealize_model.get("maxTokens", autorealize_model.get("max_tokens")))
-    if max_tokens is not None:
-        cfg["llm"]["max_tokens"] = max_tokens
-        cfg["llm"]["structured_max_tokens"] = max_tokens
+    effective_max_tokens = max(MINIMUM_LLM_OUTPUT_TOKENS, int(max_tokens or 0))
+    cfg["llm"]["minimum_output_tokens"] = MINIMUM_LLM_OUTPUT_TOKENS
+    cfg["llm"]["max_tokens"] = effective_max_tokens
+    cfg["llm"]["structured_max_tokens"] = effective_max_tokens
+    cfg["llm"]["structured_length_retry_max_tokens"] = effective_max_tokens
+    cfg["llm"]["constraint_memory_max_tokens"] = effective_max_tokens
     cfg["llm"]["structured_disable_thinking"] = True
 
     cfg["vllm"]["enabled"] = bool(ar.enable_vllm)
@@ -1982,6 +2221,7 @@ def _build_mlevolve_command(
     automl_logs_root: Path,
     automl_workspaces_root: Path,
     exp_name: str | None = None,
+    dependency_log_root: Path | None = None,
 ) -> list[str]:
     am = task.config.auto_ml
     llm = gs.llm
@@ -1989,6 +2229,12 @@ def _build_mlevolve_command(
     code_model = _selected_model(llm, "autoMlCode")
     feedback_model = _selected_model(llm, "autoMlFeedback", fallback_role="autoMlCode")
     embedding_model = _selected_model(llm, "embedding")
+    code_context_window_tokens = _normal_max_tokens(
+        code_model.get("contextWindowTokens", code_model.get("context_window_tokens"))
+    ) or 131072
+    feedback_context_window_tokens = _normal_max_tokens(
+        feedback_model.get("contextWindowTokens", feedback_model.get("context_window_tokens"))
+    ) or code_context_window_tokens
     py = gs.python.get("executable", "python")
 
     exp_name = exp_name or task.task_name
@@ -1998,6 +2244,7 @@ def _build_mlevolve_command(
         return json.dumps(v, ensure_ascii=False)
 
     generate_submission = _mlevolve_generate_submission_required(autorealize_dir, bool(am.generate_submission))
+    dependency_root = (dependency_log_root or automl_logs_root.parent).resolve()
 
     cmd = [
         py,
@@ -2020,55 +2267,96 @@ def _build_mlevolve_command(
         f"resources.monitor_interval_seconds={float(task.config.resources.monitor_interval_seconds)}",
         f"torch_hub_dir={_as_cli_str(global_mlevolve.get('torchHubDir', getattr(am, 'torch_hub_dir', '')))}",
         f"pretrain_model_dir={_as_cli_str(global_mlevolve.get('pretrainModelDir', getattr(am, 'pretrain_model_dir', '')))}",
-        f"use_grading_server={'true' if am.use_grading_server else 'false'}",
+        "use_grading_server=false",
         f"exec.timeout={am.exec_timeout_secs}",
         "exec.agent_file_name=runfile.py",
+        f"exec.auto_install_missing_dependencies={'true' if am.auto_install_missing_dependencies else 'false'}",
+        "exec.dependency_install_policy=ai_declared",
+        f"exec.dependency_install_timeout_seconds={am.dependency_install_timeout_secs}",
+        f"exec.dependency_install_max_packages_per_execution={am.dependency_install_max_packages}",
+        f"exec.dependency_install_target_path={_as_cli_str(str(dependency_root / 'python_packages'))}",
+        f"exec.dependency_install_central_log_path={_as_cli_str(str(dependency_root / 'dependency_installations.jsonl'))}",
+        f"exec.dependency_install_central_summary_path={_as_cli_str(str(dependency_root / 'dependency_installations_summary.json'))}",
         f"agent.steps={am.steps}",
         f"agent.time_limit={am.time_limit_secs}",
         f"agent.initial_drafts={am.initial_drafts}",
+        f"agent.output_language={'chinese' if task.config.output_language == 'zh' else 'english'}",
         "agent.seed=42",
         "agent.data_preview=true",
         f"agent.generate_submission={'true' if generate_submission else 'false'}",
         f"agent.code.model={_as_cli_str(_model_cli_value(code_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
-        "agent.code.temp=0.5",
+        f"agent.code.temp={am.code_temperature}",
         f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
         f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
+        f"agent.code.minimum_output_tokens={MINIMUM_LLM_OUTPUT_TOKENS}",
+        f"agent.code.request_timeout_seconds={am.code_request_timeout_secs}",
+        f"agent.code.generation_max_retries={am.code_generation_max_retries}",
+        f"agent.code.continuation_max_rounds={am.code_continuation_max_rounds}",
+        f"agent.code.context_window_tokens={code_context_window_tokens}",
         f"agent.feedback.model={_as_cli_str(_model_cli_value(feedback_model, 'model', 'deepseek-v4-pro'), 'deepseek-v4-pro')}",
-        "agent.feedback.temp=0.5",
+        f"agent.feedback.temp={am.feedback_temperature}",
         f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
         f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
+        f"agent.feedback.minimum_output_tokens={MINIMUM_LLM_OUTPUT_TOKENS}",
+        f"agent.feedback.request_timeout_seconds={am.feedback_request_timeout_secs}",
+        f"agent.feedback.generation_max_retries={am.feedback_generation_max_retries}",
+        f"agent.feedback.continuation_max_rounds={am.feedback_continuation_max_rounds}",
+        f"agent.feedback.context_window_tokens={feedback_context_window_tokens}",
         f"agent.check_data_leakage={'true' if am.check_data_leakage else 'false'}",
         f"agent.use_diff_mode={'true' if am.use_diff_mode else 'false'}",
-        "agent.fusion_vs_evolution_prob=0.3",
-        "agent.branch_fusion_trigger_prob=1.0",
-        "agent.max_fusion_drafts=2",
+        f"agent.fusion_vs_evolution_prob={am.fusion_vs_evolution_prob}",
+        f"agent.branch_fusion_trigger_prob={am.branch_fusion_trigger_prob}",
+        f"agent.max_fusion_drafts={am.max_fusion_drafts}",
         f"agent.use_global_memory={'true' if am.use_global_memory else 'false'}",
         f"agent.memory_similarity_threshold={am.memory_similarity_threshold}",
         f"agent.memory_embedding_backend={_as_cli_str(am.memory_embedding_backend, 'openai')}",
         f"agent.memory_embedding_base_url={_as_cli_str(_model_cli_value(embedding_model, 'baseUrl', global_mlevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', ''))))}",
-        f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_mlevolve.get('embeddingModel', getattr(am, 'memory_embedding_model', ''))))}",
+        f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_mlevolve.get('embeddingModel', '')))}",
         f"agent.memory_embedding_device={_as_cli_str(am.memory_embedding_device, 'cuda')}",
         f"agent.memory_embedding_model_path={_as_cli_str(am.memory_embedding_model_path, 'BAAI/bge-base-en-v1.5')}",
+        f"agent.use_optimization_experience_library={'true' if am.use_optimization_experience_library else 'false'}",
+        f"agent.optimization_experience_max_cards={am.optimization_experience_max_cards}",
+        f"agent.optimization_experience_min_score={am.optimization_experience_min_score}",
+        f"agent.optimization_experience_max_chars={am.optimization_experience_max_chars}",
+        f"agent.draft.fast_first_draft={'true' if am.fast_first_draft else 'false'}",
+        f"agent.draft.fast_first_draft_skip_pre_review={'true' if am.fast_first_draft_skip_pre_review else 'false'}",
+        "agent.draft.fast_first_draft_compact_context=false",
+        f"agent.draft.use_stepwise_after_first={'true' if am.use_stepwise_after_first else 'false'}",
+        "agent.draft.stepwise_stage_context=false",
+        "agent.draft.stepwise_accumulate_context=true",
+        f"agent.draft.stepwise_context_max_tokens={am.stepwise_context_max_tokens}",
+        f"agent.draft.stepwise_compaction_keep_recent_steps={am.stepwise_compaction_keep_recent_steps}",
+        f"agent.draft.stepwise_compaction_max_tokens={am.stepwise_compaction_max_tokens}",
+        f"agent.draft.stepwise_context_headroom_ratio={am.stepwise_context_headroom_ratio}",
+        f"agent.retries.code_review_max_attempts={am.code_review_max_attempts}",
+        f"agent.retries.preflight_regeneration_max_attempts={am.preflight_regeneration_max_attempts}",
+        f"agent.retries.code_review_escalate_to_code={'true' if am.code_review_escalate_to_code else 'false'}",
+        f"agent.retries.code_generation_extract_max_attempts={am.code_generation_extract_max_attempts}",
+        f"agent.retries.metric_direction_max_attempts={am.metric_direction_max_attempts}",
+        f"agent.retries.result_parse_max_attempts={am.result_review_max_attempts}",
+        f"agent.retries.refine_plan_max_attempts={am.refine_plan_max_attempts}",
+        f"agent.retries.result_adjudicator_on_anomaly={'true' if am.result_adjudicator_on_anomaly else 'false'}",
         f"agent.search.parallel_search_num={am.parallel_search_num}",
         "agent.search.num_gpus=1",
         f"agent.search.num_drafts={am.search_num_drafts}",
         f"agent.search.num_bugs={am.search_num_bugs}",
         f"agent.search.num_improves={am.search_num_improves}",
-        "agent.search.topk_max_improves=10",
+        f"agent.search.topk_max_improves={am.search_topk_max_improves}",
         f"agent.search.max_debug_depth={am.search_max_debug_depth}",
         f"agent.search.back_debug_depth={am.search_back_debug_depth}",
-        "agent.search.debug_prob=1",
+        f"agent.search.debug_prob={am.search_debug_prob}",
         f"agent.search.metric_improvement_threshold={am.metric_improvement_threshold}",
         f"agent.search.max_improve_failure={am.max_improve_failure}",
-        "agent.search.branch_stagnation_threshold=3",
-        "agent.search.topk_stagnation_threshold=6",
-        "agent.search.stagnation_window=4",
-        "agent.search.top_candidates_size=20",
-        "agent.search.explore_switch_start=0.5",
-        "agent.search.explore_switch_end=0.7",
-        "agent.search.min_exploration_weight=0.2",
+        f"agent.search.branch_stagnation_threshold={am.search_branch_stagnation_threshold}",
+        f"agent.search.topk_stagnation_threshold={am.search_topk_stagnation_threshold}",
+        f"agent.search.stagnation_window={am.search_stagnation_window}",
+        f"agent.search.top_candidates_size={am.search_top_candidates_size}",
+        f"agent.search.explore_switch_start={am.search_explore_switch_start}",
+        f"agent.search.explore_switch_end={am.search_explore_switch_end}",
+        f"agent.search.min_exploration_weight={am.search_min_exploration_weight}",
+        f"agent.search.root_new_draft_probability={am.search_root_new_draft_probability}",
         "agent.search.topk_early_k=5",
         "agent.search.topk_early_max_per_branch=3",
         "agent.search.topk_late_k=3",
@@ -2078,10 +2366,9 @@ def _build_mlevolve_command(
         "agent.search.force_backprop_mid_threshold=0.4",
         "agent.search.force_backprop_mid_modulo=3",
         "agent.search.recent_best_window=4",
-        "agent.search.fusion_min_time_hours=6",
-        "agent.search.fusion_max_time_hours=10",
-        "agent.search.fusion_min_successful_nodes=2",
-        "agent.search.fusion_min_branches=2",
+        f"agent.search.fusion_min_remaining_seconds={am.search_fusion_min_remaining_seconds}",
+        f"agent.search.fusion_min_successful_nodes={am.search_fusion_min_successful_nodes}",
+        f"agent.search.fusion_min_branches={am.search_fusion_min_branches}",
         f"agent.decay.exploration_constant={am.exploration_constant}",
         f"agent.decay.lower_bound={am.lower_bound}",
         "agent.decay.alpha=0.01",
@@ -2090,14 +2377,8 @@ def _build_mlevolve_command(
     ]
     code_max_tokens = _model_max_tokens_cli(code_model)
     feedback_max_tokens = _model_max_tokens_cli(feedback_model)
-    if code_max_tokens is not None:
-        cmd.append(f"agent.code.max_tokens={code_max_tokens}")
-    if feedback_max_tokens is not None:
-        cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
-    if am.goal:
-        cmd.append(f"goal={_as_cli_str(am.goal)}")
-    if am.eval:
-        cmd.append(f"eval={_as_cli_str(am.eval)}")
+    cmd.append(f"agent.code.max_tokens={code_max_tokens}")
+    cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
     return cmd
 
 
@@ -2308,21 +2589,62 @@ def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, int]:
     return ar_base, mlevolve_base, report_base, timeout_secs
 
 
-def _poll_remote_job(base_url: str, job_id: str, timeout_secs: int = 15) -> dict[str, Any]:
+class _ServicePollCancelled(RuntimeError):
+    pass
+
+
+def _is_retryable_service_poll_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    retryable_markers = (
+        "timed out",
+        "timeout",
+        "connection refused",
+        "10061",
+        "actively refused",
+        "积极拒绝",
+        "connection reset",
+        "connection aborted",
+        "10054",
+        "bad gateway",
+        "temporary failure",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
+def _poll_remote_job(
+    base_url: str,
+    job_id: str,
+    timeout_secs: int = 15,
+    *,
+    on_connection_state: Callable[[bool, int, str], None] | None = None,
+    should_abort: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Poll until terminal state; transport outages never imply job failure."""
     reconnect_attempt = 0
-    last_error = ""
+    has_connected = False
     while True:
+        if should_abort is not None and should_abort():
+            raise _ServicePollCancelled("remote AutoML polling cancelled")
         try:
             status = _json_get(base_url, f"/jobs/{job_id}", timeout_secs=timeout_secs)
+            if (reconnect_attempt or not has_connected) and on_connection_state is not None:
+                on_connection_state(True, reconnect_attempt, "")
+            has_connected = True
             reconnect_attempt = 0
-            last_error = ""
         except Exception as exc:
+            if not _is_retryable_service_poll_error(exc):
+                raise
             reconnect_attempt += 1
-            last_error = str(exc)
-            if reconnect_attempt >= SERVICE_POLL_RECONNECT_MAX_ATTEMPTS:
-                raise RuntimeError(
-                    f"service reconnect failed after {reconnect_attempt} attempts: {last_error}"
-                ) from exc
+            if on_connection_state is not None and (
+                reconnect_attempt == 1
+                or reconnect_attempt % SERVICE_POLL_RECONNECT_MAX_ATTEMPTS == 0
+            ):
+                on_connection_state(False, reconnect_attempt, str(exc))
             sleep_secs = min(
                 SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS,
                 SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS * reconnect_attempt,
@@ -2330,7 +2652,13 @@ def _poll_remote_job(base_url: str, job_id: str, timeout_secs: int = 15) -> dict
             time.sleep(sleep_secs)
             continue
         state = str(status.get("status") or "")
-        if state in {"completed", "failed", "stopped"}:
+        if state in {
+            "completed",
+            "failed",
+            "stopped",
+            "interrupted_resumable",
+            "interrupted_incomplete",
+        }:
             return status
         time.sleep(1.0)
 
@@ -2342,6 +2670,31 @@ def _is_interrupted_exit_code(exit_code: Any) -> bool:
         return False
     # Windows CTRL_C_EVENT/CTRL_BREAK_EVENT is reported as 0xC000013A.
     return code in {3221225786, -1073741510, 130, -2, -15}
+
+
+def _is_native_automl_crash_exit_code(exit_code: Any) -> bool:
+    try:
+        code = int(exit_code)
+    except Exception:
+        return False
+    return code in {3221225725, -1073741571}
+
+
+def _automl_failure_hint(status: dict[str, Any], limit: int = 500) -> str:
+    """Prefer the service's structured diagnosis for native process crashes."""
+    exit_code = status.get("exit_code")
+    if _is_native_automl_crash_exit_code(exit_code):
+        preferred = str(status.get("last_error") or "").strip()
+        if preferred:
+            return preferred[:limit]
+
+    text = str(
+        status.get("stderr_tail")
+        or status.get("stdout_tail")
+        or status.get("last_error")
+        or ""
+    ).strip()
+    return text.splitlines()[-1][:limit] if text else ""
 
 
 def _is_automl_budget_exhausted_status(status: dict[str, Any]) -> bool:
@@ -2380,12 +2733,12 @@ def _report_evidence_paths(
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     evidence.append({"label": "autorealize", "path": str(autorealize_dir), "kind": "autorealize", "required": True})
-    if automl_root.exists():
-        evidence.append({"label": "automl_root", "path": str(automl_root), "kind": "automl", "required": False})
     if ml_log_dir is not None and ml_log_dir.exists():
         evidence.append({"label": "automl_logs", "path": str(ml_log_dir), "kind": "automl", "required": False})
     if ml_ws_dir is not None and ml_ws_dir.exists():
         evidence.append({"label": "automl_workspace", "path": str(ml_ws_dir), "kind": "automl", "required": False})
+    if len(evidence) == 1 and automl_root.exists():
+        evidence.append({"label": "automl_root", "path": str(automl_root), "kind": "automl", "required": False})
     return evidence
 
 
@@ -2412,6 +2765,31 @@ def _run_report_stage(
     if not (report_model.get("model") and report_model.get("baseUrl") and report_model.get("apiKey")):
         report_model = code_model
     report_api_key = str(report_model.get("apiKey") or "")
+    detail_prompt_chars = {
+        "concise": 40000,
+        "standard": 70000,
+        "detailed": 110000,
+    }[cfg.detail_level]
+    detail_source_chars = {
+        "concise": 10000,
+        "standard": 18000,
+        "detailed": 30000,
+    }[cfg.detail_level]
+    configured_max_tokens = report_model.get("maxTokens")
+    try:
+        report_max_tokens = int(configured_max_tokens or 0)
+    except (TypeError, ValueError):
+        report_max_tokens = 0
+    report_max_tokens = max(MINIMUM_LLM_OUTPUT_TOKENS, report_max_tokens)
+    thinking_mode = str(report_model.get("thinkingMode") or "default").strip().lower()
+    enable_thinking = True if thinking_mode == "enabled" else False if thinking_mode == "disabled" else None
+    reasoning_effort = str(report_model.get("reasoningEffort") or "").strip()
+    if reasoning_effort.lower() in {"", "default"}:
+        reasoning_effort = ""
+    try:
+        context_window_tokens = int(report_model.get("contextWindowTokens") or 131072)
+    except (TypeError, ValueError):
+        context_window_tokens = 131072
     store.set_status(
         task_id,
         status="running",
@@ -2434,17 +2812,35 @@ def _run_report_stage(
         "config": {
             "report_title": f"{task.task_name} AutoDecision 运行报告",
             "audience": cfg.audience,
-            "language": cfg.language,
-            "include_raw_logs": cfg.include_raw_logs,
-            "include_code_excerpt": cfg.include_code_excerpt,
+            "language": "zh-CN" if task.config.output_language == "zh" else "en-US",
+            "include_raw_logs": False,
+            "include_code_excerpt": True,
             "use_llm": True,
+            "comparison": {
+                "top_solution_limit": cfg.comparison_candidate_limit,
+                "successful_node_limit": cfg.comparison_candidate_limit,
+            },
+            "analysis": {
+                "detail_level": cfg.detail_level,
+                "comparison_candidate_limit": cfg.comparison_candidate_limit,
+                "max_retrieval_rounds": cfg.max_retrieval_rounds,
+                "initial_source_chars": detail_source_chars,
+                "enable_report_audit": cfg.enable_report_audit,
+            },
+            "generation": {
+                "max_prompt_chars": detail_prompt_chars,
+            },
             "llm": {
                 "model": str(report_model.get("model") or ""),
                 "base_url": str(report_model.get("baseUrl") or ""),
                 "api_key": None,
-                "temperature": 0.25,
-                "max_tokens": 8192,
-                "max_prompt_chars": 60000,
+                "temperature": 0.2,
+                "minimum_output_tokens": MINIMUM_LLM_OUTPUT_TOKENS,
+                "max_tokens": report_max_tokens,
+                "enable_thinking": enable_thinking,
+                "reasoning_effort": reasoning_effort or None,
+                "context_window_tokens": max(8192, context_window_tokens),
+                "context_headroom_ratio": 0.18,
             },
         },
         "env_overrides": {"DEEPSEEK_API_KEY": report_api_key},
@@ -2521,7 +2917,7 @@ def _run_autorealize_stage(
         "config_path": str(ar_cfg_path),
         "python_executable": py,
         "working_dir": str(AUTOREALIZE_DIR),
-        "offline": bool(task.config.auto_realize.offline),
+        "offline": False,
         "auto_generate_predict_split": False,
         "env_overrides": {
             "DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or ""),
@@ -2688,6 +3084,7 @@ def _run_automl_stage(
     mlevolve_service_base: str,
     req_timeout: int,
     resume_existing: bool = False,
+    append_resume_budget: bool = False,
 ) -> bool:
     engine = _automl_engine(task)
     mlevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
@@ -2699,7 +3096,13 @@ def _run_automl_stage(
         automl_logs_root=mlevolve_log_dir,
         automl_workspaces_root=mlevolve_workspace_dir,
         exp_name=exp_name,
+        dependency_log_root=automl_logs_root.parent,
     )
+    if resume_existing:
+        ml_cmd.append(
+            "runtime.resume_budget_mode="
+            + ("additional" if append_resume_budget else "total")
+        )
     mlevolve_config_path = _write_mlevolve_config(task_id, ml_cmd)
     service_base = mlevolve_service_base
     working_dir = str(MLEVOLVE_DIR)
@@ -2750,6 +3153,13 @@ def _run_automl_stage(
             started_at=now_ts(),
         ),
     )
+    store.set_status(
+        task_id,
+        status="running",
+        phase="automl",
+        auto_ml_service_job_id=ml_job_id,
+        last_error=None,
+    )
     returned_log_dir = str(ml_start.get("log_dir") or "").strip()
     returned_ws_dir = str(ml_start.get("workspace_dir") or "").strip()
     if returned_log_dir or returned_ws_dir:
@@ -2761,13 +3171,62 @@ def _run_automl_stage(
             auto_ml_workspace_dir=returned_ws_dir or str(ml_ws_dir),
             last_error=None,
         )
+    def connection_state(connected: bool, attempt: int, error: str) -> None:
+        current = store.get(task_id)
+        if current.status == "stopped":
+            return
+        if connected:
+            store.set_status(
+                task_id,
+                status="running",
+                phase="automl",
+                last_error=None,
+            )
+            return
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl_reconnecting",
+            last_error=(
+                "AutoML control connection is temporarily unavailable; "
+                f"the remote job is retained and reconnecting (round {attempt}). "
+                f"Last error: {error}"
+            ),
+        )
+
+    def polling_cancelled() -> bool:
+        try:
+            return store.get(task_id).status == "stopped"
+        except Exception:
+            return True
+
     try:
-        ml_status = _poll_remote_job(service_base, ml_job_id, timeout_secs=req_timeout)
+        ml_status = _poll_remote_job(
+            service_base,
+            ml_job_id,
+            timeout_secs=req_timeout,
+            on_connection_state=connection_state,
+            should_abort=polling_cancelled,
+        )
+    except _ServicePollCancelled:
+        return False
     except Exception as e:
         store.pop_handle(task_id)
-        store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"AutoML service poll failed: {e}")
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="automl_failed",
+            auto_ml_service_job_id=None,
+            last_error=f"AutoML service returned a non-recoverable polling error: {e}",
+        )
         return False
     store.pop_handle(task_id)
+    store.set_status(
+        task_id,
+        status="running",
+        phase="automl",
+        auto_ml_service_job_id=None,
+    )
     ml_state = str(ml_status.get("status") or "")
     ml_stdout = str(ml_status.get("stdout_tail") or "")
     ml_stderr = str(ml_status.get("stderr_tail") or "")
@@ -2792,17 +3251,44 @@ def _run_automl_stage(
     if ml_budget_exhausted and ml_state in {"completed", "stopped"}:
         store.set_status(task_id, status="running", phase="automl_completed", last_error=None)
         return True
+    if ml_state == "interrupted_resumable":
+        store.set_status(
+            task_id,
+            status="interrupted_resumable",
+            phase="automl_interrupted_resumable",
+            auto_ml_service_job_id=None,
+            last_error=(
+                "AutoML 已中断，搜索树、在途动作和 Top-K 方案已保存；"
+                "可继续搜索或直接生成报告。"
+            ),
+        )
+        return False
+    if ml_state == "interrupted_incomplete":
+        store.set_status(
+            task_id,
+            status="interrupted_incomplete",
+            phase="automl_interrupted_incomplete",
+            auto_ml_service_job_id=None,
+            last_error=str(
+                ml_status.get("last_error")
+                or "AutoML 已中断，但完整可恢复检查点未能确认。"
+            ),
+        )
+        return False
     if ml_state == "stopped" or (_is_interrupted_exit_code(ml_code) and not ml_budget_exhausted):
         stop_msg = str(ml_status.get("last_error") or "").strip()
         if not stop_msg:
             stop_msg = f"AutoML interrupted by console/control signal (exit code {ml_code})."
-        store.set_status(task_id, status="stopped", phase="stopped", last_error=stop_msg)
+        store.set_status(
+            task_id,
+            status="stopped",
+            phase="stopped",
+            auto_ml_service_job_id=None,
+            last_error=stop_msg,
+        )
         return False
     if ml_state != "completed" or (ml_code != 0 and not ml_budget_exhausted):
-        err_hint = ""
-        tail = (ml_stderr or ml_stdout or str(ml_status.get("last_error") or "")).strip()
-        if tail:
-            err_hint = tail.splitlines()[-1][:180]
+        err_hint = _automl_failure_hint(ml_status)
         msg = f"AutoML exited with code {ml_code if ml_code is not None else '?'}"
         if err_hint:
             msg = f"{msg}: {err_hint}"
@@ -2811,6 +3297,195 @@ def _run_automl_stage(
     if ml_budget_exhausted:
         store.set_status(task_id, status="running", phase="automl_completed", last_error=None)
     return True
+
+
+def _persisted_automl_job_id(task: TaskModel) -> str:
+    if task.auto_ml_service_job_id:
+        return task.auto_ml_service_job_id
+    match = re.search(r"/jobs/([0-9a-fA-F]{32})", str(task.last_error or ""))
+    return match.group(1) if match else ""
+
+
+def _monitor_recovered_automl_job(
+    task_id: str,
+    service_base: str,
+    job_id: str,
+    req_timeout: int,
+) -> None:
+    def connection_state(connected: bool, attempt: int, error: str) -> None:
+        current = store.get(task_id)
+        if current.status == "stopped":
+            return
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl" if connected else "automl_reconnecting",
+            last_error=(
+                None
+                if connected
+                else (
+                    "AutoML control connection is temporarily unavailable; "
+                    f"the existing job is still retained (round {attempt}). Last error: {error}"
+                )
+            ),
+        )
+
+    def polling_cancelled() -> bool:
+        try:
+            return store.get(task_id).status == "stopped"
+        except Exception:
+            return True
+
+    try:
+        ml_status = _poll_remote_job(
+            service_base,
+            job_id,
+            timeout_secs=req_timeout,
+            on_connection_state=connection_state,
+            should_abort=polling_cancelled,
+        )
+    except _ServicePollCancelled:
+        return
+    except Exception as exc:
+        store.pop_handle(task_id)
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="automl_failed",
+            auto_ml_service_job_id=None,
+            last_error=f"Existing AutoML job could not be recovered: {exc}",
+        )
+        return
+
+    ml_state = str(ml_status.get("status") or "")
+    ml_code = ml_status.get("exit_code")
+    budget_exhausted = _is_automl_budget_exhausted_status(ml_status)
+    if ml_code is None and ml_state == "completed":
+        ml_code = 0
+    if ml_state == "interrupted_resumable":
+        store.pop_handle(task_id)
+        store.set_status(
+            task_id,
+            status="interrupted_resumable",
+            phase="automl_interrupted_resumable",
+            auto_ml_service_job_id=None,
+            last_error=(
+                "AutoML 已中断，搜索树、在途动作和 Top-K 方案已保存；"
+                "可继续搜索或直接生成报告。"
+            ),
+        )
+        return
+    if ml_state == "interrupted_incomplete":
+        store.pop_handle(task_id)
+        store.set_status(
+            task_id,
+            status="interrupted_incomplete",
+            phase="automl_interrupted_incomplete",
+            auto_ml_service_job_id=None,
+            last_error=str(ml_status.get("last_error") or "AutoML resumable checkpoint is incomplete."),
+        )
+        return
+    if ml_state == "stopped" or _is_interrupted_exit_code(ml_code):
+        store.pop_handle(task_id)
+        store.set_status(
+            task_id,
+            status="stopped",
+            phase="stopped",
+            auto_ml_service_job_id=None,
+            last_error=str(ml_status.get("last_error") or "MLEvolve stopped."),
+        )
+        return
+    if ml_state != "completed" or (ml_code != 0 and not budget_exhausted):
+        store.pop_handle(task_id)
+        hint = _automl_failure_hint(ml_status)
+        message = f"AutoML exited with code {ml_code if ml_code is not None else '?'}"
+        if hint:
+            message += f": {hint}"
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="automl_failed",
+            auto_ml_service_job_id=None,
+            last_error=message,
+        )
+        return
+
+    try:
+        _persist_resolved_automl_paths(task_id)
+    except Exception:
+        pass
+    store.set_status(
+        task_id,
+        status="running",
+        phase="automl_completed",
+        auto_ml_service_job_id=None,
+        last_error=None,
+    )
+    task = store.get(task_id)
+    gs = get_global_settings()
+    _ar_base, _mlevolve_base, report_base, report_timeout = _service_base_urls(gs)
+    layout = _task_layout(task, resolve_output_root(task.output_root))
+    ml_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
+    ml_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve() if task.auto_ml_workspace_dir else None
+    report_ok = _run_report_stage(
+        task_id=task_id,
+        task=task,
+        gs=gs,
+        autorealize_dir=layout["autorealize_dir"],
+        automl_root=layout["automl_root"],
+        ml_log_dir=ml_log_dir,
+        ml_ws_dir=ml_ws_dir,
+        report_dir=layout["report_dir"],
+        report_base=report_base,
+        req_timeout=report_timeout,
+    )
+    if not report_ok:
+        store.pop_handle(task_id)
+        return
+    store.pop_handle(task_id)
+    store.set_status(
+        task_id,
+        status="completed",
+        phase="completed",
+        report_dir=str(layout["report_dir"]),
+        last_error=None,
+    )
+
+
+def _recover_persisted_automl_jobs() -> None:
+    try:
+        gs = get_global_settings()
+        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    except Exception:
+        return
+    for task in store.recoverable_remote_tasks():
+        if store.get_handle(task.id) is not None:
+            continue
+        job_id = _persisted_automl_job_id(task)
+        if not job_id:
+            continue
+        store.attach_handle(
+            task.id,
+            RuntimeHandle(
+                process=None,
+                source="mlevolve_service_recovered",
+                remote_base_url=mlevolve_base,
+                remote_job_id=job_id,
+                started_at=now_ts(),
+            ),
+        )
+        store.set_status(
+            task.id,
+            status="running",
+            phase="automl_reconnecting",
+            auto_ml_service_job_id=job_id,
+            last_error="Reconnecting to the existing MLEvolve job after gateway interruption.",
+        )
+        threading.Thread(
+            target=_monitor_recovered_automl_job,
+            args=(task.id, mlevolve_base, job_id, req_timeout),
+            daemon=True,
+        ).start()
 
 
 def _rerun_autorealize_thread(task_id: str) -> None:
@@ -3031,13 +3706,13 @@ def _start_direct_automl_thread(task_id: str) -> None:
         gs = get_global_settings()
         _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
         input_root, run_dir, autorealize_dir, automl_logs_root, automl_workspaces_root = _validate_direct_automl_start(task)
+        use_existing_autorealize = (autorealize_dir / "description.md").is_file()
 
-        # Persist direct mode so later snapshot/rerun/resume paths use the same
-        # original-description contract instead of expecting generated AutoRealize outputs.
-        if not task.config.auto_realize.direct_automl_from_description:
+        # Persist direct mode only when AutoML is building its context from the
+        # input description or configured Goal/Eval rather than AutoRealize.
+        if not use_existing_autorealize and not task.config.auto_realize.direct_automl_from_description:
             updated = task.config.model_copy(deep=True)
             updated.auto_realize.direct_automl_from_description = True
-            updated.auto_realize.prefer_original_description = True
             task = TaskModel.model_validate(store.update(task_id, updated).model_dump())
 
         try:
@@ -3058,16 +3733,17 @@ def _start_direct_automl_thread(task_id: str) -> None:
             run_started_at=now_ts(),
             last_error=None,
         )
-        ok_direct = _prepare_direct_autorealize_output(
-            task_id=task_id,
-            task=task,
-            input_root=input_root,
-            run_dir=run_dir,
-            autorealize_dir=autorealize_dir,
-            clean=True,
-        )
-        if not ok_direct:
-            return
+        if not use_existing_autorealize:
+            ok_direct = _prepare_direct_autorealize_output(
+                task_id=task_id,
+                task=task,
+                input_root=input_root,
+                run_dir=run_dir,
+                autorealize_dir=autorealize_dir,
+                clean=True,
+            )
+            if not ok_direct:
+                return
 
         run_suffix = time.strftime("%Y%m%d_%H%M%S")
         ml_exp_name, ml_log_dir, ml_ws_dir = _build_automl_paths(
@@ -3113,8 +3789,76 @@ def _start_direct_automl_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"直接启动 AutoML 异常: {e}")
 
 
+def _continue_automl_thread(task_id: str) -> None:
+    try:
+        task = store.get(task_id)
+        resume_from_completed = task.status == "completed"
+        (
+            run_dir,
+            autorealize_dir,
+            automl_logs_root,
+            automl_workspaces_root,
+            ml_log_dir,
+            ml_ws_dir,
+        ) = _validate_continue_automl(task)
+        gs = get_global_settings()
+        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        _wait_for_service_ready(mlevolve_base, "AutoML")
+
+        env = os.environ.copy()
+        code_model = _selected_model(gs.llm, "autoMlCode")
+        if code_model.get("apiKey"):
+            env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
+
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl",
+            run_dir=str(run_dir),
+            run_started_at=now_ts(),
+            auto_ml_log_dir=str(ml_log_dir),
+            auto_ml_workspace_dir=str(ml_ws_dir),
+            last_error=None,
+        )
+        ok = _run_automl_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_logs_root=automl_logs_root,
+            automl_workspaces_root=automl_workspaces_root,
+            exp_name=ml_log_dir.name,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            env=env,
+            mlevolve_service_base=mlevolve_base,
+            req_timeout=req_timeout,
+            resume_existing=True,
+            append_resume_budget=resume_from_completed,
+        )
+        if ok:
+            store.set_status(
+                task_id,
+                status="completed",
+                phase="automl_completed",
+                run_dir=str(run_dir),
+                last_error=None,
+            )
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="automl_failed",
+            last_error=str(detail) if detail is not None else str(e),
+        )
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"继续 AutoML 异常: {e}")
+
+
 def _resume_task_thread(task_id: str) -> None:
     task = store.get(task_id)
+    resume_from_completed = task.status == "completed"
     if task.status == "running":
         store.set_status(task_id, status="failed", phase="resume_failed", last_error="任务当前仍在运行，无法继续")
         return
@@ -3258,6 +4002,7 @@ def _resume_task_thread(task_id: str) -> None:
         mlevolve_service_base=mlevolve_base,
         req_timeout=req_timeout,
         resume_existing=can_resume_automl,
+        append_resume_budget=can_resume_automl and resume_from_completed,
     )
     if not ok:
         return
@@ -3611,6 +4356,87 @@ def _pick_local_automl_workspace_dir(task: TaskModel, exp_name: str | None) -> P
     return None
 
 
+def _automl_runtime_artifact_name(log_dir: Path, key: str, default: str) -> str:
+    config = safe_read_yaml(log_dir / "config.yaml", {})
+    runtime = config.get("runtime", {}) if isinstance(config, dict) else {}
+    value = runtime.get(key) if isinstance(runtime, dict) else None
+    return str(value or default)
+
+
+def _local_resumable_automl_checkpoint(
+    task: TaskModel,
+) -> tuple[Path, Path, Path] | None:
+    """Verify a locally committed interruption checkpoint independently of the service."""
+    log_dir = _pick_local_automl_log_dir(task)
+    if log_dir is None:
+        return None
+    workspace_dir = _pick_local_automl_workspace_dir(task, exp_name=log_dir.name)
+    if workspace_dir is None:
+        return None
+
+    manifest_name = _automl_runtime_artifact_name(
+        log_dir,
+        "checkpoint_manifest_filename",
+        "checkpoint_manifest.json",
+    )
+    search_state_name = _automl_runtime_artifact_name(
+        log_dir,
+        "search_state_filename",
+        "search_state.json",
+    )
+    run_status_name = _automl_runtime_artifact_name(
+        log_dir,
+        "run_status_filename",
+        "run_status.json",
+    )
+    log_manifest_path = log_dir / manifest_name
+    workspace_manifest_path = workspace_dir / manifest_name
+    required_paths = (
+        log_dir / "journal.json",
+        log_dir / search_state_name,
+        log_dir / run_status_name,
+        log_manifest_path,
+        workspace_manifest_path,
+    )
+    if not all(path.is_file() for path in required_paths):
+        return None
+
+    run_status = safe_read_json(log_dir / run_status_name, {})
+    manifests = (
+        safe_read_json(log_manifest_path, {}),
+        safe_read_json(workspace_manifest_path, {}),
+    )
+    if not isinstance(run_status, dict) or run_status.get("status") != "interrupted_resumable":
+        return None
+    if not all(
+        isinstance(payload, dict)
+        and payload.get("status") == "interrupted_resumable"
+        and payload.get("resumable") is True
+        for payload in manifests
+    ):
+        return None
+    return log_dir, workspace_dir, log_manifest_path
+
+
+def _promote_local_resumable_checkpoint(task: TaskModel) -> TaskModel | None:
+    checkpoint = _local_resumable_automl_checkpoint(task)
+    if checkpoint is None:
+        return None
+    log_dir, workspace_dir, _manifest_path = checkpoint
+    return store.set_status(
+        task.id,
+        status="interrupted_resumable",
+        phase="automl_interrupted_resumable",
+        auto_ml_log_dir=str(log_dir),
+        auto_ml_workspace_dir=str(workspace_dir),
+        auto_ml_service_job_id=None,
+        last_error=(
+            "AutoML 已中断，本地已确认搜索树、在途动作和 Top-K 方案的完整检查点；"
+            "可继续搜索或直接生成报告。"
+        ),
+    )
+
+
 def _persist_resolved_automl_paths(task_id: str) -> None:
     """Replace service-wrapper paths with the directories containing artifacts."""
     task = store.get(task_id)
@@ -3683,7 +4509,16 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     maximize = m
             elif isinstance(metric_obj, (int, float)):
                 metric_val = float(metric_obj)
-            if metric_val is not None:
+            delivery_ready = n.get("delivery_ready")
+            best_eligible = (
+                delivery_ready is True
+                or (
+                    delivery_ready is None
+                    and n.get("is_buggy") is False
+                    and n.get("is_valid") is True
+                )
+            )
+            if metric_val is not None and best_eligible:
                 if best_metric is None:
                     best_metric = metric_val
                     best_id = n.get("id")
@@ -3718,6 +4553,16 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "maximize": maximize,
                     "is_buggy": n.get("is_buggy"),
                     "is_valid": n.get("is_valid"),
+                    "runtime_ok": n.get("runtime_ok"),
+                    "search_eligible": n.get("search_eligible"),
+                    "score_recomputed": n.get("score_recomputed"),
+                    "contract_valid": n.get("contract_valid"),
+                    "artifact_ready": n.get("artifact_ready"),
+                    "delivery_ready": n.get("delivery_ready"),
+                    "delivery_certified": n.get("delivery_certified"),
+                    "certification_source": n.get("certification_source"),
+                    "certification_notes": n.get("certification_notes"),
+                    "method_mode": n.get("method_mode"),
                     "visits": n.get("visits"),
                     "total_reward": n.get("total_reward"),
                     "uct": n.get("_uct"),
@@ -3728,12 +4573,58 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "status": n.get("status"),
                 }
             )
+    best_node_kind = "delivery" if best_id else None
+    if best_id is None:
+        provisional_metric = None
+        provisional_maximize = True
+        for node in nodes:
+            metric_val = node.get("metric")
+            if (
+                metric_val is None
+                or node.get("is_buggy") is True
+                or node.get("search_eligible") is not True
+            ):
+                continue
+            maximize = node.get("maximize")
+            if provisional_metric is None:
+                provisional_metric = metric_val
+                best_id = node.get("id")
+                provisional_maximize = True if maximize is None else bool(maximize)
+                continue
+            if (provisional_maximize and metric_val > provisional_metric) or (
+                not provisional_maximize and metric_val < provisional_metric
+            ):
+                provisional_metric = metric_val
+                best_id = node.get("id")
+        if best_id is not None:
+            best_node_kind = "provisional"
     journal_node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
     pending_nodes = [
         node for node in read_mlevolve_pending_nodes(log_dir)
         if str(node.get("id")) not in journal_node_ids
     ]
     engine = _automl_engine(task)
+    task_automl_root = log_dir.parent.parent if log_dir.parent.name == "logs" else None
+    dependency_summary = safe_read_json(
+        log_dir / "dependency_installations_summary.json",
+        {},
+    )
+    dependency_installations = safe_read_text_tail(
+        log_dir / "dependency_installations.jsonl",
+        limit=60000,
+    )
+    if task_automl_root is not None:
+        if not dependency_summary:
+            dependency_summary = safe_read_json(
+                task_automl_root / "dependency_installations_summary.json",
+                {},
+            )
+        if not dependency_installations:
+            dependency_installations = safe_read_text_tail(
+                task_automl_root / "dependency_installations.jsonl",
+                limit=60000,
+            )
+
     out: dict[str, Any] = {
         "engine": engine,
         "log_dir": str(log_dir),
@@ -3743,9 +4634,12 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "nodes": nodes,
         "pending_nodes": pending_nodes,
         "best_node_id": best_id,
+        "best_node_kind": best_node_kind,
         "journal_source": journal_source,
         "run_status": safe_read_json(log_dir / "run_status.json", {}),
         "resource_usage": safe_read_json(log_dir / "resource_usage.json", {}),
+        "dependency_installations": dependency_installations,
+        "dependency_installation_summary": dependency_summary,
         "ml_log": safe_read_text_tail(log_dir / "MLEvolve.log", limit=60000),
         "verbose_log": safe_read_text_tail(log_dir / "MLEvolve.verbose.log", limit=60000),
         "frontend_stdout": safe_read_text_tail(log_dir / "_frontend_stdout.log", limit=60000),
@@ -4455,7 +5349,13 @@ def get_resource_inventory() -> dict[str, Any]:
 
 @app.get("/api/tasks")
 def list_tasks() -> list[dict[str, Any]]:
-    return [x.model_dump() for x in store.list_tasks()]
+    tasks = store.list_tasks()
+    reconciled: list[TaskModel] = []
+    for task in tasks:
+        if task.status == "interrupted_incomplete":
+            task = _promote_local_resumable_checkpoint(task) or task
+        reconciled.append(task)
+    return [task.model_dump() for task in reconciled]
 
 
 @app.post("/api/tasks")
@@ -4471,9 +5371,35 @@ def update_task(task_id: str, payload: TaskConfigPayload) -> dict[str, Any]:
 
 
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: str) -> dict[str, str]:
+def delete_task(task_id: str, delete_files: bool = False) -> dict[str, Any]:
+    task = store.get(task_id)
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="running task cannot be deleted")
+    deleted_paths: list[str] = []
+    if delete_files:
+        candidates = _candidate_task_run_dirs(task)
+        unsafe = [path for path in candidates if not _is_safe_task_output_dir(task, path)]
+        if unsafe:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Refused to delete unsafe task directories: {[str(path) for path in unsafe]}",
+            )
+        for path in candidates:
+            try:
+                _remove_tree_with_retries(path)
+                deleted_paths.append(str(path))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"删除任务文件失败，任务标签尚未删除: {path}: {exc}",
+                ) from exc
     store.delete(task_id)
-    return {"status": "ok"}
+    return {"status": "ok", "deleted_files": deleted_paths}
+
+
+@app.get("/api/tasks/{task_id}/automl-readiness")
+def automl_readiness(task_id: str) -> dict[str, Any]:
+    return _automl_input_readiness(store.get(task_id))
 
 
 @app.post("/api/tasks/start")
@@ -4525,6 +5451,15 @@ def start_direct_automl(payload: StartDirectAutoMLRequest) -> dict[str, Any]:
     return {"status": "started", "task_id": payload.task_id, "mode": "direct_automl"}
 
 
+@app.post("/api/tasks/continue-automl")
+def continue_automl(payload: ContinueAutoMLRequest) -> dict[str, Any]:
+    task = store.get(payload.task_id)
+    _validate_continue_automl(task)
+    thread = threading.Thread(target=_continue_automl_thread, args=(payload.task_id,), daemon=True)
+    thread.start()
+    return {"status": "started", "task_id": payload.task_id, "mode": "continue_automl"}
+
+
 @app.post("/api/tasks/rerun-autoreport")
 @app.post("/api/tasks/rerun-report")
 def rerun_autoreport(payload: RerunAutoReportRequest) -> dict[str, Any]:
@@ -4559,22 +5494,133 @@ def resume_task(payload: ResumeTaskRequest) -> dict[str, Any]:
 
 
 @app.post("/api/tasks/stop")
-def stop_task(payload: StopTaskRequest) -> dict[str, str]:
+def stop_task(payload: StopTaskRequest) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="confirm=true required for stop")
     task = store.get(payload.task_id)
     handle = store.get_handle(payload.task_id)
+    if handle is None and task.auto_ml_service_job_id:
+        try:
+            _ar_base, mlevolve_base, _report_base, _timeout = _service_base_urls(
+                get_global_settings()
+            )
+            handle = RuntimeHandle(
+                process=None,
+                source="mlevolve_service_recovered_for_stop",
+                remote_base_url=mlevolve_base,
+                remote_job_id=task.auto_ml_service_job_id,
+                started_at=now_ts(),
+            )
+            store.attach_handle(task.id, handle)
+        except Exception:
+            handle = None
     if handle is None:
         # Handle stale UI state after restart/abnormal termination.
         if task.status == "running":
-            store.set_status(task.id, status="stopped", phase="stopped", last_error="Stopped (recovered from stale running state)")
+            store.set_status(
+                task.id,
+                status="stopped",
+                phase="stopped",
+                auto_ml_service_job_id=None,
+                last_error="Stopped (recovered from stale running state)",
+            )
             return {"status": "stopped"}
         raise HTTPException(status_code=400, detail="task is not running")
     if handle.remote_base_url and handle.remote_job_id:
         try:
-            _json_post(handle.remote_base_url, "/jobs/stop", {"job_id": handle.remote_job_id}, timeout_secs=8)
-        except Exception:
-            pass
+            remote_status = _json_post(
+                handle.remote_base_url,
+                "/jobs/stop",
+                {"job_id": handle.remote_job_id},
+                timeout_secs=150,
+            )
+        except Exception as exc:
+            recovered = _promote_local_resumable_checkpoint(task)
+            if recovered is not None:
+                store.pop_handle(payload.task_id)
+                return {
+                    "status": "interrupted_resumable",
+                    "checkpoint_ready": True,
+                    "resumable": True,
+                }
+            store.set_status(
+                task.id,
+                status="running",
+                phase="automl_stopping",
+                auto_ml_service_job_id=handle.remote_job_id,
+                last_error=(
+                    "AutoML 中断信号已发送，但尚未收到检查点确认；"
+                    f"将继续连接服务。{exc}"
+                ),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="AutoML is still checkpointing; final interruption state is not confirmed yet.",
+            ) from exc
+
+        remote_state = str(remote_status.get("status") or "")
+        if remote_state == "interrupted_resumable":
+            store.pop_handle(payload.task_id)
+            store.set_status(
+                task.id,
+                status="interrupted_resumable",
+                phase="automl_interrupted_resumable",
+                auto_ml_service_job_id=None,
+                last_error=(
+                    "AutoML 已中断，搜索树、在途动作和 Top-K 方案已保存；"
+                    "可继续搜索或直接生成报告。"
+                ),
+            )
+            return {
+                "status": remote_state,
+                "checkpoint_ready": bool(remote_status.get("checkpoint_ready")),
+                "resumable": bool(remote_status.get("resumable")),
+            }
+        if remote_state == "interrupted_incomplete":
+            recovered = _promote_local_resumable_checkpoint(task)
+            if recovered is not None:
+                store.pop_handle(payload.task_id)
+                return {
+                    "status": "interrupted_resumable",
+                    "checkpoint_ready": True,
+                    "resumable": True,
+                }
+            store.pop_handle(payload.task_id)
+            store.set_status(
+                task.id,
+                status="interrupted_incomplete",
+                phase="automl_interrupted_incomplete",
+                auto_ml_service_job_id=None,
+                last_error=str(
+                    remote_status.get("last_error")
+                    or "AutoML 已中断，但完整可恢复检查点未能确认。"
+                ),
+            )
+            return {
+                "status": remote_state,
+                "checkpoint_ready": False,
+                "resumable": False,
+            }
+        if remote_state in {"completed", "failed", "stopped"}:
+            store.pop_handle(payload.task_id)
+            final_status = "completed" if remote_state == "completed" else remote_state
+            store.set_status(
+                task.id,
+                status=final_status,
+                phase="automl_completed" if final_status == "completed" else final_status,
+                auto_ml_service_job_id=None,
+                last_error=remote_status.get("last_error"),
+            )
+            return {"status": final_status}
+
+        store.set_status(
+            task.id,
+            status="running",
+            phase="automl_stopping",
+            auto_ml_service_job_id=handle.remote_job_id,
+            last_error="AutoML 正在保存搜索树与 Top-K 检查点。",
+        )
+        return {"status": "stopping"}
     elif handle.process is not None:
         proc = handle.process
         try:
@@ -4585,7 +5631,13 @@ def stop_task(payload: StopTaskRequest) -> dict[str, str]:
         except Exception:
             proc.terminate()
     store.pop_handle(payload.task_id)
-    store.set_status(task.id, status="stopped", phase="stopped", last_error="Stopped by user")
+    store.set_status(
+        task.id,
+        status="stopped",
+        phase="stopped",
+        auto_ml_service_job_id=None,
+        last_error="Stopped by user",
+    )
     return {"status": "stopped"}
 
 
@@ -4723,4 +5775,3 @@ def list_python_environments(current: str = "") -> list[dict[str, Any]]:
     current_exe = current.strip() or str(gs.python.get("executable", "")).strip()
     envs = discover_python_environments(current=current_exe)
     return [x.model_dump() for x in envs]
-

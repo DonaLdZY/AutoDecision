@@ -1,77 +1,111 @@
 ﻿export interface AutoRealizeConfig {
-  run_data_cognition: boolean
-  run_task_definition: boolean
-  run_data_cleaning?: boolean
   enable_question_investigator: boolean
   enable_fewshot: boolean
   generate_sample_submission: boolean
-  prefer_original_description: boolean
   direct_automl_from_description: boolean
-  no_knowledge: boolean
-  no_telemetry: boolean
-  no_llm_cache: boolean
   enable_vllm: boolean
-  offline?: boolean
-  auto_generate_predict_split: boolean
-  parallel_cleaning?: boolean
   task_hint: string
   llm_timeout: number
   llm_concurrency: number
-  llm_enable_thinking: boolean | null
-  llm_reasoning_effort: string | null
-  llm_structured_disable_thinking: boolean
-  cognition_workers: number
-  cleaning_workers?: number
+  optimize_llm_cost: boolean
+  llm_file_cognition_mode: 'all' | 'documents_only' | 'none'
+  table_profile_sample_rows: number
+  investigation_max_questions: number
+  investigation_max_rounds_per_question: number
+  investigation_max_scripts_per_question: number
+  investigation_script_timeout_secs: number
+  prompt_token_budget: number
+  artifact_consistency_enabled: boolean
+  artifact_consistency_max_rounds: number
+  cross_stage_memory_enabled: boolean
+  cross_stage_headroom_ratio: number
+  cross_stage_retrieval_enabled: boolean
 }
 
 export interface AutoMLConfig {
   engine: 'mlevolve' | string
   enabled: boolean
+  goal: string
+  eval: string
   steps: number
   time_limit_secs: number
   parallel_search_num: number
-  k_fold_validation: number
-  check_format: boolean
-  expose_prediction: boolean
   generate_submission: boolean
-  steerable_reasoning: boolean
   search_num_drafts: number
   search_num_bugs: number
   search_num_improves: number
   search_max_debug_depth: number
   search_back_debug_depth: number
   metric_improvement_threshold: number
-  invalid_metric_upper_bound: number
   max_improve_failure: number
-  decay_type: string
   exploration_constant: number
   lower_bound: number
-  goal: string
-  eval: string
   initial_drafts: number
-  preprocess_data: boolean
   copy_data: boolean
-  data_preview: boolean
   use_diff_mode: boolean
   check_data_leakage: boolean
   use_global_memory: boolean
   memory_similarity_threshold: number
   memory_embedding_backend: string
-  memory_embedding_model: string
   memory_embedding_device: string
   memory_embedding_model_path: string
   use_coldstart: boolean
-  use_grading_server: boolean
   exec_timeout_secs: number
+  auto_install_missing_dependencies: boolean
+  dependency_install_timeout_secs: number
+  dependency_install_max_packages: number
+  code_temperature: number
+  feedback_temperature: number
+  code_request_timeout_secs: number
+  feedback_request_timeout_secs: number
+  code_generation_max_retries: number
+  feedback_generation_max_retries: number
+  code_continuation_max_rounds: number
+  feedback_continuation_max_rounds: number
+  code_review_max_attempts: number
+  preflight_regeneration_max_attempts: number
+  code_review_escalate_to_code: boolean
+  code_generation_extract_max_attempts: number
+  metric_direction_max_attempts: number
+  result_review_max_attempts: number
+  refine_plan_max_attempts: number
+  result_adjudicator_on_anomaly: boolean
+  fast_first_draft: boolean
+  fast_first_draft_skip_pre_review: boolean
+  use_stepwise_after_first: boolean
+  stepwise_context_max_tokens: number
+  stepwise_compaction_keep_recent_steps: number
+  stepwise_compaction_max_tokens: number
+  stepwise_context_headroom_ratio: number
+  search_topk_max_improves: number
+  search_debug_prob: number
+  search_branch_stagnation_threshold: number
+  search_topk_stagnation_threshold: number
+  search_stagnation_window: number
+  search_top_candidates_size: number
+  search_explore_switch_start: number
+  search_explore_switch_end: number
+  search_min_exploration_weight: number
+  search_root_new_draft_probability: number
+  fusion_vs_evolution_prob: number
+  branch_fusion_trigger_prob: number
+  max_fusion_drafts: number
+  search_fusion_min_remaining_seconds: number
+  search_fusion_min_successful_nodes: number
+  search_fusion_min_branches: number
+  use_optimization_experience_library: boolean
+  optimization_experience_max_cards: number
+  optimization_experience_min_score: number
+  optimization_experience_max_chars: number
 }
 
 export interface AutoReportConfig {
   enabled: boolean
-  audience: string
-  language: string
-  include_raw_logs: boolean
-  include_code_excerpt: boolean
-  use_llm: boolean
+  audience: 'technical' | 'executive' | 'delivery'
+  detail_level: 'concise' | 'standard' | 'detailed'
+  comparison_candidate_limit: number
+  max_retrieval_rounds: number
+  enable_report_audit: boolean
 }
 
 export type AcceleratorMode = 'all' | 'selected' | 'none'
@@ -88,6 +122,7 @@ export interface TaskConfig {
   task_name: string
   input_root: string
   output_root: string
+  output_language: 'zh' | 'en'
   auto_realize: AutoRealizeConfig
   auto_ml: AutoMLConfig
   auto_report: AutoReportConfig
@@ -101,13 +136,14 @@ export interface Task {
   output_root: string
   created_at: number
   updated_at: number
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | string
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted_resumable' | 'interrupted_incomplete' | string
   phase: string
   config: TaskConfig
   run_dir?: string | null
   run_started_at?: number | null
   auto_ml_log_dir?: string | null
   auto_ml_workspace_dir?: string | null
+  auto_ml_service_job_id?: string | null
   report_dir?: string | null
   last_error?: string | null
 }
@@ -178,6 +214,7 @@ export interface ModelConfig {
   thinkingMode: 'default' | 'enabled' | 'disabled' | string
   reasoningEffort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string
   maxTokens: number | '' | null
+  contextWindowTokens: number | '' | null
 }
 
 export interface ModelRoleSelection {
@@ -222,6 +259,7 @@ export interface SnapshotPayload {
     nodes?: MctsNode[]
     pending_nodes?: MctsNode[]
     best_node_id?: string | null
+    best_node_kind?: 'delivery' | 'provisional' | null
     best_solution_code?: string
     best_metric_text?: string
     ml_log?: string
@@ -231,6 +269,8 @@ export interface SnapshotPayload {
     service_stdout?: string
     service_stderr?: string
     resource_usage?: Record<string, unknown>
+    dependency_installations?: string
+    dependency_installation_summary?: DependencyInstallationSummary
   }
   auto_report?: {
     output_dir?: string
@@ -242,6 +282,40 @@ export interface SnapshotPayload {
     stdout?: string
     stderr?: string
   }
+}
+
+export interface DependencyInstallationRecord {
+  timestamp?: string
+  run_log_dir?: string
+  node_id?: string
+  missing_module?: string
+  distribution?: string
+  requirement?: string
+  selection_source?: string
+  status?: string
+  success?: boolean
+  exit_code?: number | null
+  duration_seconds?: number
+  python_executable?: string
+  install_target?: string
+  installed_version?: string
+  resolved_requirement?: string
+  stdout_tail?: string
+  stderr_tail?: string
+}
+
+export interface DependencyInstallationSummary {
+  schema_version?: string
+  updated_at?: string
+  python_executable?: string
+  install_target?: string
+  attempt_count?: number
+  installed_count?: number
+  failed_count?: number
+  rejected_count?: number
+  installed_requirements?: string[]
+  requirements_candidates?: string[]
+  records?: DependencyInstallationRecord[]
 }
 
 export interface MctsNode {
@@ -259,6 +333,16 @@ export interface MctsNode {
   maximize?: boolean | null
   is_buggy?: boolean | null
   is_valid?: boolean | null
+  runtime_ok?: boolean | null
+  search_eligible?: boolean | null
+  score_recomputed?: boolean | null
+  contract_valid?: boolean | null
+  artifact_ready?: boolean | null
+  delivery_ready?: boolean | null
+  delivery_certified?: boolean | null
+  certification_source?: string | null
+  certification_notes?: string[] | null
+  method_mode?: string | null
   visits?: number
   total_reward?: number
   uct?: number

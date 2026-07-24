@@ -1,0 +1,18 @@
+2022-10-11 10:39:42.671 [main    ] INFO  main.Main                            - read file of instances
+2022-10-11 10:39:42.674 [main    ] INFO  io.InstancesReader                   - Read of instances file : 1 instances
+2022-10-11 10:39:42.678 [main    ] INFO  main.Main                            - read instance 0
+2022-10-11 10:39:42.678 [main    ] INFO  main.Main                            - read parameters file data/SDV/input_parameters.csv
+2022-10-11 10:39:42.679 [main    ] INFO  io.InputParametersReader             - Read of parameters file
+2022-10-11 10:39:42.680 [main    ] INFO  main.Main                            - read input items file data/SDV/input_items.csv
+2022-10-11 10:39:42.685 [main    ] INFO  io.InputItemsReader                  - Read of input items file : 6 items
+2022-10-11 10:39:42.685 [main    ] INFO  main.Main                            - read input trucks file data/SDV/input_trucks.csv
+2022-10-11 10:39:42.689 [main    ] INFO  io.InputTrucksReader                 - Read of input trucks file : 6 planned trucks
+2022-10-11 10:39:42.689 [main    ] INFO  main.Main                            - read output trucks file data/SDV/output_trucks.csv
+2022-10-11 10:39:42.691 [main    ] INFO  io.OutputTrucksReader                - Read of output trucks file : 6 trucks
+2022-10-11 10:39:42.691 [main    ] INFO  main.Main                            - read output stacks file data/SDV/output_stacks.csv
+2022-10-11 10:39:42.694 [main    ] INFO  io.OutputStacksReader                - Read of output stacks file : 18 stacks
+2022-10-11 10:39:42.694 [main    ] INFO  main.Main                            - read output items file data/SDV/output_items.csv
+2022-10-11 10:39:42.698 [main    ] INFO  io.OutputItemsReader                 - Read of output items file : 18 items
+2022-10-11 10:39:42.698 [main    ] INFO  main.Main                            - check all constraints
+2022-10-11 10:39:42.701 [main    ] INFO  main.Main                            - write report on instance 0
+2022-10-11 10:39:42.702 [main    ] INFO  main.Main                            - end of program

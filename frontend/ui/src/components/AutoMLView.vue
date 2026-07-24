@@ -1,6 +1,8 @@
 ﻿<script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import type { MctsNode, SnapshotPayload } from '../types'
+import { isPendingNode, nodeReviewState } from '../utils/nodeReviewState'
+import DependencyInstallPanel from './DependencyInstallPanel.vue'
 import MLEvolveSummary from './MLEvolveSummary.vue'
 
 const props = defineProps<{
@@ -25,6 +27,7 @@ const visiblePendingNodes = computed(() => {
 })
 const displayNodes = computed(() => [...nodes.value, ...visiblePendingNodes.value])
 const bestNodeId = computed(() => props.snapshot?.auto_ml?.best_node_id ?? null)
+const bestNodeKind = computed(() => props.snapshot?.auto_ml?.best_node_kind ?? 'delivery')
 const bestSolutionCode = computed(() => props.snapshot?.auto_ml?.best_solution_code ?? '')
 const bestMetricText = computed(() => props.snapshot?.auto_ml?.best_metric_text ?? '')
 
@@ -172,12 +175,13 @@ function edgePath(from: string, to: string): string {
 
 function nodeClass(node: MctsNode): string[] {
   const classes = ['node-card']
-  if (isPendingNode(node)) classes.push('pending')
-  else if (bestNodeId.value && node.id === bestNodeId.value) classes.push('best')
-  else if (node.is_buggy) classes.push('buggy')
-  else if (node.metric !== null && node.metric !== undefined) classes.push('ok')
+  const reviewState = nodeReviewState(node)
+  if (reviewState === 'pending') classes.push('pending')
+  else if (reviewState === 'success') classes.push('ok')
+  else if (reviewState === 'bug') classes.push('buggy')
   else classes.push('unknown')
   if (node.id === selectedNodeId.value) classes.push('selected')
+  if (bestNodeId.value && node.id === bestNodeId.value) classes.push('best')
   return classes
 }
 
@@ -191,11 +195,6 @@ function edgeClass(action: GraphEdge['action']) {
 function shortMetric(value: number | null | undefined): string {
   if (value === null || value === undefined) return '-'
   return Number(value).toFixed(4)
-}
-
-function isPendingNode(node: MctsNode): boolean {
-  const status = String(node.status ?? '')
-  return Boolean(node.pending_execution) || ['generating', 'pending_execution', 'executing', 'cancelled', 'failed'].includes(status)
 }
 
 function nodeMetricLabel(node: MctsNode): string {
@@ -228,10 +227,11 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
     <div class="left">
       <h4>{{ engine === 'mlevolve' ? 'MLEvolve 搜索图' : 'MCTS 搜索树' }}</h4>
       <div class="legend">
-        <span class="dot ok"></span><span>无 bug 且有有效成绩</span>
-        <span class="dot buggy"></span><span>运行存在 bug</span>
-        <span class="dot best"></span><span>当前最优节点</span>
-        <span class="dot pending"></span><span>生成中 / 待执行草稿</span>
+        <span class="dot ok"></span><span>Reviewer 通过</span>
+        <span class="dot buggy"></span><span>Reviewer 判定有 bug</span>
+        <span class="dot unknown"></span><span>尚未评审</span>
+        <span class="dot best"></span><span>当前最佳</span>
+        <span class="dot pending"></span><span>生成中 / 待执行</span>
       </div>
       <div class="legend">
         <span class="line draft"></span><span>draft</span>
@@ -276,6 +276,13 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
           <span v-if="selectedNode.exec_time !== undefined">exec: {{ selectedNode.exec_time ?? '-' }}s</span>
           <span>buggy: {{ selectedNode.is_buggy }}</span>
           <span>valid: {{ selectedNode.is_valid }}</span>
+          <span>search: {{ selectedNode.search_eligible }}</span>
+          <span>delivery: {{ selectedNode.delivery_ready }}</span>
+          <span>certified: {{ selectedNode.delivery_certified }}</span>
+          <span v-if="selectedNode.id === bestNodeId">
+            best: {{ bestNodeKind === 'provisional' ? 'provisional' : 'delivery' }}
+          </span>
+          <span>method: {{ selectedNode.method_mode || '-' }}</span>
         </div>
         <article class="block"><h5>Plan</h5><pre>{{ selectedNode.plan || '-' }}</pre></article>
         <article class="block"><h5>Code</h5><pre>{{ selectedNode.code || '-' }}</pre></article>
@@ -303,6 +310,11 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
     <pre v-if="bestMetricText" class="terminal-content">{{ bestMetricText }}</pre>
     <pre v-if="bestSolutionCode" class="terminal-content">{{ bestSolutionCode }}</pre>
   </section>
+
+  <DependencyInstallPanel
+    :summary="snapshot?.auto_ml?.dependency_installation_summary"
+    :detail-text="snapshot?.auto_ml?.dependency_installations"
+  />
 
   <MLEvolveSummary :snapshot="snapshot" />
 </template>
@@ -355,6 +367,10 @@ h4 {
 
 .dot.buggy {
   background: #d14b4b;
+}
+
+.dot.unknown {
+  background: #a9b1b8;
 }
 
 .dot.best {
@@ -439,11 +455,6 @@ h4 {
   stroke: #d48a8a;
 }
 
-.node-card.best {
-  fill: #fff6db;
-  stroke: #cfa53f;
-}
-
 .node-card.unknown {
   fill: #eef2f7;
   stroke: #b8c3d2;
@@ -458,6 +469,11 @@ h4 {
 .node-card.selected {
   stroke-width: 2.6;
   stroke: #2f5f9f;
+}
+
+.node-card.best {
+  stroke: #cfa53f;
+  stroke-width: 2.8;
 }
 
 .node-title {

@@ -1,0 +1,19 @@
+{
+  "instance": "SDV",
+  "feasible": false,
+  "objective_name": "official_transportation_plus_inventory_cost",
+  "objective": null,
+  "transportation_cost": null,
+  "inventory_cost": null,
+  "best_known_objective": 1.0,
+  "absolute_gap": null,
+  "gap_percent": null,
+  "reference_status": "negative checker fixture",
+  "violations": [
+    "Constraint W2; the weight on middle axle of the trailer exceeds max weight; truck id = P202152725; recalculated weight on middle axle of the trailer = 12101.34; max weight on middle axle of the trailer = 12000.00; with suppliers = [0009624700]"
+  ],
+  "official_checker_exit_code": 0,
+  "official_checker_stdout_tail": "2026-07-20 16:05:22.675 [main    ] INFO  - read file of instances\n2026-07-20 16:05:22.679 [main    ] INFO  - Read of instances file : 1 instances\n2026-07-20 16:05:22.679 [main    ] INFO  - read instance data\n2026-07-20 16:05:22.679 [main    ] INFO  - read parameters file data/input_parameters.csv\n2026-07-20 16:05:22.680 [main    ] INFO  - Read of parameters file\n2026-07-20 16:05:22.680 [main    ] INFO  - read input items file data/input_items.csv\n2026-07-20 16:05:22.683 [main    ] INFO  - Read of input items file : 6 items\n2026-07-20 16:05:22.683 [main    ] INFO  - read input trucks file data/input_trucks.csv\n2026-07-20 16:05:22.684 [main    ] INFO  - Read of input trucks file : 6 planned trucks\n2026-07-20 16:05:22.684 [main    ] INFO  - read output trucks file data/output_trucks.csv\n2026-07-20 16:05:22.684 [main    ] INFO  - Read of output trucks file : 6 trucks\n2026-07-20 16:05:22.684 [main    ] INFO  - read output stacks file data/output_stacks.csv\n2026-07-20 16:05:22.685 [main    ] INFO  - Read of output stacks file : 18 stacks\n2026-07-20 16:05:22.685 [main    ] INFO  - read output items file data/output_items.csv\n2026-07-20 16:05:22.686 [main    ] INFO  - Read of output items file : 18 items\n2026-07-20 16:05:22.686 [main    ] INFO  - check all constraints\n2026-07-20 16:05:22.687 [main    ] INFO  - write report on instance data\n2026-07-20 16:05:22.688 [main    ] INFO  - end of program\n",
+  "official_checker_stderr_tail": "",
+  "official_report_text": "scope;anomaly;data;\nConstraint W2;the weight on middle axle of the trailer exceeds max weight;truck id = P202152725;recalculated weight on middle axle of the trailer = 12101.34;max weight on middle axle of the trailer = 12000.00;with suppliers = [0009624700]\n"
+}

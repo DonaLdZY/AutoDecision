@@ -1,0 +1,76 @@
+{
+  "instance": "A-n80-k10",
+  "feasible": true,
+  "objective_name": "total_tsplib_euc_2d_distance",
+  "objective": 1763,
+  "reference_cost": 1763.0,
+  "absolute_gap": 0.0,
+  "gap_percent": 0.0,
+  "route_count": 10,
+  "max_vehicles": 10,
+  "visited_customer_rows": 79,
+  "expected_customers": 79,
+  "violations": [],
+  "route_details": [
+    {
+      "route_id": "1",
+      "customers": 4,
+      "load": 76,
+      "distance": 86
+    },
+    {
+      "route_id": "2",
+      "customers": 6,
+      "load": 92,
+      "distance": 166
+    },
+    {
+      "route_id": "3",
+      "customers": 7,
+      "load": 93,
+      "distance": 123
+    },
+    {
+      "route_id": "4",
+      "customers": 8,
+      "load": 99,
+      "distance": 161
+    },
+    {
+      "route_id": "5",
+      "customers": 14,
+      "load": 99,
+      "distance": 288
+    },
+    {
+      "route_id": "6",
+      "customers": 10,
+      "load": 98,
+      "distance": 233
+    },
+    {
+      "route_id": "7",
+      "customers": 8,
+      "load": 100,
+      "distance": 224
+    },
+    {
+      "route_id": "8",
+      "customers": 7,
+      "load": 89,
+      "distance": 96
+    },
+    {
+      "route_id": "9",
+      "customers": 7,
+      "load": 97,
+      "distance": 191
+    },
+    {
+      "route_id": "10",
+      "customers": 8,
+      "load": 99,
+      "distance": 195
+    }
+  ]
+}

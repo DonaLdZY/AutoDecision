@@ -1,0 +1,2 @@
+input items pathFilename;input trucks pathFilename;input parameters pathFilename;output items pathFilename;output stacks pathFilename;output trucks pathFilename;report pathFilename
+data/SDV/input_items.csv;data/SDV/input_trucks.csv;data/SDV/input_parameters.csv;data/SDV/output_items.csv;data/SDV/output_stacks.csv;data/SDV/output_trucks.csv;data/SDV/report.csv

@@ -1,0 +1,1173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="AutoDecision 工业预测与决策模型工厂商业计划书" />
+  <title>AutoDecision 工业预测与决策模型工厂 - 商业计划书</title>
+  <style>
+    :root {
+      --ink: #18252d;
+      --muted: #5e6f76;
+      --paper: #ffffff;
+      --soft: #f2f6f4;
+      --line: #d6e0dc;
+      --blue: #1c5274;
+      --green: #18705e;
+      --coral: #bd5b45;
+      --gold: #9a6b19;
+      --shadow: 0 12px 32px rgba(23, 50, 57, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      letter-spacing: 0;
+    }
+
+    img { display: block; max-width: 100%; }
+    a { color: inherit; }
+    h1, h2, h3, h4, p { margin-top: 0; }
+    h1, h2, h3, h4 { line-height: 1.25; letter-spacing: 0; }
+
+    .hero {
+      position: relative;
+      min-height: 78vh;
+      display: flex;
+      align-items: flex-end;
+      color: #fff;
+      background-image: url("assets/search-tree.png");
+      background-position: center;
+      background-size: cover;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: rgba(13, 31, 40, 0.78);
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 72px 0 64px;
+    }
+
+    .event-line {
+      margin-bottom: 44px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #d7f3e9;
+    }
+
+    .eyebrow {
+      margin-bottom: 12px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .hero .eyebrow { color: #80ddc2; }
+
+    .hero h1 {
+      max-width: 920px;
+      margin-bottom: 18px;
+      font-size: clamp(42px, 7vw, 82px);
+      font-weight: 850;
+    }
+
+    .hero h1 span {
+      display: block;
+      margin-top: 12px;
+      color: #dff8ef;
+      font-size: clamp(22px, 3.2vw, 38px);
+      font-weight: 650;
+    }
+
+    .hero-lead {
+      max-width: 820px;
+      margin-bottom: 34px;
+      color: #e5eff2;
+      font-size: clamp(17px, 2vw, 22px);
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px 32px;
+      color: #c8d8dd;
+      font-size: 14px;
+    }
+
+    .hero-meta strong { color: #fff; }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(12px);
+    }
+
+    .nav-inner {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .brand-mini {
+      padding: 12px 0;
+      color: var(--blue);
+      font-weight: 850;
+    }
+
+    .nav a {
+      padding: 13px 0 11px;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-size: 13px;
+      text-decoration: none;
+    }
+
+    .nav a:hover,
+    .nav a.active {
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    .band { padding: 86px 0; }
+    .band.soft { background: var(--soft); }
+    .band.dark { color: #f4fbf8; background: #18343a; }
+
+    .container {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.72fr) minmax(300px, 0.28fr);
+      gap: 42px;
+      align-items: end;
+      margin-bottom: 42px;
+    }
+
+    .section-head h2 {
+      margin-bottom: 0;
+      color: var(--ink);
+      font-size: clamp(30px, 4vw, 46px);
+    }
+
+    .dark .section-head h2 { color: #fff; }
+
+    .section-head p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .dark .section-head p { color: #c9d9d8; }
+
+    .lede {
+      max-width: 900px;
+      color: #34464d;
+      font-size: 20px;
+      line-height: 1.75;
+    }
+
+    .metric-grid,
+    .card-grid,
+    .scenario-grid,
+    .moat-grid,
+    .risk-grid,
+    .team-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 36px; }
+    .card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .scenario-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .moat-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .risk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .team-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .metric,
+    .card,
+    .scenario,
+    .moat,
+    .risk,
+    .team-role {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+    }
+
+    .metric { padding: 24px; }
+    .metric strong { display: block; color: var(--blue); font-size: 38px; line-height: 1; }
+    .metric span { display: block; margin-top: 10px; color: var(--muted); font-size: 13px; }
+
+    .card,
+    .scenario,
+    .risk,
+    .team-role { padding: 24px; }
+
+    .card h3,
+    .scenario h3,
+    .risk h3,
+    .team-role h3 { margin-bottom: 10px; font-size: 20px; }
+
+    .card p,
+    .scenario p,
+    .risk p,
+    .team-role p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+
+    .number {
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      margin-bottom: 16px;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--green);
+      font-weight: 800;
+    }
+
+    .pain-flow,
+    .product-flow,
+    .pilot-flow {
+      display: grid;
+      gap: 12px;
+      margin-top: 34px;
+    }
+
+    .pain-flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .product-flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .pilot-flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .flow-step {
+      position: relative;
+      min-height: 164px;
+      padding: 22px;
+      border-top: 4px solid var(--green);
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .flow-step::after {
+      content: "→";
+      position: absolute;
+      top: 50%;
+      right: -20px;
+      color: var(--coral);
+      font-size: 24px;
+      font-weight: 800;
+      transform: translateY(-50%);
+    }
+
+    .flow-step:last-child::after { display: none; }
+    .flow-step h3 { margin-bottom: 8px; font-size: 18px; }
+    .flow-step p { margin-bottom: 0; color: var(--muted); font-size: 13px; }
+
+    .scenario.featured { border-top: 5px solid var(--coral); }
+    .scenario.secondary { border-top: 5px solid var(--blue); }
+
+    .scenario-label,
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .scenario-label { margin-bottom: 16px; color: #fff; background: var(--coral); }
+    .scenario.secondary .scenario-label { background: var(--blue); }
+    .tag.done { color: #0d5848; background: #d9f2e9; }
+    .tag.pilot { color: #784e08; background: #f6e9c6; }
+    .tag.roadmap { color: #7e3e31; background: #f7ded8; }
+
+    .scenario dl {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      gap: 8px 12px;
+      margin: 18px 0 0;
+      font-size: 14px;
+    }
+
+    .scenario dt { color: var(--green); font-weight: 800; }
+    .scenario dd { margin: 0; color: #41535a; }
+
+    .evidence-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr 1fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-top: 36px;
+    }
+
+    .arch-column {
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      padding: 24px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .arch-column h3 { color: #fff; font-size: 18px; }
+    .arch-column ul { margin: 0; padding-left: 19px; color: #d4e3e2; font-size: 14px; }
+
+    .arch-core {
+      display: grid;
+      gap: 10px;
+    }
+
+    .arch-core div {
+      padding: 13px 14px;
+      border-left: 4px solid #5fd1b0;
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .arch-core strong { display: block; color: #fff; }
+    .arch-core span { color: #cbdcda; font-size: 13px; }
+
+    .moat { padding: 20px; border-color: rgba(255, 255, 255, 0.16); background: rgba(255, 255, 255, 0.07); }
+    .moat strong { display: block; margin-bottom: 8px; color: #84e3c7; font-size: 17px; }
+    .moat span { color: #d5e1e0; font-size: 13px; }
+
+    .screen-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .screen {
+      margin: 0;
+      border: 1px solid var(--line);
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .screen img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; }
+    .screen figcaption { padding: 14px 16px; color: var(--muted); font-size: 13px; }
+
+    .truth-table,
+    .data-table,
+    .comparison-table,
+    .finance-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 26px;
+      background: #fff;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { color: #fff; background: var(--blue); font-weight: 800; }
+    tbody tr:nth-child(even) { background: #f7f9f8; }
+
+    .check { color: var(--green); font-weight: 850; }
+    .partial { color: var(--gold); font-weight: 850; }
+    .none { color: #9a9fa2; }
+
+    .value-model {
+      display: grid;
+      grid-template-columns: 1fr 0.9fr;
+      gap: 36px;
+      align-items: center;
+    }
+
+    .formula {
+      padding: 26px;
+      border-left: 5px solid var(--coral);
+      background: #fff;
+      box-shadow: var(--shadow);
+      font-size: 18px;
+    }
+
+    .formula strong { color: var(--coral); }
+
+    .accept-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .accept-item {
+      display: grid;
+      grid-template-columns: 138px 1fr;
+      gap: 18px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .accept-item strong { color: var(--green); }
+    .accept-item span { color: var(--muted); font-size: 14px; }
+
+    .market-bars { display: grid; gap: 18px; margin-top: 34px; }
+    .market-row { display: grid; grid-template-columns: 100px 1fr 180px; gap: 16px; align-items: center; }
+    .bar-track { height: 30px; background: #dfe8e4; }
+    .bar-fill { height: 100%; background: var(--green); }
+    .market-row:nth-child(2) .bar-fill { background: var(--blue); }
+    .market-row:nth-child(3) .bar-fill { background: var(--coral); }
+    .market-row strong { font-size: 14px; }
+    .market-row span { color: var(--muted); font-size: 13px; }
+
+    .pricing {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 30px;
+    }
+
+    .price {
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--green);
+      background: #fff;
+    }
+
+    .price:nth-child(2) { border-top-color: var(--blue); }
+    .price:nth-child(3) { border-top-color: var(--coral); }
+    .price h3 { margin-bottom: 8px; }
+    .price .amount { color: var(--blue); font-size: 26px; font-weight: 850; }
+    .price p { color: var(--muted); font-size: 13px; }
+
+    .timeline { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 36px; }
+    .phase { position: relative; padding: 28px 26px; border-top: 5px solid var(--green); background: #fff; }
+    .phase + .phase { border-left: 1px solid var(--line); }
+    .phase:nth-child(2) { border-top-color: var(--blue); }
+    .phase:nth-child(3) { border-top-color: var(--coral); }
+    .phase small { color: var(--muted); font-weight: 800; }
+    .phase h3 { margin: 8px 0 14px; }
+    .phase ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+
+    .finance-layout {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 28px;
+      align-items: start;
+    }
+
+    .finance-bars { display: grid; gap: 18px; }
+    .finance-bar { display: grid; grid-template-columns: 52px 1fr 90px; gap: 12px; align-items: center; }
+    .finance-bar .bar-track { height: 34px; }
+    .finance-bar .bar-fill { background: var(--blue); }
+    .finance-bar:nth-child(2) .bar-fill { background: var(--green); }
+    .finance-bar:nth-child(3) .bar-fill { background: var(--coral); }
+
+    .funding-use {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 28px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.18);
+    }
+
+    .funding-use div { padding: 20px; background: rgba(255,255,255,0.06); }
+    .funding-use div + div { border-left: 1px solid rgba(255,255,255,0.14); }
+    .funding-use strong { display: block; color: #8ce4ca; font-size: 25px; }
+    .funding-use span { color: #d2dfde; font-size: 13px; }
+
+    .team-role { min-height: 190px; }
+    .team-role .vacancy { display: inline-block; margin-bottom: 14px; color: var(--coral); font-size: 12px; font-weight: 800; }
+
+    .callout {
+      margin-top: 30px;
+      padding: 24px 26px;
+      border-left: 5px solid var(--gold);
+      background: #fff8e8;
+      color: #5c4a25;
+    }
+
+    .source-list { display: grid; gap: 12px; }
+    .source-item { padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .source-item strong { display: block; color: var(--blue); }
+    .source-item span { color: var(--muted); font-size: 13px; word-break: break-all; }
+
+    .closing {
+      padding: 88px 0;
+      color: #fff;
+      background: var(--green);
+    }
+
+    .closing h2 { max-width: 880px; margin-bottom: 18px; font-size: clamp(34px, 5vw, 58px); }
+    .closing p { max-width: 760px; margin-bottom: 30px; color: #e2f5ef; font-size: 18px; }
+    .closing-meta { display: flex; flex-wrap: wrap; gap: 12px 30px; color: #d2eee6; font-size: 14px; }
+
+    .footer {
+      padding: 24px 0;
+      color: #6a787d;
+      background: #eef3f1;
+      font-size: 12px;
+    }
+
+    .print-only { display: none; }
+
+    @media (max-width: 960px) {
+      .metric-grid,
+      .card-grid,
+      .moat-grid,
+      .team-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .scenario-grid,
+      .screen-grid,
+      .value-model,
+      .finance-layout,
+      .architecture { grid-template-columns: 1fr; }
+      .pain-flow,
+      .product-flow,
+      .pilot-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow-step:nth-child(2)::after { display: none; }
+      .risk-grid { grid-template-columns: 1fr 1fr; }
+      .section-head { grid-template-columns: 1fr; gap: 16px; }
+      .funding-use { grid-template-columns: repeat(2, 1fr); }
+      .funding-use div:nth-child(3) { border-left: 0; border-top: 1px solid rgba(255,255,255,0.14); }
+      .funding-use div:nth-child(4) { border-top: 1px solid rgba(255,255,255,0.14); }
+    }
+
+    @media (max-width: 640px) {
+      body { font-size: 15px; }
+      .hero { min-height: 86vh; }
+      .hero-inner { padding: 52px 0 42px; }
+      .event-line { margin-bottom: 28px; }
+      .band { padding: 62px 0; }
+      .container,
+      .hero-inner { width: min(100% - 28px, 1180px); }
+      .metric-grid,
+      .card-grid,
+      .scenario-grid,
+      .moat-grid,
+      .risk-grid,
+      .team-grid,
+      .pricing,
+      .timeline,
+      .pain-flow,
+      .product-flow,
+      .pilot-flow { grid-template-columns: 1fr; }
+      .flow-step::after { display: none; }
+      .market-row { grid-template-columns: 72px 1fr; }
+      .market-row span { grid-column: 1 / -1; }
+      .funding-use { grid-template-columns: 1fr; }
+      .funding-use div + div { border-left: 0; border-top: 1px solid rgba(255,255,255,0.14); }
+      .accept-item { grid-template-columns: 1fr; gap: 4px; }
+      th, td { padding: 10px; }
+      .table-scroll { overflow-x: auto; }
+      .table-scroll table { min-width: 760px; }
+    }
+
+    @media print {
+      @page { size: A4; margin: 14mm 12mm 16mm; }
+      body { color: #111; font-size: 10pt; background: #fff; }
+      .nav { display: none; }
+      .hero { min-height: 267mm; page-break-after: always; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .hero-inner { width: 100%; padding: 42mm 10mm 24mm; }
+      .hero h1 { font-size: 44pt; }
+      .hero h1 span { font-size: 22pt; }
+      .band { padding: 12mm 0; }
+      .container { width: 100%; }
+      .section-head { margin-bottom: 7mm; }
+      .section-head h2 { font-size: 24pt; }
+      .metric-grid,
+      .card-grid,
+      .scenario-grid,
+      .moat-grid,
+      .team-grid,
+      .risk-grid,
+      .pricing,
+      .timeline,
+      .architecture,
+      .finance-layout,
+      .value-model { break-inside: avoid; }
+      .metric,
+      .card,
+      .scenario,
+      .moat,
+      .risk,
+      .team-role,
+      .flow-step,
+      .price,
+      .phase,
+      .screen { break-inside: avoid; box-shadow: none; }
+      .screen-grid { grid-template-columns: 1fr; }
+      .screen img { aspect-ratio: auto; }
+      .dark,
+      .closing { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .print-only { display: block; }
+      .footer { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero" id="cover">
+    <div class="hero-inner">
+      <div class="event-line">企业组 · 电子信息赛道 · 商业计划书</div>
+      <div class="eyebrow">Industrial Prediction & Decision Model Factory</div>
+      <h1>AutoDecision<span>工业预测与决策模型工厂</span></h1>
+      <p class="hero-lead">把制造企业沉淀的数据、业务目标和硬约束，转化为可验证、可复用、可接入业务系统的预测模型与决策求解器。</p>
+      <div class="hero-meta">
+        <span><strong>项目定位</strong> 工业智能决策软件</span>
+        <span><strong>首批场景</strong> 良率预测 · 供应链分配</span>
+        <span><strong>当前阶段</strong> 可运行工程原型 / 试点准备</span>
+        <span><strong>版本日期</strong> 2026 年 7 月</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="nav" aria-label="商业计划书目录">
+    <div class="nav-inner">
+      <span class="brand-mini">AutoDecision</span>
+      <a href="#summary">项目摘要</a>
+      <a href="#pain">行业痛点</a>
+      <a href="#scenarios">落地场景</a>
+      <a href="#product">产品方案</a>
+      <a href="#technology">技术壁垒</a>
+      <a href="#market">市场与商业</a>
+      <a href="#go-to-market">市场进入</a>
+      <a href="#finance">财务融资</a>
+      <a href="#team">团队与风险</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="band" id="summary">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Executive Summary</div>
+            <h2>结论先行：让每一份工业数据都能形成可执行决策</h2>
+          </div>
+          <p>不是再做一块看板，也不是让通用大模型直接“猜答案”，而是自动构建、运行、比较并交付真正的小模型与求解代码。</p>
+        </div>
+        <p class="lede">制造企业已积累 MES、ERP、QMS、WMS、设备日志和检测数据，但大量“预测某批次良率”“如何分配订单和车辆”“怎样降低能耗”等长尾问题仍依赖数据科学家、工艺专家和运筹工程师反复沟通。AutoDecision 用一条可追溯流水线完成数据认知、任务定义、方案搜索、代码执行、结果评审和报告交付，让企业从“拥有数据”走向“持续生产决策模型”。</p>
+        <div class="metric-grid">
+          <div class="metric"><strong>5</strong><span>Vue、Gateway 与三个核心服务组成的可运行架构</span></div>
+          <div class="metric"><strong>2</strong><span>统一覆盖 Prediction 与 Decision 两类问题族</span></div>
+          <div class="metric"><strong>3</strong><span>预测、求解器、RL/混合决策三类复用接口协议</span></div>
+          <div class="metric"><strong>1</strong><span>从原始数据到报告与模型产物的闭环工作流</span></div>
+        </div>
+        <div class="callout"><strong>商业化判断：</strong>以电子制造企业为滩头市场，先用良率预测和供应链分配两个高频、可量化场景形成灯塔项目，再复制到设备维护、能耗优化、排产与库存决策。收入由场景试点、私有化年费、行业包与集成服务构成。</div>
+      </div>
+    </section>
+
+    <section class="band soft" id="pain">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Problem</div>
+            <h2>工业 AI 的瓶颈，不是没有算法，而是问题无法规模化交付</h2>
+          </div>
+          <p>工业问题同时包含杂乱数据、隐含业务口径、物理约束和验收指标。任何一项理解错误，都可能得到“分数很好但生产不可用”的模型。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">1</span><h3>数据能看，不能用</h3><p>字段、表头、主外键和数据角色缺少文档，数据长期停留在报表和大屏，难以直接进入建模。</p></article>
+          <article class="card"><span class="number">2</span><h3>业务话，难建模</h3><p>“提升良率”“降低物流成本”需要被翻译为目标、数据切分、硬约束、评价指标与输出格式。</p></article>
+          <article class="card"><span class="number">3</span><h3>单一路线，易局部最优</h3><p>只生成一份代码再反复调试，难以系统比较树模型、时序模型、数学优化、启发式搜索或 RL。</p></article>
+          <article class="card"><span class="number">4</span><h3>结果有分，难复用</h3><p>脚本、模型、预处理器与运行口径没有统一接口，业务系统难以重训、推理和追溯。</p></article>
+        </div>
+        <div class="pain-flow">
+          <div class="flow-step"><h3>人工调研</h3><p>业务、IT 与算法团队来回解释字段和指标。</p></div>
+          <div class="flow-step"><h3>手工试错</h3><p>清洗、特征、模型、约束与超参逐项开发。</p></div>
+          <div class="flow-step"><h3>一次性交付</h3><p>代码依赖个人经验，复现和迁移成本高。</p></div>
+          <div class="flow-step"><h3>长尾需求积压</h3><p>只有头部项目值得投入，大量局部优化机会被放弃。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="scenarios">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Beachhead Scenarios</div>
+            <h2>面向生产商的两类首发场景</h2>
+          </div>
+          <p>选择可由历史数据验证、结果可进入现有流程、价值能用质量或成本指标衡量的场景，不从高风险在线控制起步。</p>
+        </div>
+        <div class="scenario-grid">
+          <article class="scenario featured">
+            <span class="scenario-label">场景 A · 预测</span>
+            <h3>电子制造良率与缺陷风险预测</h3>
+            <p>在投产、换线或关键工序前，识别高风险批次与关键影响因子，为抽检、参数复核和工艺处置提供依据。</p>
+            <dl>
+              <dt>数据输入</dt><dd>MES 工艺参数、设备日志、物料批次、环境数据、AOI/检测结果、返修记录</dd>
+              <dt>模型输出</dt><dd>批次良率、缺陷概率、风险排序、置信区间或影响因子</dd>
+              <dt>验收指标</dt><dd>时间外验证集上的 MAE/RMSE/AUC；高风险批次召回率；相对现有规则提升</dd>
+              <dt>业务动作</dt><dd>重点抽检、工艺参数复核、物料隔离、排程调整</dd>
+            </dl>
+          </article>
+          <article class="scenario secondary">
+            <span class="scenario-label">场景 B · 决策</span>
+            <h3>供应链物流与订单资源分配</h3>
+            <p>在交付日期、车辆、仓容、产能和合同成本等约束下，为订单、车辆、仓库或供应商生成可执行分配方案。</p>
+            <dl>
+              <dt>数据输入</dt><dd>ERP 订单、BOM、库存、供应商、WMS/TMS、车辆能力、时窗与价格合同</dd>
+              <dt>求解输出</dt><dd>订单-资源分配、运输/生产计划、未分配清单、成本明细</dd>
+              <dt>验收指标</dt><dd>硬约束通过率、未分配量、总成本、延误量、求解时间与稳定性</dd>
+              <dt>业务动作</dt><dd>计划员审核后回写 ERP/WMS/TMS，保留人工批准权</dd>
+            </dl>
+          </article>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>扩展场景</th><th>问题族</th><th>关键输出</th><th>价值口径</th><th>进入顺序</th></tr></thead>
+            <tbody>
+              <tr><td>设备故障与寿命预测</td><td>Prediction</td><td>故障风险、剩余寿命、告警优先级</td><td>非计划停机、维修成本</td><td>第二阶段</td></tr>
+              <tr><td>能耗预测与参数寻优</td><td>Prediction + Decision</td><td>能耗基线、参数组合、节能空间</td><td>单位产量能耗、峰谷成本</td><td>第二阶段</td></tr>
+              <tr><td>车间排产与工序调度</td><td>Decision</td><td>工序顺序、设备分配、完工时间</td><td>延期、换线、在制品</td><td>第三阶段</td></tr>
+              <tr><td>库存与采购策略</td><td>Prediction + Decision</td><td>需求预测、补货量、安全库存</td><td>缺货、周转与资金占用</td><td>第三阶段</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band soft" id="product">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Product</div>
+            <h2>从数据目录到可复用小模型的四段式产品</h2>
+          </div>
+          <p>每一阶段都有机器可读产物，后续系统不依赖聊天记录猜测前文；完整证据保留在本地，需要时按引用取回。</p>
+        </div>
+        <div class="product-flow">
+          <div class="flow-step"><h3>01 AutoRealize</h3><p>识别文件、表格、字段与关系；通过只读调查确认歧义；生成任务书、评估合同、输出合同与 AutoML 上下文。</p></div>
+          <div class="flow-step"><h3>02 MLEvolve</h3><p>生成多类候选代码；执行、预检、Debug、Improve；用搜索树比较预测模型、优化算法、启发式或 RL 路线。</p></div>
+          <div class="flow-step"><h3>03 AutoReport</h3><p>基于已接受节点、代码、指标和产物，解释最佳方案、候选差异、适用边界与复用方式。</p></div>
+          <div class="flow-step"><h3>04 Reuse</h3><p>通过 manifest 与固定入口重训、预测或求解，接入企业数据流水线和业务审批流程。</p></div>
+        </div>
+        <div class="evidence-strip">
+          <span class="tag done">已实现：description.md</span>
+          <span class="tag done">已实现：automl_context.md</span>
+          <span class="tag done">已实现：journal / Top-K</span>
+          <span class="tag done">已实现：solution_manifest.json</span>
+          <span class="tag done">已实现：report.md / report.json</span>
+          <span class="tag pilot">试点目标：企业系统连接器</span>
+          <span class="tag roadmap">路线图：在线模型注册与治理</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="screens">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Working Prototype</div>
+            <h2>不是概念图：当前工程原型已具备完整任务界面</h2>
+          </div>
+          <p>以下为本地运行版本实拍。界面可配置任务资源、模型与搜索预算，查看搜索树、节点代码、执行结果和评审结论。</p>
+        </div>
+        <div class="screen-grid">
+          <figure class="screen">
+            <img src="assets/product-console.png" alt="AutoDecision 任务配置和分阶段运行控制界面" />
+            <figcaption>任务配置与分阶段控制：AutoRealize、AutoML、继续搜索、报告生成和中断恢复均由 Gateway 编排。</figcaption>
+          </figure>
+          <figure class="screen">
+            <img src="assets/search-tree.png" alt="MLEvolve 搜索树、代码和执行评审界面" />
+            <figcaption>搜索与评审：可视化 Draft、Improve、Debug 节点，查看指标、UCT、代码、运行结果与方案洞察。</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="band dark" id="technology">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Technology & Moat</div>
+            <h2>技术壁垒来自闭环协同，而不是单个大模型</h2>
+          </div>
+          <p>LLM 负责理解、生成和评审；结构化合同、程序执行、确定性检查与统一 evaluator 负责把灵活性约束在可验证边界内。</p>
+        </div>
+        <div class="architecture">
+          <div class="arch-column">
+            <h3>企业输入层</h3>
+            <ul>
+              <li>CSV / Excel / JSON / 文档 / PDF / 图片</li>
+              <li>MES / ERP / QMS / WMS / TMS 导出</li>
+              <li>自然语言目标、评价指标与业务约束</li>
+              <li>CPU、内存、加速卡与时间预算</li>
+            </ul>
+          </div>
+          <div class="arch-column arch-core">
+            <div><strong>Vue + FastAPI Gateway</strong><span>统一配置、任务状态、文件与产物入口</span></div>
+            <div><strong>AutoRealize</strong><span>数据认知、QDI 调查、任务与读数合同</span></div>
+            <div><strong>MLEvolve-Alter</strong><span>MCTS 搜索、执行、评审、Top-K 与断点续搜</span></div>
+            <div><strong>AutoReport</strong><span>候选对比、方法解释、复用指南与审计</span></div>
+          </div>
+          <div class="arch-column">
+            <h3>企业交付层</h3>
+            <ul>
+              <li>预测模型、预处理器与推理入口</li>
+              <li>优化求解器、策略或分配结果</li>
+              <li>Top-K 候选、指标和运行证据</li>
+              <li>技术/管理/交付版报告</li>
+            </ul>
+          </div>
+        </div>
+        <div class="moat-grid" style="margin-top: 20px;">
+          <div class="moat"><strong>数据事实合同</strong><span>精确字段、读取方式、表间关系与业务概念分离，减少下游误读。</span></div>
+          <div class="moat"><strong>双问题族统一</strong><span>预测与决策共用任务框架，优化、启发式与 RL 不被割裂。</span></div>
+          <div class="moat"><strong>多路线搜索</strong><span>Draft、Debug、Improve 与融合在统一 evaluator 下横向比较。</span></div>
+          <div class="moat"><strong>Provider Friendly</strong><span>稳定前缀、动态尾部、缓存命中、Headroom 压缩与原文取回。</span></div>
+          <div class="moat"><strong>可复用接口</strong><span>train/predict、solve、train_policy/rollout 与 manifest 形成交付协议。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="truth">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Evidence Discipline</div>
+            <h2>以代码为准：现状、试点目标与远期能力分层表达</h2>
+          </div>
+          <p>技术规范书用于定义产品方向，但商业计划不把未经验证的采购指标包装成当前能力。</p>
+        </div>
+        <div class="table-scroll">
+          <table class="truth-table">
+            <thead><tr><th>能力</th><th>当前代码可证实</th><th>商业化阶段动作</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>多源数据认知</td><td>支持表格、文档、PDF、图片和压缩包；字段画像、关系证据与只读调查</td><td>增加 MES/ERP/QMS 标准连接器与行业字段词典</td><td><span class="tag done">已实现核心</span></td></tr>
+              <tr><td>预测与决策搜索</td><td>Prediction / Decision、数学优化、启发式、RL/混合方法、Top-K</td><td>形成良率、物流、排产三个行业模板包</td><td><span class="tag done">已实现核心</span></td></tr>
+              <tr><td>安全执行</td><td>独立子进程、任务工作区、超时、CPU/内存/设备约束与危险调用预检</td><td>容器隔离、镜像白名单、SBOM、权限审计与渗透测试</td><td><span class="tag pilot">需产品加固</span></td></tr>
+              <tr><td>恢复与审计</td><td>journal、search state、检查点、Top-K、继续搜索和 LLM 使用记录</td><td>故障自动拉起、企业告警和集中审计台</td><td><span class="tag pilot">部分实现</span></td></tr>
+              <tr><td>信创与国产化</td><td>OpenAI-compatible provider，可配置模型与本地 Python 服务</td><td>完成目标国产 OS、数据库、芯片和大模型的兼容性认证</td><td><span class="tag roadmap">待认证</span></td></tr>
+              <tr><td>在线闭环控制</td><td>当前定位为离线/准在线辅助决策，输出代码、模型与求解结果</td><td>经安全评估后接入审批流；高风险控制保留人工确认</td><td><span class="tag roadmap">远期路线</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band soft" id="value">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Customer Value</div>
+            <h2>用“业务增益 - 总拥有成本”验收，而不是只看模型分数</h2>
+          </div>
+          <p>每个试点先冻结基线、时间切分、约束和收益口径，再开始搜索；异常高分和不可行方案必须被拒绝。</p>
+        </div>
+        <div class="value-model">
+          <div class="formula"><strong>年度可量化价值</strong><br />= 质量损失减少 + 库存/物流/能耗节约 + 专家工时释放<br />- 软件许可 - 算力与模型调用 - 集成与运维</div>
+          <div class="accept-list">
+            <div class="accept-item"><strong>预测可信度</strong><span>时间外/批次外验证，和现行规则、简单模型及其他候选对比。</span></div>
+            <div class="accept-item"><strong>决策可执行性</strong><span>硬约束通过率必须达到 100%，再比较成本、延期与未分配量。</span></div>
+            <div class="accept-item"><strong>工程复现性</strong><span>相同数据和配置可重跑；保存代码、依赖、manifest、模型与指标。</span></div>
+            <div class="accept-item"><strong>组织效率</strong><span>记录问题定义、建模、评审和交付的人工工时，验证周期缩短。</span></div>
+          </div>
+        </div>
+        <div class="callout"><strong>建议试点目标，不是现有业绩：</strong>业务口径确认不超过 1 个工作日；硬约束校验 100% 通过；完整产物可在目标环境复现；相对传统一次性建模减少 50% 以上人工建模工时。最终目标值需由首批客户基线校准。</div>
+      </div>
+    </section>
+
+    <section class="band" id="market">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Market</div>
+            <h2>不套用泛 AI 大盘：从可服务企业与年度预算自下而上测算</h2>
+          </div>
+          <p>以下是经营规划假设，不冒充官方行业统计。赛前应使用工信、统计年鉴和客户访谈数据替换企业数量假设。</p>
+        </div>
+        <div class="market-bars">
+          <div class="market-row"><strong>TAM</strong><div class="bar-track"><div class="bar-fill" style="width: 100%;"></div></div><span>3 万家 × 30 万元/年 = 90 亿元</span></div>
+          <div class="market-row"><strong>SAM</strong><div class="bar-track"><div class="bar-fill" style="width: 52%;"></div></div><span>华东/华中 6000 家 × 30 万元 = 18 亿元</span></div>
+          <div class="market-row"><strong>SOM</strong><div class="bar-track"><div class="bar-fill" style="width: 18%; min-width: 28px;"></div></div><span>第三年 35 家 × 36 万元 = 1260 万元</span></div>
+        </div>
+        <div class="scenario-grid" style="margin-top: 34px;">
+          <article class="scenario"><h3>理想客户画像</h3><p>已建设 MES/ERP/QMS/WMS 等系统，拥有可导出的历史数据；每年存在多个预测或优化需求；当前依赖外包或少数算法人员；愿意以 6-10 周试点验证价值。</p></article>
+          <article class="scenario"><h3>采购决策人</h3><p>业务发起人为质量、生产、设备或供应链负责人；技术把关人为数字化/IT/数据部门；预算批准人为工厂负责人或集团数字化负责人。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band soft" id="business-model">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Business Model</div>
+            <h2>“试点验证 + 私有化年费 + 行业包 + 集成服务”</h2>
+          </div>
+          <p>用高价值场景试点降低首次采购风险，再把同一客户的第二、第三个问题转化为续费与扩容收入。</p>
+        </div>
+        <div class="pricing">
+          <article class="price"><h3>场景诊断与试点</h3><div class="amount">12-30 万元</div><p>6-10 周；包含数据盘点、一个问题定义、候选搜索、验收报告和复用说明。</p></article>
+          <article class="price"><h3>企业私有化年费</h3><div class="amount">28-68 万元/年</div><p>按环境、并发任务、模型接入和支持等级分层；客户承担或实报实销算力与 LLM 费用。</p></article>
+          <article class="price"><h3>行业包与系统集成</h3><div class="amount">20-80 万元</div><p>MES/ERP/QMS/WMS 连接器、行业评估模板、审批流与二次开发，按范围报价。</p></article>
+        </div>
+        <div class="table-scroll">
+          <table class="comparison-table">
+            <thead><tr><th>方案类别</th><th>杂乱数据认知</th><th>预测 + 决策</th><th>自动执行比较</th><th>模型/求解器复用</th><th>主要短板</th></tr></thead>
+            <tbody>
+              <tr><td>BI / 数据看板</td><td class="partial">有限</td><td class="none">弱</td><td class="none">无</td><td class="none">无</td><td>侧重描述过去</td></tr>
+              <tr><td>传统 AutoML 平台</td><td class="partial">需宽表</td><td class="partial">预测为主</td><td class="check">有</td><td class="check">有</td><td>问题定义与约束仍依赖专家</td></tr>
+              <tr><td>通用代码智能体</td><td class="partial">灵活但不稳定</td><td class="check">可生成</td><td class="partial">单路线为主</td><td class="partial">需人工整理</td><td>缺少统一 evaluator 与交付协议</td></tr>
+              <tr><td>咨询/定制开发</td><td class="check">可深度处理</td><td class="check">可覆盖</td><td class="partial">人工驱动</td><td class="partial">项目制</td><td>周期长、复制成本高</td></tr>
+              <tr><td><strong>AutoDecision</strong></td><td class="check">证据化认知</td><td class="check">统一问题族</td><td class="check">搜索 + 执行 + Review</td><td class="check">固定接口 + manifest</td><td>仍需产品加固与行业试点</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="go-to-market">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Go To Market</div>
+            <h2>从江西电子制造灯塔场景切入，再通过伙伴复制</h2>
+          </div>
+          <p>不一开始销售“万能工业 AI 平台”，而是销售一个有数据、有基线、有验收口径的明确结果。</p>
+        </div>
+        <div class="pilot-flow">
+          <div class="flow-step"><h3>0-15 天</h3><p>数据体检与 ROI 假设：确认数据权属、字段覆盖、业务基线与可验收性。</p></div>
+          <div class="flow-step"><h3>16-45 天</h3><p>冻结任务合同：时间切分、指标、约束、输出和人工审批边界。</p></div>
+          <div class="flow-step"><h3>46-75 天</h3><p>自动搜索与专家复核：比较多条技术路线，保留 Top-K 和失败证据。</p></div>
+          <div class="flow-step"><h3>76-100 天</h3><p>影子运行与验收：接入历史或准实时数据，不直接控制生产，验证业务增益。</p></div>
+        </div>
+        <div class="card-grid" style="margin-top: 26px;">
+          <article class="card"><h3>直销灯塔客户</h3><p>质量、设备、供应链部门共同立项，形成可公开或脱敏的行业案例。</p></article>
+          <article class="card"><h3>工业软件伙伴</h3><p>与 MES/ERP/WMS 集成商共建连接器，AutoDecision 提供模型工厂能力。</p></article>
+          <article class="card"><h3>高校与科研合作</h3><p>联合验证新算法、行业数据口径与评估协议，增强技术与人才供给。</p></article>
+          <article class="card"><h3>土地与扩张</h3><p>首场景试点后，按新增数据域、任务并发和行业包扩容，形成年度续费。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band soft" id="roadmap">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Roadmap</div>
+            <h2>三阶段产品化与增长路径</h2>
+          </div>
+          <p>先解决可靠交付，再做行业复制，最后建设模型资产治理与伙伴生态。</p>
+        </div>
+        <div class="timeline">
+          <article class="phase"><small>0-6 个月</small><h3>产品加固与首个试点</h3><ul><li>容器化执行与依赖白名单</li><li>良率预测/物流分配评估模板</li><li>完成 2-4 个付费或联合试点</li><li>补齐安装、运维、审计与验收文档</li></ul></article>
+          <article class="phase"><small>6-18 个月</small><h3>行业包与区域复制</h3><ul><li>MES/ERP/QMS/WMS 连接器</li><li>3 个可复用灯塔案例</li><li>伙伴交付认证与标准报价</li><li>形成 10-15 家付费客户</li></ul></article>
+          <article class="phase"><small>18-36 个月</small><h3>模型资产平台</h3><ul><li>模型注册、版本、审批与漂移监测</li><li>电子制造、装备、物流行业包</li><li>国产化兼容认证</li><li>达到 35 家付费客户并实现经营盈亏平衡</li></ul></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="finance">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Financial Model</div>
+            <h2>三年经营模型：第三年达到盈亏平衡</h2>
+          </div>
+          <p>单位：万元。以下为基准情景规划，不是已签订单；假设客户数、客单价与交付毛利均需由试点数据滚动修正。</p>
+        </div>
+        <div class="finance-layout">
+          <div class="table-scroll">
+            <table class="finance-table">
+              <thead><tr><th>项目</th><th>第 1 年</th><th>第 2 年</th><th>第 3 年</th></tr></thead>
+              <tbody>
+                <tr><td>付费客户数</td><td>4</td><td>14</td><td>35</td></tr>
+                <tr><td>营业收入</td><td>120</td><td>520</td><td>1260</td></tr>
+                <tr><td>交付与算力成本</td><td>54</td><td>187</td><td>378</td></tr>
+                <tr><td>毛利润 / 毛利率</td><td>66 / 55%</td><td>333 / 64%</td><td>882 / 70%</td></tr>
+                <tr><td>研发、销售与管理费用</td><td>220</td><td>410</td><td>650</td></tr>
+                <tr><td>经营利润</td><td>-154</td><td>-77</td><td>232</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="finance-bars">
+            <div class="finance-bar"><strong>Y1</strong><div class="bar-track"><div class="bar-fill" style="width: 10%; min-width: 20px;"></div></div><span>120 万</span></div>
+            <div class="finance-bar"><strong>Y2</strong><div class="bar-track"><div class="bar-fill" style="width: 41%;"></div></div><span>520 万</span></div>
+            <div class="finance-bar"><strong>Y3</strong><div class="bar-track"><div class="bar-fill" style="width: 100%;"></div></div><span>1260 万</span></div>
+            <div class="formula" style="font-size: 14px;"><strong>关键假设</strong><br />客单价从试点向年费转化；标准行业包提升交付复用率；客户承担专属基础设施，通用 LLM 成本按量核算；不把尚未获得的政府补贴计入主营收入。</div>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>第三年敏感性</th><th>客户数</th><th>平均年收入/客户</th><th>收入</th><th>解释</th></tr></thead>
+            <tbody>
+              <tr><td>审慎情景</td><td>25</td><td>30 万</td><td>750 万</td><td>销售周期延长，项目收入占比偏高</td></tr>
+              <tr><td>基准情景</td><td>35</td><td>36 万</td><td>1260 万</td><td>形成 3 个行业模板与稳定续费</td></tr>
+              <tr><td>进取情景</td><td>50</td><td>40 万</td><td>2000 万</td><td>伙伴渠道成熟、跨区域复制顺利</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band dark" id="funding">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Funding</div>
+            <h2>建议种子轮融资 300 万元，覆盖 18 个月产品化</h2>
+          </div>
+          <p>融资金额、估值和股权比例必须由创始团队、公司主体与投资人共同确认。本计划只给出资金需求模型。</p>
+        </div>
+        <div class="funding-use">
+          <div><strong>45%</strong><span>产品研发：执行隔离、模型治理、稳定性、连接器</span></div>
+          <div><strong>25%</strong><span>行业试点：数据治理、现场交付、第三方测试</span></div>
+          <div><strong>20%</strong><span>市场与伙伴：灯塔客户、集成商认证、售前工具</span></div>
+          <div><strong>10%</strong><span>合规与储备：法务、知识产权、安全与流动资金</span></div>
+        </div>
+        <div class="callout" style="background: rgba(255,255,255,0.08); color: #e7f2f0; border-left-color: #84e3c7;"><strong>里程碑拨付建议：</strong>首期 50% 用于产品加固；完成首个可验收付费试点后拨付 30%；形成三类标准连接器与三家续费意向后拨付 20%。不建议在没有团队、客户访谈和知识产权清单的情况下直接给出投前估值。</div>
+      </div>
+    </section>
+
+    <section class="band" id="team">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Team</div>
+            <h2>企业组必须补齐“技术 + 行业 + 交付 + 商业”闭环团队</h2>
+          </div>
+          <p>代码能够证明技术原型，但不能替代团队履历、公司主体、客户背书和知识产权。以下岗位请在提交前补入真实姓名与成果。</p>
+        </div>
+        <div class="team-grid">
+          <article class="team-role"><span class="vacancy">待补充真实人员</span><h3>CEO / 行业负责人</h3><p>制造业客户洞察、战略合作、融资与商业结果负责；优先具备工厂数字化或企业软件经历。</p></article>
+          <article class="team-role"><span class="vacancy">待补充真实人员</span><h3>CTO / 算法负责人</h3><p>LLM Agent、AutoML、优化/RL、平台架构与研发质量负责；补充论文、开源或工程成果。</p></article>
+          <article class="team-role"><span class="vacancy">待补充真实人员</span><h3>产品与交付负责人</h3><p>将质量、供应链问题冻结为可验收合同，负责数据接入、现场实施和客户成功。</p></article>
+          <article class="team-role"><span class="vacancy">待补充真实人员</span><h3>销售与生态负责人</h3><p>灯塔客户、工业软件集成商、区域渠道和回款负责，建立可复制售前与报价体系。</p></article>
+        </div>
+        <div class="callout"><strong>赛前硬性补充：</strong>公司注册信息、核心成员照片与履历、职责和持股；真实客户访谈数量、试点/意向函；软件著作权、专利或开源仓库证明；第三方测试或专家推荐。没有的内容应写“正在申请/洽谈”，不能写成已经获得。</div>
+      </div>
+    </section>
+
+    <section class="band soft" id="risk">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Risk & Governance</div>
+            <h2>工业智能必须把风险治理写进产品，而不是写在免责声明里</h2>
+          </div>
+          <p>首期定位为辅助决策：模型给出预测或方案，业务负责人审核后执行；逐步用影子运行和分级权限扩大自动化范围。</p>
+        </div>
+        <div class="risk-grid">
+          <article class="risk"><h3>数据安全</h3><p>风险：工业数据外泄。对策：私有化部署、密钥隔离、最小权限、脱敏、访问审计和本地 artifact。</p></article>
+          <article class="risk"><h3>生成代码安全</h3><p>风险：死循环、危险调用和依赖污染。对策：预检、超时、任务级依赖目录；路线图增加容器与白名单。</p></article>
+          <article class="risk"><h3>模型可信</h3><p>风险：泄漏、异常分数或约束遗漏。对策：固定 evaluator、时间外验证、Result Review、硬约束与人工验收。</p></article>
+          <article class="risk"><h3>供应商依赖</h3><p>风险：模型价格、接口或合规变化。对策：OpenAI-compatible 多模型配置、缓存优化、模型角色分工与降级策略。</p></article>
+          <article class="risk"><h3>长销售周期</h3><p>风险：工业项目决策链长。对策：标准化 100 天试点、按里程碑付款、与集成商联合销售。</p></article>
+          <article class="risk"><h3>行业泛化</h3><p>风险：每个工厂口径不同。对策：通用引擎与行业合同模板分层，优先复制数据结构相近的场景。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="impact">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Industrial & Social Impact</div>
+            <h2>服务新型工业化：把 AI 能力送到生产经营一线</h2>
+          </div>
+          <p>社会价值同样采用可核验指标，不把“绿色、就业、数字化”停留在口号。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><h3>质量与资源效率</h3><p>以一次合格率、报废返修、库存周转、运输成本和单位能耗衡量实际改善。</p></article>
+          <article class="card"><h3>中小企业可及性</h3><p>降低对完整算法团队的前置要求，让更多细分工厂能验证数据价值。</p></article>
+          <article class="card"><h3>复合型岗位</h3><p>形成工业数据产品、模型验证、行业交付和 AI 治理等新型岗位，而非简单替代工艺人员。</p></article>
+          <article class="card"><h3>江西电子信息产业</h3><p>围绕省内电子制造、装备与物流形成可复制软件能力，提升区域数字化服务供给。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band soft" id="sources">
+      <div class="container">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Sources & Assumptions</div>
+            <h2>信息口径与提交前核验清单</h2>
+          </div>
+          <p>本版本依据本地材料和代码仓库编制。市场与财务数据为规划假设，不能作为已实现业绩或权威统计引用。</p>
+        </div>
+        <div class="source-list">
+          <div class="source-item"><strong>产品事实源</strong><span>AutoDecision README；core/AutoRealize、core/MLEvolve-Alter、core/AutoReport README；docs/solution_interface.md；当前 Vue/FastAPI 代码与运行界面。</span></div>
+          <div class="source-item"><strong>产品愿景参考</strong><span>D:\Files\项目\江西比赛\面向工业大数据的智能决策引擎-技术规范书.pdf。与代码冲突处按代码降格为试点目标或路线图。</span></div>
+          <div class="source-item"><strong>比赛结构参考</strong><span>企业组_教育.pdf、创客组_机器人.pdf、视频笔记.md。采用摘要、痛点、技术、市场、团队、商业、规划、财务、融资的闭环结构。</span></div>
+          <div class="source-item"><strong>市场测算假设</strong><span>企业数量、预算、客户数、价格和毛利均为商业模型参数。提交前需用官方统计、目标客户访谈、真实报价和合同/意向函校准。</span></div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>提交前事项</th><th>负责人</th><th>证据</th><th>当前状态</th></tr></thead>
+            <tbody>
+              <tr><td>公司与团队信息</td><td>创始人</td><td>营业执照、履历、职责、持股</td><td>待补充</td></tr>
+              <tr><td>客户需求验证</td><td>行业/销售</td><td>10-20 份访谈纪要、2-3 份意向函</td><td>待补充</td></tr>
+              <tr><td>产品效果验证</td><td>技术/交付</td><td>基线、数据切分、指标、约束、复现记录</td><td>已有原型，待第三方试点</td></tr>
+              <tr><td>知识产权与安全</td><td>技术/法务</td><td>软著、专利、许可证清单、安全测试</td><td>待整理/申请</td></tr>
+              <tr><td>市场和财务校准</td><td>CEO/财务</td><td>官方统计、真实报价、人员与算力预算</td><td>当前为基准假设</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="container">
+        <div class="eyebrow" style="color:#c9f3e7;">The Ask</div>
+        <h2>先用一个可量化场景证明价值，再把模型生产能力复制到整家工厂。</h2>
+        <p>AutoDecision 寻找电子制造灯塔客户、工业软件集成伙伴和种子轮投资方，共同完成从工程原型到工业级产品的最后一公里。</p>
+        <div class="closing-meta">
+          <span>项目名称：AutoDecision</span>
+          <span>赛道：企业组 · 电子信息</span>
+          <span>联系人：[待补充]</span>
+          <span>电话 / 邮箱：[待补充]</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">AutoDecision 商业计划书 · 参赛工作稿 · 2026 年 7 月 · 财务及市场数据为规划假设</div>
+  </footer>
+
+  <script>
+    const links = [...document.querySelectorAll('.nav a[href^="#"]')]
+    const sections = links
+      .map((link) => document.querySelector(link.getAttribute('href')))
+      .filter(Boolean)
+
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0]
+      if (!visible) return
+      links.forEach((link) => {
+        link.classList.toggle('active', link.getAttribute('href') === `#${visible.target.id}`)
+      })
+    }, { rootMargin: '-20% 0px -65% 0px', threshold: [0.05, 0.3, 0.6] })
+
+    sections.forEach((section) => observer.observe(section))
+  </script>
+</body>
+</html>
