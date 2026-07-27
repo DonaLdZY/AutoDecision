@@ -7,7 +7,7 @@ def test_native_automl_crash_prefers_service_diagnosis_over_last_stderr_line() -
     status = {
         "exit_code": 3221225725,
         "last_error": (
-            "MLEvolve native crash: Windows STATUS_STACK_OVERFLOW (0xC00000FD). "
+            "AlgoEvolve native crash: Windows STATUS_STACK_OVERFLOW (0xC00000FD). "
             "Peak task memory=8.03 GiB, configured limit=8.00 GiB."
         ),
         "stderr_tail": "[GlobalMemory] Failed to save node abc: Connection error.",

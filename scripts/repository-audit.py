@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORIES = (
     ROOT,
     ROOT / "core" / "AutoRealize",
-    ROOT / "core" / "MLEvolve-Alter",
+    ROOT / "core" / "AlgoEvolve",
     ROOT / "core" / "AutoReport",
 )
 

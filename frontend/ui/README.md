@@ -1,6 +1,6 @@
 # AutoDecision 前端
 
-AutoDecision 的浏览器界面，使用 Vue 3、TypeScript 和 Vite 构建。界面只访问 AutoDecision Gateway，由 Gateway 编排 AutoRealize、MLEvolve-Alter 和 AutoReport。
+AutoDecision 的浏览器界面，使用 Vue 3、TypeScript 和 Vite 构建。界面只访问 AutoDecision Gateway，由 Gateway 编排 AutoRealize、AlgoEvolve 和 AutoReport。
 
 ## 环境要求
 

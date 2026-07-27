@@ -7,7 +7,7 @@ const props = defineProps<{
 }>()
 
 const autoMl = computed(() => props.snapshot?.auto_ml ?? {})
-const isMLEvolve = computed(() => String(autoMl.value.engine ?? '') === 'mlevolve')
+const isAlgoEvolve = computed(() => ['algoevolve', 'mlevolve'].includes(String(autoMl.value.engine ?? '')))
 const nodes = computed(() => autoMl.value.nodes ?? [])
 const pendingNodes = computed(() => autoMl.value.pending_nodes ?? [])
 const visiblePendingNodes = computed(() => {
@@ -42,11 +42,11 @@ const workspaceDir = computed(() => String(autoMl.value.workspace_dir ?? ''))
 </script>
 
 <template>
-  <section v-if="isMLEvolve" class="summary-panel">
+  <section v-if="isAlgoEvolve" class="summary-panel">
     <header class="summary-header">
       <div>
-        <h4>MLEvolve 摘要</h4>
-        <p>面向 MLEvolve 的分支演化监控摘要，不影响原有搜索逻辑。</p>
+        <h4>AlgoEvolve 摘要</h4>
+        <p>面向 AlgoEvolve 的分支演化监控摘要，不影响原有搜索逻辑。</p>
       </div>
     </header>
 

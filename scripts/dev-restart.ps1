@@ -3,7 +3,7 @@
     "frontend", "frontend-ui", "ui",
     "gateway", "gateway-api", "backend",
     "autorealize", "autorealize-api",
-    "mlevolve", "mlevolve-api",
+    "algoevolve", "algoevolve-api", "mlevolve", "mlevolve-api",
     "autoreport", "autoreport-api"
   )]
   [string]$Only = "",
@@ -27,9 +27,9 @@ $serviceDefs = @{
     args = @("-m", "uvicorn", "autorealize.service_api:app", "--host", "127.0.0.1", "--port", "18101")
     health = "http://127.0.0.1:18101/health"
   }
-  "mlevolve-api" = @{
+  "algoevolve-api" = @{
     port = 18103
-    workdir = Join-Path $root "core\MLEvolve-Alter"
+    workdir = Join-Path $root "core\AlgoEvolve"
     file = "python"
     args = @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18103")
     health = "http://127.0.0.1:18103/health"
@@ -66,8 +66,11 @@ $aliases = @{
   "backend" = "gateway-api"
   "autorealize" = "autorealize-api"
   "autorealize-api" = "autorealize-api"
-  "mlevolve" = "mlevolve-api"
-  "mlevolve-api" = "mlevolve-api"
+  "algoevolve" = "algoevolve-api"
+  "algoevolve-api" = "algoevolve-api"
+  # Compatibility aliases for local commands used before the rename.
+  "mlevolve" = "algoevolve-api"
+  "mlevolve-api" = "algoevolve-api"
   "autoreport" = "autoreport-api"
   "autoreport-api" = "autoreport-api"
 }

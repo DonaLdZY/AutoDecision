@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const local = reactive<GlobalSettings>(cloneDeep(props.modelValue))
-const activePage = shallowRef<'models' | 'runtime' | 'services' | 'mlevolve'>('models')
+const activePage = shallowRef<'models' | 'runtime' | 'services' | 'algoevolve'>('models')
 const pythonEnvs = shallowRef<PythonEnvironment[]>([])
 const envLoading = shallowRef(false)
 const envError = shallowRef('')
@@ -24,9 +24,9 @@ const envFilter = shallowRef('')
 const roleLabels: Array<{ key: keyof GlobalSettings['llm']['roleModels']; label: string; hint: string }> = [
   { key: 'autoRealize', label: 'AutoRealize 模型', hint: '数据认知、QDI、任务定义和 description 生成。' },
   { key: 'autoRealizeVision', label: 'AutoRealize 视觉模型', hint: '图片/视觉文件认知，受任务配置里的 VLLM 开关控制。' },
-  { key: 'autoMlCode', label: 'AutoML 编码模型', hint: 'MLEvolve 生成方案和代码。' },
+  { key: 'autoMlCode', label: 'AutoML 编码模型', hint: 'AlgoEvolve 生成方案和代码。' },
   { key: 'autoMlFeedback', label: 'AutoML feedback 模型', hint: '反馈、评审、修复建议和报告优先使用。' },
-  { key: 'embedding', label: '向量化模型', hint: 'MLEvolve 全局记忆的远程 embedding 模型。' },
+  { key: 'embedding', label: '向量化模型', hint: 'AlgoEvolve 全局记忆的远程 embedding 模型。' },
 ]
 
 function modelLabel(modelId: string) {
@@ -157,7 +157,7 @@ function saveCurrent() {
           <button :class="{ active: activePage === 'models' }" @click="activePage = 'models'">模型配置</button>
           <button :class="{ active: activePage === 'runtime' }" @click="activePage = 'runtime'">运行环境</button>
           <button :class="{ active: activePage === 'services' }" @click="activePage = 'services'">服务编排</button>
-          <button :class="{ active: activePage === 'mlevolve' }" @click="activePage = 'mlevolve'">MLEvolve</button>
+          <button :class="{ active: activePage === 'algoevolve' }" @click="activePage = 'algoevolve'">AlgoEvolve</button>
         </aside>
 
         <div class="body">
@@ -245,7 +245,7 @@ function saveCurrent() {
                       step="1024"
                       placeholder="例如 131072"
                     />
-                    <small>用于 MLEvolve 在超出上下文前预留推理和输出空间；0 表示使用内置默认值。</small>
+                    <small>用于 AlgoEvolve 在超出上下文前预留推理和输出空间；0 表示使用内置默认值。</small>
                   </label>
                 </div>
               </article>
@@ -286,21 +286,21 @@ function saveCurrent() {
           <section v-else-if="activePage === 'services'" class="page">
             <h4>Core 服务编排</h4>
             <label><span>AutoRealize Base URL</span><input v-model="local.coreServices.autoRealizeBaseUrl" placeholder="http://127.0.0.1:18101" /></label>
-            <label><span>AutoML / MLEvolve Base URL</span><input v-model="local.coreServices.mlevolveBaseUrl" placeholder="http://127.0.0.1:18103" /></label>
+            <label><span>AutoML / AlgoEvolve Base URL</span><input v-model="local.coreServices.algoEvolveBaseUrl" placeholder="http://127.0.0.1:18103" /></label>
             <label><span>AutoReport Base URL</span><input v-model="local.coreServices.autoReportBaseUrl" placeholder="http://127.0.0.1:18104" /></label>
             <label><span>请求超时(秒)</span><input type="number" min="1" v-model.number="local.coreServices.requestTimeoutSecs" /></label>
           </section>
 
           <section v-else class="page">
-            <h4>MLEvolve 全局配置</h4>
+            <h4>AlgoEvolve 全局配置</h4>
             <label>
               <span>Torch Hub 目录</span>
-              <input v-model="local.mlevolve.torchHubDir" placeholder="例如 D:\\model_cache\\torch_hub 或 /data/torch_hub" />
+              <input v-model="local.algoevolve.torchHubDir" placeholder="例如 D:\\model_cache\\torch_hub 或 /data/torch_hub" />
               <small>PyTorch Hub 缓存目录，减少重复下载和外网依赖。</small>
             </label>
             <label>
               <span>预训练模型目录</span>
-              <input v-model="local.mlevolve.pretrainModelDir" placeholder="例如 D:\\pretrain_models 或 /data/pretrain_models" />
+              <input v-model="local.algoevolve.pretrainModelDir" placeholder="例如 D:\\pretrain_models 或 /data/pretrain_models" />
               <small>本地预训练权重仓库，便于离线/内网加载模型。</small>
             </label>
             <p class="note">向量化模型现在在“模型配置”页面选择，不再在这里单独填写 Base URL/API Key。</p>

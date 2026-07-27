@@ -38,7 +38,7 @@ const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
 function normalizeLocalConfig() {
   localConfig.resources = normalizeTaskResources(localConfig.resources)
   localConfig.output_language = localConfig.output_language === 'en' ? 'en' : 'zh'
-  localConfig.auto_ml.engine = 'mlevolve'
+  localConfig.auto_ml.engine = 'algoevolve'
   localConfig.auto_ml.enabled = true
   localConfig.auto_report = normalizeAutoReportConfig(localConfig.auto_report)
 }
@@ -64,7 +64,7 @@ watch(
 )
 
 function propagateConfig() {
-  localConfig.auto_ml.engine = 'mlevolve'
+  localConfig.auto_ml.engine = 'algoevolve'
   localConfig.auto_ml.enabled = true
   emit('updateConfig', props.task.id, cloneDeep(localConfig))
 }
@@ -277,7 +277,7 @@ async function openRunDirectory() {
           <option value="zh">中文</option>
           <option value="en">English</option>
         </select>
-        <small>统一约束 AutoRealize、MLEvolve 和 AutoReport 的模型输出。</small>
+        <small>统一约束 AutoRealize、AlgoEvolve 和 AutoReport 的模型输出。</small>
       </label>
     </div>
 

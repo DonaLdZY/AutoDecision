@@ -47,7 +47,7 @@ const inferredActive = computed<StepKey | null>(() => {
   if (mlEvents.length > 0) {
     const lastMl = mlEvents[mlEvents.length - 1]
     const marker = `${String(lastMl.component ?? '')}.${String(lastMl.event ?? '')}`.toLowerCase()
-    if (marker.includes('mcts') || marker.includes('pipeline') || marker.includes('mlevolve')) return 'automl'
+    if (marker.includes('mcts') || marker.includes('pipeline') || marker.includes('algoevolve') || marker.includes('mlevolve')) return 'automl'
   }
 
   const arEvents = props.autoRealizeEvents ?? []

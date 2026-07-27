@@ -621,7 +621,7 @@ onUnmounted(() => {
     <header class="top-header">
       <div class="brand">
         <h1>AutoDecision Frontend</h1>
-        <p>工业场景自动决策训练系统，统一编排 AutoRealize、MLEvolve 与 AutoReport</p>
+        <p>工业场景自动决策训练系统，统一编排 AutoRealize、AlgoEvolve 与 AutoReport</p>
       </div>
       <div class="actions">
         <button class="settings" @click="openSettings">全局设置</button>

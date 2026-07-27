@@ -15,7 +15,7 @@ def test_global_settings_response_redacts_all_provider_keys() -> None:
             "codeModel": {"apiKey": "legacy-secret"},
             "vllm": {"apiKey": "vision-secret"},
         },
-        "mlevolve": {"embeddingApiKey": "embedding-secret"},
+        "algoevolve": {"embeddingApiKey": "embedding-secret"},
     }
 
     redacted = app._redact_global_settings_for_client(settings)
@@ -25,8 +25,8 @@ def test_global_settings_response_redacts_all_provider_keys() -> None:
     assert redacted["llm"]["modelLibrary"][1]["apiKeyConfigured"] is False
     assert redacted["llm"]["codeModel"]["apiKey"] == ""
     assert redacted["llm"]["vllm"]["apiKey"] == ""
-    assert redacted["mlevolve"]["embeddingApiKey"] == ""
-    assert redacted["mlevolve"]["embeddingApiKeyConfigured"] is True
+    assert redacted["algoevolve"]["embeddingApiKey"] == ""
+    assert redacted["algoevolve"]["embeddingApiKeyConfigured"] is True
     assert settings["llm"]["modelLibrary"][0]["apiKey"] == "secret-value"
 
 

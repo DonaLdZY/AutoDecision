@@ -32,7 +32,7 @@ function recordTitle(index: number): string {
     <header class="panel-header">
       <div>
         <h4>环境补库记录</h4>
-        <p>记录 MLEvolve 安装到当前任务隔离目录的缺失依赖，可据此补充项目 requirements。</p>
+        <p>记录 AlgoEvolve 安装到当前任务隔离目录的缺失依赖，可据此补充项目 requirements。</p>
       </div>
       <div class="environment-paths">
         <code v-if="summary?.python_executable">Python: {{ summary.python_executable }}</code>

@@ -34,7 +34,7 @@ export function defaultAutoRealize(): AutoRealizeConfig {
 
 export function defaultAutoML(): AutoMLConfig {
   return {
-    engine: 'mlevolve',
+    engine: 'algoevolve',
     enabled: true,
     goal: '',
     eval: '',

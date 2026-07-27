@@ -14,7 +14,7 @@ AutoRealize
 数据认知、字段与关系识别、任务书、评估协议、AutoML 上下文
         |
         v
-MLEvolve-Alter
+AlgoEvolve
 候选方案生成、代码执行、debug/improve、搜索与最优方案保存
         |
         v
@@ -27,7 +27,7 @@ AutoReport
 | 服务            | 默认地址                   | 作用                     |
 | --------------- | -------------------------- | ------------------------ |
 | AutoRealize API | `http://127.0.0.1:18101` | 数据认知与任务定义       |
-| MLEvolve API    | `http://127.0.0.1:18103` | AutoML、优化和 RL 搜索   |
+| AlgoEvolve API  | `http://127.0.0.1:18103` | AutoML、优化和 RL 搜索   |
 | AutoReport API  | `http://127.0.0.1:18104` | 方案交付报告生成         |
 | Gateway API     | `http://127.0.0.1:18080` | 任务编排、配置和状态聚合 |
 | Vue Frontend    | `http://127.0.0.1:5173`  | 用户操作界面             |
@@ -44,7 +44,7 @@ AutoReport
 - 生成 `description.md`、评估合同、输出合同、样例提交和 `automl_context.md`。
 - 使用结构化证据包和本地 artifact 控制上下文成本，同时保留完整证据。
 
-### MLEvolve-Alter：搜索并验证方案
+### AlgoEvolve：搜索并验证方案
 
 - 通过搜索树生成、执行、调试和改进候选代码。
 - 支持预测、优化、决策和强化学习路线。
@@ -54,7 +54,7 @@ AutoReport
 
 ### AutoReport：整理交付证据
 
-- 收集 AutoRealize 与 MLEvolve 的任务事实、方案、指标和产物。
+- 收集 AutoRealize 与 AlgoEvolve 的任务事实、方案、指标和产物。
 - 对比最佳方案、Top-K 候选和典型失败方案。
 - 生成方法流程、评估结果、适用边界、输入格式和代码复用说明。
 - 报告聚焦最终方案为何有效、如何使用，不展开系统内部搜索细节。
@@ -65,7 +65,7 @@ AutoReport
 - 配置 LLM 并发、思考模式、输出上限、搜索预算和报告选项。
 - 为每个任务配置 CPU、总内存和可见加速卡。
 - 创建、启动、停止、继续及分阶段重跑任务。
-- 查看 AutoRealize 进度、MLEvolve 搜索树、节点代码、指标、insight、日志和交付物。
+- 查看 AutoRealize 进度、AlgoEvolve 搜索树、节点代码、指标、insight、日志和交付物。
 
 ## 仓库结构
 
@@ -73,7 +73,7 @@ AutoReport
 AutoDecision/
 |-- core/
 |   |-- AutoRealize/       # Git 子模块：数据认知与任务定义
-|   |-- MLEvolve-Alter/    # Git 子模块：方案搜索与执行
+|   |-- AlgoEvolve/        # Git 子模块：方案搜索与执行
 |   `-- AutoReport/        # Git 子模块：交付报告生成
 |-- frontend/
 |   |-- backend/           # FastAPI Gateway
@@ -88,7 +88,7 @@ AutoDecision/
 三个 Core 项目也可以脱离主仓库独立安装：
 
 - [AutoRealize](core/AutoRealize/README.md)
-- [MLEvolve-Alter](core/MLEvolve-Alter/README.md)
+- [AlgoEvolve](core/AlgoEvolve/README.md)
 - [AutoReport](core/AutoReport/README.md)
 
 ## 环境要求
@@ -137,10 +137,10 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-根 `requirements.txt` 会安装 Gateway、AutoRealize、MLEvolve 和 AutoReport 的基础依赖。需要额外的视觉、NLP、音频、地理或化学算法库时，再安装 MLEvolve 的领域依赖：
+根 `requirements.txt` 会安装 Gateway、AutoRealize、AlgoEvolve 和 AutoReport 的基础依赖。需要额外的视觉、NLP、音频、地理或化学算法库时，再安装 AlgoEvolve 的领域依赖：
 
 ```bash
-python -m pip install -r core/MLEvolve-Alter/requirements_domain.txt
+python -m pip install -r core/AlgoEvolve/requirements_domain.txt
 ```
 
 如需 GPU 版 PyTorch，请先根据 PyTorch 或设备厂商官网选择与驱动匹配的安装命令，再安装其余依赖。本项目不固定 CUDA、ROCm、XPU、MPS 或 Ascend 版本。
@@ -179,7 +179,7 @@ cd ../..
 三个 Core 项目的正式默认配置分别是：
 
 - `core/AutoRealize/config/config.yaml`
-- `core/MLEvolve-Alter/config/config.yaml`
+- `core/AlgoEvolve/config/config.yaml`
 - `core/AutoReport/config/config.yaml`
 
 配置文件均带中英文注释。前端启动任务时会根据全局设置和任务设置生成临时 YAML；独立运行 Core 项目时也可以直接修改默认文件，或指定其他 YAML 路径。
@@ -188,18 +188,18 @@ Linux / macOS 可在当前终端设置：
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-export MLEVOLVE_CODE_API_KEY="..."
-export MLEVOLVE_FEEDBACK_API_KEY="..."
-export MLEVOLVE_EMBEDDING_API_KEY="..."
+export ALGOEVOLVE_CODE_API_KEY="..."
+export ALGOEVOLVE_FEEDBACK_API_KEY="..."
+export ALGOEVOLVE_EMBEDDING_API_KEY="..."
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "..."
-$env:MLEVOLVE_CODE_API_KEY = "..."
-$env:MLEVOLVE_FEEDBACK_API_KEY = "..."
-$env:MLEVOLVE_EMBEDDING_API_KEY = "..."
+$env:ALGOEVOLVE_CODE_API_KEY = "..."
+$env:ALGOEVOLVE_FEEDBACK_API_KEY = "..."
+$env:ALGOEVOLVE_EMBEDDING_API_KEY = "..."
 ```
 
 ## 一键启动
@@ -257,8 +257,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1
 cd core/AutoRealize
 python -m uvicorn autorealize.service_api:app --host 127.0.0.1 --port 18101
 
-# MLEvolve
-cd core/MLEvolve-Alter
+# AlgoEvolve
+cd core/AlgoEvolve
 python -m uvicorn service_api:app --host 127.0.0.1 --port 18103
 
 # AutoReport
@@ -304,11 +304,11 @@ AutoML 配置中的“缺少依赖时安装到任务隔离目录并重跑当前�
 
 ## 每任务资源限制
 
-- **CPU**：限制整个 MLEvolve 任务进程树共享的逻辑核心，不是每个并行节点各获得一份核心。
+- **CPU**：限制整个 AlgoEvolve 任务进程树共享的逻辑核心，不是每个并行节点各获得一份核心。
 - **内存**：限制任务主进程及全部子进程共享的总预算；`0` 表示不限制。
 - **加速卡**：控制任务可见的 CUDA、ROCm、XPU、Ascend 或其他设备；可见性隔离不等于设备独占或显存配额。
 
-Windows 使用 CPU affinity 和 Job Object；Linux 优先使用 CPU affinity 与 cgroup v2；macOS 使用线程预算和进程资源限制。实际限制后端、设备、峰值与诊断写入 MLEvolve 的 `resource_usage.json`。
+Windows 使用 CPU affinity 和 Job Object；Linux 优先使用 CPU affinity 与 cgroup v2；macOS 使用线程预算和进程资源限制。实际限制后端、设备、峰值与诊断写入 AlgoEvolve 的 `resource_usage.json`。
 
 ## 测试
 
@@ -318,7 +318,7 @@ python -m pip install -r requirements-dev.txt
 
 python -m pytest frontend/backend/tests -q
 python -m pytest core/AutoRealize/tests -q
-python -m pytest core/MLEvolve-Alter/tests -q
+python -m pytest core/AlgoEvolve/tests -q
 python -m pytest core/AutoReport/tests -q
 ```
 

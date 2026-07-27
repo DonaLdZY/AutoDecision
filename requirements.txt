@@ -2,5 +2,5 @@
 # Recommended interpreter for the complete AutoML stack: Python 3.11 or 3.12.
 -r frontend/backend/requirements.txt
 -r core/AutoRealize/requirements.txt
--r core/MLEvolve-Alter/requirements.txt
+-r core/AlgoEvolve/requirements.txt
 -r core/AutoReport/requirements.txt

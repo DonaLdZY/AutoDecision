@@ -7,7 +7,7 @@ PID_FILE="$ROOT_DIR/.dev-state/pids.sh"
 health_url() {
   case "$1" in
     autorealize-api) echo "http://127.0.0.1:18101/health" ;;
-    mlevolve-api) echo "http://127.0.0.1:18103/health" ;;
+    algoevolve-api) echo "http://127.0.0.1:18103/health" ;;
     autoreport-api) echo "http://127.0.0.1:18104/health" ;;
     gateway-api) echo "http://127.0.0.1:18080/api/health" ;;
     frontend-ui) echo "http://127.0.0.1:5173" ;;

@@ -57,7 +57,7 @@ PID_FILE="$STATE_DIR/pids.sh"
 TEMP_PROCESS_FILE="$STATE_DIR/.processes.tmp"
 
 AUTOREALIZE_DIR="$ROOT_DIR/core/AutoRealize"
-MLEVOLVE_DIR="$ROOT_DIR/core/MLEvolve-Alter"
+ALGOEVOLVE_DIR="$ROOT_DIR/core/AlgoEvolve"
 AUTOREPORT_DIR="$ROOT_DIR/core/AutoReport"
 GATEWAY_DIR="$ROOT_DIR/frontend/backend"
 UI_DIR="$ROOT_DIR/frontend/ui"
@@ -360,8 +360,8 @@ echo "Using Node:   $(command -v node) ($(node --version))"
 start_service "autorealize-api" "$AUTOREALIZE_DIR" 18101 "$PYTHON_BIN" -m uvicorn autorealize.service_api:app --host 127.0.0.1 --port 18101
 wait_http_ready "autorealize-api" "AutoRealize API" "http://127.0.0.1:18101/health" "$(last_started_pid)"
 
-start_service "mlevolve-api" "$MLEVOLVE_DIR" 18103 "$PYTHON_BIN" -m uvicorn service_api:app --host 127.0.0.1 --port 18103
-wait_http_ready "mlevolve-api" "MLEvolve API" "http://127.0.0.1:18103/health" "$(last_started_pid)"
+start_service "algoevolve-api" "$ALGOEVOLVE_DIR" 18103 "$PYTHON_BIN" -m uvicorn service_api:app --host 127.0.0.1 --port 18103
+wait_http_ready "algoevolve-api" "AlgoEvolve API" "http://127.0.0.1:18103/health" "$(last_started_pid)"
 
 start_service "autoreport-api" "$AUTOREPORT_DIR" 18104 "$PYTHON_BIN" -m uvicorn service_api:app --host 127.0.0.1 --port 18104
 wait_http_ready "autoreport-api" "AutoReport API" "http://127.0.0.1:18104/health" "$(last_started_pid)"
@@ -388,7 +388,7 @@ STARTUP_COMPLETE=1
 echo
 echo "All services are healthy:"
 echo "1) AutoRealize API: http://127.0.0.1:18101/health"
-echo "2) MLEvolve API:    http://127.0.0.1:18103/health"
+echo "2) AlgoEvolve API:  http://127.0.0.1:18103/health"
 echo "3) AutoReport API:  http://127.0.0.1:18104/health"
 echo "4) Gateway API:     http://127.0.0.1:18080/api/health"
 echo "5) Frontend UI:     http://127.0.0.1:5173"

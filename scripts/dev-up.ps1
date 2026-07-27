@@ -12,7 +12,7 @@ $logDir = Join-Path $stateDir "logs"
 $pidFile = Join-Path $stateDir "pids.json"
 
 $autoRealizeDir = Join-Path $root "core\AutoRealize"
-$mlevolveDir = Join-Path $root "core\MLEvolve-Alter"
+$algoEvolveDir = Join-Path $root "core\AlgoEvolve"
 $autoReportDir = Join-Path $root "core\AutoReport"
 $gatewayDir = Join-Path $root "frontend\backend"
 $uiDir = Join-Path $root "frontend\ui"
@@ -177,7 +177,7 @@ try {
   Write-Host "Using npm:    $npmExe"
 
   $jobs += Start-HiddenProc -Name "autorealize-api" -WorkDir $autoRealizeDir -Port 18101 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "autorealize.service_api:app", "--host", "127.0.0.1", "--port", "18101")
-  $jobs += Start-HiddenProc -Name "mlevolve-api" -WorkDir $mlevolveDir -Port 18103 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18103")
+  $jobs += Start-HiddenProc -Name "algoevolve-api" -WorkDir $algoEvolveDir -Port 18103 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18103")
   $jobs += Start-HiddenProc -Name "autoreport-api" -WorkDir $autoReportDir -Port 18104 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "service_api:app", "--host", "127.0.0.1", "--port", "18104")
   $jobs += Start-HiddenProc -Name "gateway-api" -WorkDir $gatewayDir -Port 18080 -FilePath $pythonExe -ArgumentList @("-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "18080")
   $jobs += Start-HiddenProc -Name "frontend-ui" -WorkDir $uiDir -Port 5173 -FilePath $npmExe -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1", "--port", "5173")
@@ -191,7 +191,7 @@ try {
   $payload | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $pidFile
 
   Wait-HttpReady -Name "AutoRealize API" -Url "http://127.0.0.1:18101/health" -TimeoutSec 30
-  Wait-HttpReady -Name "MLEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
+  Wait-HttpReady -Name "AlgoEvolve API" -Url "http://127.0.0.1:18103/health" -TimeoutSec 30
   Wait-HttpReady -Name "AutoReport API" -Url "http://127.0.0.1:18104/health" -TimeoutSec 30
   Wait-HttpReady -Name "Gateway API" -Url "http://127.0.0.1:18080/api/health" -TimeoutSec 30
   Wait-HttpReady -Name "Frontend UI" -Url "http://127.0.0.1:5173" -TimeoutSec 45
@@ -209,7 +209,7 @@ try {
 Write-Host ""
 Write-Host "All services started in background:"
 Write-Host "1) AutoRealize API: http://127.0.0.1:18101/health"
-Write-Host "2) MLEvolve API:    http://127.0.0.1:18103/health"
+Write-Host "2) AlgoEvolve API:  http://127.0.0.1:18103/health"
 Write-Host "3) AutoReport API:  http://127.0.0.1:18104/health"
 Write-Host "4) Gateway API:     http://127.0.0.1:18080/api/health"
 Write-Host "5) Frontend UI:     http://127.0.0.1:5173"

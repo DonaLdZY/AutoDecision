@@ -14,11 +14,11 @@ def _task(run_dir: Path, wrapper_name: str) -> SimpleNamespace:
         output_root=str(run_dir.parent),
         auto_ml_log_dir=str(run_dir / "automl" / "logs" / wrapper_name),
         auto_ml_workspace_dir=str(run_dir / "automl" / "workspaces" / wrapper_name),
-        config=SimpleNamespace(auto_ml=SimpleNamespace(engine="mlevolve")),
+        config=SimpleNamespace(auto_ml=SimpleNamespace(engine="algoevolve")),
     )
 
 
-def test_snapshot_prefers_mlevolve_artifacts_over_service_wrapper(tmp_path: Path) -> None:
+def test_snapshot_prefers_algoevolve_artifacts_over_service_wrapper(tmp_path: Path) -> None:
     run_dir = tmp_path / "ps001"
     logs = run_dir / "automl" / "logs"
     workspaces = run_dir / "automl" / "workspaces"

@@ -20,12 +20,12 @@ const memoryMaximum = computed(() => Math.max(0, inventory.value?.memory.total_g
 const memoryLimitHint = computed(() => {
   const enforcement = inventory.value?.memory.enforcement
   if (enforcement?.hard_limit_supported) {
-    return '系统会限制整个任务进程组的总内存；超额申请在对应节点内失败，MLEvolve 主任务继续搜索。'
+    return '系统会限制整个任务进程组的总内存；超额申请在对应节点内失败，AlgoEvolve 主任务继续搜索。'
   }
   if (enforcement?.backend === 'posix_rlimit_as_plus_child_guard') {
-    return '当前系统使用每进程地址空间上限和进程树监控；超限执行子进程会失败或被停止，MLEvolve 主任务继续搜索。'
+    return '当前系统使用每进程地址空间上限和进程树监控；超限执行子进程会失败或被停止，AlgoEvolve 主任务继续搜索。'
   }
-  return '当前平台使用子进程保护模式；超限时仅停止占用过大的执行子进程，MLEvolve 主任务继续搜索。'
+  return '当前平台使用子进程保护模式；超限时仅停止占用过大的执行子进程，AlgoEvolve 主任务继续搜索。'
 })
 const cpuLimitHint = computed(() => {
   const enforcement = inventory.value?.cpu.enforcement

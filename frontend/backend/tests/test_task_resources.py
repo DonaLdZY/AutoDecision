@@ -27,7 +27,7 @@ def test_task_resource_defaults_and_global_resource_removal() -> None:
     assert "resource" not in settings.model_dump()
 
 
-def test_mlevolve_command_and_yaml_use_task_resources(tmp_path: Path, monkeypatch) -> None:
+def test_algoevolve_command_and_yaml_use_task_resources(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app, "STATE_DIR", tmp_path)
     config = app.TaskConfigPayload(
         task_name="resource-task",
@@ -43,16 +43,16 @@ def test_mlevolve_command_and_yaml_use_task_resources(tmp_path: Path, monkeypatc
         python={"executable": "python"},
         llm={},
         coreServices={},
-        mlevolve={},
+        algoevolve={},
     )
-    command = app._build_mlevolve_command(
+    command = app._build_algoevolve_command(
         task,
         settings,
         autorealize_dir=tmp_path / "autorealize",
         automl_logs_root=tmp_path / "logs",
         automl_workspaces_root=tmp_path / "workspace",
     )
-    path = app._write_mlevolve_config(task.id, command)
+    path = app._write_algoevolve_config(task.id, command)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert "cpu_number=6" in command
@@ -121,17 +121,17 @@ def test_automl_effect_and_time_controls_compile_to_task_yaml(
             },
         },
         coreServices={},
-        mlevolve={},
+        algoevolve={},
     )
 
-    command = app._build_mlevolve_command(
+    command = app._build_algoevolve_command(
         task,
         settings,
         autorealize_dir=tmp_path / "autorealize",
         automl_logs_root=tmp_path / "logs",
         automl_workspaces_root=tmp_path / "workspace",
     )
-    path = app._write_mlevolve_config(task.id, command)
+    path = app._write_algoevolve_config(task.id, command)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert raw["agent"]["steps"] == 77
@@ -208,7 +208,7 @@ def test_generated_global_settings_no_longer_contains_resource_block(tmp_path: P
     assert "resource" not in raw
 
 
-def test_resource_inventory_is_proxied_from_mlevolve(monkeypatch) -> None:
+def test_resource_inventory_is_proxied_from_algoevolve(monkeypatch) -> None:
     captured: dict[str, object] = {}
     expected = {
         "cpu": {"logical_count": 8, "physical_count": 4, "available_ids": list(range(8))},
@@ -229,7 +229,7 @@ def test_resource_inventory_is_proxied_from_mlevolve(monkeypatch) -> None:
             python={"executable": r"C:\envs\task\python.exe"},
             llm={},
             coreServices={},
-            mlevolve={},
+            algoevolve={},
         ),
     )
 

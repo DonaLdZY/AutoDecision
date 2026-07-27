@@ -29,7 +29,7 @@ describe('task configuration defaults', () => {
     expect('no_llm_cache' in config).toBe(false)
   })
 
-  it('uses the current MLEvolve search and Stepwise controls', () => {
+  it('uses the current AlgoEvolve search and Stepwise controls', () => {
     const config = defaultAutoML()
 
     expect(config.search_root_new_draft_probability).toBe(0.25)

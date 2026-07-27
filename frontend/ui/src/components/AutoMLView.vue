@@ -3,7 +3,7 @@ import { computed, shallowRef, watch } from 'vue'
 import type { MctsNode, SnapshotPayload } from '../types'
 import { isPendingNode, nodeReviewState } from '../utils/nodeReviewState'
 import DependencyInstallPanel from './DependencyInstallPanel.vue'
-import MLEvolveSummary from './MLEvolveSummary.vue'
+import AlgoEvolveSummary from './AlgoEvolveSummary.vue'
 
 const props = defineProps<{
   snapshot?: SnapshotPayload
@@ -18,7 +18,8 @@ const nodeH = 72
 const xGap = 56
 const yGap = 40
 
-const engine = computed(() => String(props.snapshot?.auto_ml?.engine ?? 'mlevolve'))
+const engine = computed(() => String(props.snapshot?.auto_ml?.engine ?? 'algoevolve'))
+const isAlgoEvolve = computed(() => ['algoevolve', 'mlevolve'].includes(engine.value))
 const nodes = computed(() => props.snapshot?.auto_ml?.nodes ?? [])
 const pendingNodes = computed(() => props.snapshot?.auto_ml?.pending_nodes ?? [])
 const visiblePendingNodes = computed(() => {
@@ -225,7 +226,7 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
 <template>
   <section class="page">
     <div class="left">
-      <h4>{{ engine === 'mlevolve' ? 'MLEvolve 搜索图' : 'MCTS 搜索树' }}</h4>
+      <h4>{{ isAlgoEvolve ? 'AlgoEvolve 搜索图' : 'MCTS 搜索树' }}</h4>
       <div class="legend">
         <span class="dot ok"></span><span>Reviewer 通过</span>
         <span class="dot buggy"></span><span>Reviewer 判定有 bug</span>
@@ -316,7 +317,7 @@ function formatDecisionSignals(signals: Record<string, unknown> | null | undefin
     :detail-text="snapshot?.auto_ml?.dependency_installations"
   />
 
-  <MLEvolveSummary :snapshot="snapshot" />
+  <AlgoEvolveSummary :snapshot="snapshot" />
 </template>
 
 <style scoped>

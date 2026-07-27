@@ -52,7 +52,7 @@ function commit() {
 
 <template>
   <div class="stage-settings">
-    <nav class="settings-nav" aria-label="MLEvolve 配置分类">
+    <nav class="settings-nav" aria-label="AlgoEvolve 配置分类">
       <button
         v-for="section in sections"
         :key="section.key"
@@ -419,7 +419,7 @@ function commit() {
           </label>
           <label class="toggle-row">
             <input v-model="model.copy_data" type="checkbox" :disabled="props.disabled" @change="commit" />
-            复制输入数据到 MLEvolve 工作区
+            复制输入数据到 AlgoEvolve 工作区
           </label>
         </div>
         <div v-if="model.auto_install_missing_dependencies" class="settings-grid">

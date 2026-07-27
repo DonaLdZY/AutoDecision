@@ -44,7 +44,7 @@ const artifacts = computed(() => [
   {
     id: 'automl_context' as const,
     label: 'automl_context.md',
-    purpose: 'MLEvolve 直接消费的精确补充上下文',
+    purpose: 'AlgoEvolve 直接消费的精确补充上下文',
     content: String(ar.value.automl_context_text ?? ''),
   },
   {
@@ -78,7 +78,7 @@ function selectArtifact(id: ArtifactId) {
       <div>
         <p class="artifact-eyebrow">Compiled Artifacts</p>
         <h3 class="artifact-title">最终产物</h3>
-        <p class="artifact-subtitle">查看 AutoRealize 交付给用户与 MLEvolve 的实际文件，而不是内部生成事件。</p>
+        <p class="artifact-subtitle">查看 AutoRealize 交付给用户与 AlgoEvolve 的实际文件，而不是内部生成事件。</p>
       </div>
       <div class="artifact-stats">
         <span>{{ contentStats.lines }} 行</span>

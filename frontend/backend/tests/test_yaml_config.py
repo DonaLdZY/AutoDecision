@@ -86,7 +86,7 @@ def test_autorealize_runtime_config_is_yaml_and_keeps_frontend_keys_out_of_file(
     assert raw["context"]["cross_stage_retrieval_enabled"] is False
 
 
-def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> None:
+def test_algoevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(app, "STATE_DIR", tmp_path)
     command = [
         "python",
@@ -100,9 +100,9 @@ def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> No
         "runtime.resume_budget_mode=additional",
     ]
 
-    path = app._write_mlevolve_config("task-1", command)
+    path = app._write_algoevolve_config("task-1", command)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    filtered = app._without_mlevolve_secret_args(command[2:])
+    filtered = app._without_algoevolve_secret_args(command[2:])
 
     assert raw["agent"]["code"]["api_key"] != "code-key"
     assert raw["agent"]["feedback"]["api_key"] != "fb-key"
@@ -112,7 +112,7 @@ def test_mlevolve_runtime_yaml_and_cli_exclude_keys(tmp_path, monkeypatch) -> No
     assert not any("api_key=" in item for item in filtered)
 
 
-def test_role_specific_mlevolve_keys_are_forwarded_by_environment() -> None:
+def test_role_specific_algoevolve_keys_are_forwarded_by_environment() -> None:
     settings = app.GlobalSettingsModel(
         python={"executable": "python"},
         llm={
@@ -128,12 +128,12 @@ def test_role_specific_mlevolve_keys_are_forwarded_by_environment() -> None:
             },
         },
         coreServices={},
-        mlevolve={},
+        algoevolve={},
     )
 
-    assert app._mlevolve_secret_env(settings) == {
+    assert app._algoevolve_secret_env(settings) == {
         "DEEPSEEK_API_KEY": "code-key",
-        "MLEVOLVE_CODE_API_KEY": "code-key",
-        "MLEVOLVE_FEEDBACK_API_KEY": "feedback-key",
-        "MLEVOLVE_EMBEDDING_API_KEY": "embedding-key",
+        "ALGOEVOLVE_CODE_API_KEY": "code-key",
+        "ALGOEVOLVE_FEEDBACK_API_KEY": "feedback-key",
+        "ALGOEVOLVE_EMBEDDING_API_KEY": "embedding-key",
     }

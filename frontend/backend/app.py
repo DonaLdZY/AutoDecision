@@ -26,14 +26,14 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = APP_ROOT / "core"
 AUTOREALIZE_DIR = CORE_DIR / "AutoRealize"
-MLEVOLVE_DIR = CORE_DIR / "MLEvolve-Alter"
+ALGOEVOLVE_DIR = CORE_DIR / "AlgoEvolve"
 AUTOREPORT_DIR = CORE_DIR / "AutoReport"
 PROJECT_RUNS_DIR = APP_ROOT / "runs"
 DEFAULT_RUNS_DIR = PROJECT_RUNS_DIR
@@ -63,7 +63,7 @@ DEFAULT_ALLOWED_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
 )
-MLEVOLVE_SECRET_CONFIG_KEYS = {
+ALGOEVOLVE_SECRET_CONFIG_KEYS = {
     "agent.code.api_key",
     "agent.feedback.api_key",
     "agent.memory_embedding_api_key",
@@ -117,7 +117,7 @@ def safe_read_yaml(path: Path, default: Any) -> Any:
         return default
 
 
-def read_mlevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
+def read_algoevolve_pending_nodes(log_dir: Path) -> list[dict[str, Any]]:
     payload = safe_read_json(log_dir / "pending_nodes.json", {})
     if not isinstance(payload, dict):
         return []
@@ -227,7 +227,7 @@ def _allowed_origins_from_env() -> list[str]:
 def normalize_automl_config_payload(config: Any) -> Any:
     """Migrate task-level settings that must stay consistent across stages."""
     try:
-        config.auto_ml.engine = "mlevolve"
+        config.auto_ml.engine = "algoevolve"
         config.auto_ml.enabled = True
         language = str(getattr(config, "output_language", "zh") or "zh").strip().lower()
         config.output_language = "en" if language.startswith("en") else "zh"
@@ -274,7 +274,7 @@ class AutoRealizeConfigPayload(BaseModel):
 
 
 class AutoMLConfigPayload(BaseModel):
-    engine: str = "mlevolve"
+    engine: str = "algoevolve"
     enabled: bool = True
     goal: str = ""
     eval: str = ""
@@ -443,7 +443,10 @@ class GlobalSettingsModel(BaseModel):
     python: dict[str, Any] = Field(default_factory=dict)
     llm: dict[str, Any] = Field(default_factory=dict)
     coreServices: dict[str, Any] = Field(default_factory=dict)
-    mlevolve: dict[str, Any] = Field(default_factory=dict)
+    algoevolve: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("algoevolve", "mlevolve"),
+    )
 
 
 class PickDirectoryRequest(BaseModel):
@@ -517,7 +520,7 @@ class TaskStore:
                         task.phase = "automl_reconnecting"
                         task.last_error = (
                             "Gateway restarted while AutoML was running; "
-                            "reconnecting to the existing MLEvolve job."
+                            "reconnecting to the existing AlgoEvolve job."
                         )
                         task.updated_at = now_ts()
                         changed = True
@@ -709,7 +712,7 @@ class TaskStore:
             return self._handles.get(task_id)
 
     def recoverable_remote_tasks(self) -> list[TaskModel]:
-        """Return persisted AutoML jobs that may still be alive in MLEvolve."""
+        """Return persisted AutoML jobs that may still be alive in AlgoEvolve."""
         with self._lock:
             candidates: list[TaskModel] = []
             for task in self._tasks.values():
@@ -838,11 +841,11 @@ def _default_global_settings() -> dict[str, Any]:
         },
         "coreServices": {
             "autoRealizeBaseUrl": "http://127.0.0.1:18101",
-            "mlevolveBaseUrl": "http://127.0.0.1:18103",
+            "algoEvolveBaseUrl": "http://127.0.0.1:18103",
             "autoReportBaseUrl": "http://127.0.0.1:18104",
             "requestTimeoutSecs": 10,
         },
-        "mlevolve": {
+        "algoevolve": {
             "torchHubDir": "",
             "pretrainModelDir": "",
             "embeddingBaseUrl": "",
@@ -880,13 +883,17 @@ def ensure_global_settings() -> dict[str, Any]:
     core_current = current.get("coreServices", {})
     merged["coreServices"] = {**core_defaults, **core_current}
     merged["coreServices"].pop("autoMlBaseUrl", None)
-    merged["coreServices"]["mlevolveBaseUrl"] = str(
-        merged["coreServices"].get("mlevolveBaseUrl") or "http://127.0.0.1:18103"
+    legacy_algoevolve_url = core_current.get("mlevolveBaseUrl")
+    merged["coreServices"]["algoEvolveBaseUrl"] = str(
+        merged["coreServices"].get("algoEvolveBaseUrl")
+        or legacy_algoevolve_url
+        or "http://127.0.0.1:18103"
     )
-    mlevolve_defaults = defaults.get("mlevolve", {})
-    mlevolve_current = current.get("mlevolve", {})
-    merged["mlevolve"] = {**mlevolve_defaults, **mlevolve_current}
-    model_library, role_models = _normalize_model_library(llm_defaults, llm_current, merged["mlevolve"])
+    merged["coreServices"].pop("mlevolveBaseUrl", None)
+    algoevolve_defaults = defaults.get("algoevolve", {})
+    algoevolve_current = current.get("algoevolve") or current.get("mlevolve") or {}
+    merged["algoevolve"] = {**algoevolve_defaults, **algoevolve_current}
+    model_library, role_models = _normalize_model_library(llm_defaults, llm_current, merged["algoevolve"])
     llm_base = {**llm_defaults, **llm_current}
     llm_base["modelLibrary"] = model_library
     llm_base["roleModels"] = role_models
@@ -906,9 +913,9 @@ def ensure_global_settings() -> dict[str, Any]:
     }
     merged["llm"] = llm_base
     if embedding_model:
-        merged["mlevolve"]["embeddingModel"] = str(embedding_model.get("model") or merged["mlevolve"].get("embeddingModel") or "")
-        merged["mlevolve"]["embeddingBaseUrl"] = str(embedding_model.get("baseUrl") or merged["mlevolve"].get("embeddingBaseUrl") or "")
-        merged["mlevolve"]["embeddingApiKey"] = str(embedding_model.get("apiKey") or merged["mlevolve"].get("embeddingApiKey") or "")
+        merged["algoevolve"]["embeddingModel"] = str(embedding_model.get("model") or merged["algoevolve"].get("embeddingModel") or "")
+        merged["algoevolve"]["embeddingBaseUrl"] = str(embedding_model.get("baseUrl") or merged["algoevolve"].get("embeddingBaseUrl") or "")
+        merged["algoevolve"]["embeddingApiKey"] = str(embedding_model.get("apiKey") or merged["algoevolve"].get("embeddingApiKey") or "")
     write_yaml(GLOBAL_SETTINGS_FILE, merged, sensitive=True)
     if migrated_legacy:
         try:
@@ -935,10 +942,10 @@ def _redact_global_settings_for_client(settings: dict[str, Any]) -> dict[str, An
             key = str(model.get("apiKey") or "")
             model["apiKeyConfigured"] = bool(key)
             model["apiKey"] = ""
-    mlevolve = redacted.get("mlevolve") if isinstance(redacted.get("mlevolve"), dict) else {}
-    embedding_key = str(mlevolve.get("embeddingApiKey") or "")
-    mlevolve["embeddingApiKeyConfigured"] = bool(embedding_key)
-    mlevolve["embeddingApiKey"] = ""
+    algoevolve = redacted.get("algoevolve") if isinstance(redacted.get("algoevolve"), dict) else {}
+    embedding_key = str(algoevolve.get("embeddingApiKey") or "")
+    algoevolve["embeddingApiKeyConfigured"] = bool(embedding_key)
+    algoevolve["embeddingApiKey"] = ""
     return redacted
 
 
@@ -1034,7 +1041,7 @@ def _legacy_model_to_library_item(
     }
 
 
-def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str, Any], mlevolve_merged: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str, Any], algoevolve_merged: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
     raw_library: list[Any] = []
     current_library_explicit = isinstance(llm_current.get("modelLibrary"), list)
     current_library = llm_current.get("modelLibrary") if current_library_explicit else []
@@ -1095,9 +1102,9 @@ def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str
                 )
 
     embedding_defaults = {
-        "model": str(mlevolve_merged.get("embeddingModel") or ""),
-        "baseUrl": str(mlevolve_merged.get("embeddingBaseUrl") or ""),
-        "apiKey": str(mlevolve_merged.get("embeddingApiKey") or ""),
+        "model": str(algoevolve_merged.get("embeddingModel") or ""),
+        "baseUrl": str(algoevolve_merged.get("embeddingBaseUrl") or ""),
+        "apiKey": str(algoevolve_merged.get("embeddingApiKey") or ""),
     }
     if (not current_library_explicit and "default-embedding" not in by_id) or (
         not current_library_explicit
@@ -1216,12 +1223,12 @@ def _preserve_sensitive_settings(merged: dict[str, Any], existing: dict[str, Any
         if old_key and not new_key:
             merged.setdefault("llm", {}).setdefault(model_key, {})["apiKey"] = old_key
 
-    existing_mlevolve = existing.get("mlevolve") if isinstance(existing.get("mlevolve"), dict) else {}
-    incoming_mlevolve = incoming.get("mlevolve") if isinstance(incoming.get("mlevolve"), dict) else {}
-    old_embedding_key = _non_empty_text(existing_mlevolve.get("embeddingApiKey"))
-    new_embedding_key = _non_empty_text(incoming_mlevolve.get("embeddingApiKey"))
+    existing_algoevolve = existing.get("algoevolve") if isinstance(existing.get("algoevolve"), dict) else {}
+    incoming_algoevolve = incoming.get("algoevolve") if isinstance(incoming.get("algoevolve"), dict) else {}
+    old_embedding_key = _non_empty_text(existing_algoevolve.get("embeddingApiKey"))
+    new_embedding_key = _non_empty_text(incoming_algoevolve.get("embeddingApiKey"))
     if old_embedding_key and not new_embedding_key:
-        merged.setdefault("mlevolve", {})["embeddingApiKey"] = old_embedding_key
+        merged.setdefault("algoevolve", {})["embeddingApiKey"] = old_embedding_key
 
 
 def get_global_settings() -> GlobalSettingsModel:
@@ -1353,7 +1360,7 @@ def _direct_mode_enabled(task: TaskModel) -> bool:
 def _sample_submission_required(autorealize_dir: Path, configured: bool) -> bool:
     if not configured:
         return False
-    context_required = _mlevolve_generate_submission_required(autorealize_dir, configured)
+    context_required = _algoevolve_generate_submission_required(autorealize_dir, configured)
     if context_required is False:
         return False
     report = safe_read_json(autorealize_dir / "realize_report" / "submission_report.json", {})
@@ -2184,10 +2191,10 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
 
 
 def _automl_engine(task: TaskModel) -> str:
-    return "mlevolve"
+    return "algoevolve"
 
 
-def _mlevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
+def _algoevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
     """Honor AutoRealize's output protocol while preserving manual disable."""
     if not configured:
         return False
@@ -2214,7 +2221,7 @@ def _mlevolve_generate_submission_required(autorealize_dir: Path, configured: bo
     return True
 
 
-def _build_mlevolve_command(
+def _build_algoevolve_command(
     task: TaskModel,
     gs: GlobalSettingsModel,
     autorealize_dir: Path,
@@ -2225,7 +2232,7 @@ def _build_mlevolve_command(
 ) -> list[str]:
     am = task.config.auto_ml
     llm = gs.llm
-    global_mlevolve = gs.mlevolve or {}
+    global_algoevolve = gs.algoevolve or {}
     code_model = _selected_model(llm, "autoMlCode")
     feedback_model = _selected_model(llm, "autoMlFeedback", fallback_role="autoMlCode")
     embedding_model = _selected_model(llm, "embedding")
@@ -2243,7 +2250,7 @@ def _build_mlevolve_command(
         v = default if value is None else str(value)
         return json.dumps(v, ensure_ascii=False)
 
-    generate_submission = _mlevolve_generate_submission_required(autorealize_dir, bool(am.generate_submission))
+    generate_submission = _algoevolve_generate_submission_required(autorealize_dir, bool(am.generate_submission))
     dependency_root = (dependency_log_root or automl_logs_root.parent).resolve()
 
     cmd = [
@@ -2265,8 +2272,8 @@ def _build_mlevolve_command(
         f"resources.accelerator_mode={_as_cli_str(task.config.resources.accelerator_mode, 'all')}",
         f"resources.accelerator_device_ids={json.dumps(task.config.resources.accelerator_device_ids, ensure_ascii=False)}",
         f"resources.monitor_interval_seconds={float(task.config.resources.monitor_interval_seconds)}",
-        f"torch_hub_dir={_as_cli_str(global_mlevolve.get('torchHubDir', getattr(am, 'torch_hub_dir', '')))}",
-        f"pretrain_model_dir={_as_cli_str(global_mlevolve.get('pretrainModelDir', getattr(am, 'pretrain_model_dir', '')))}",
+        f"torch_hub_dir={_as_cli_str(global_algoevolve.get('torchHubDir', getattr(am, 'torch_hub_dir', '')))}",
+        f"pretrain_model_dir={_as_cli_str(global_algoevolve.get('pretrainModelDir', getattr(am, 'pretrain_model_dir', '')))}",
         "use_grading_server=false",
         f"exec.timeout={am.exec_timeout_secs}",
         "exec.agent_file_name=runfile.py",
@@ -2312,8 +2319,8 @@ def _build_mlevolve_command(
         f"agent.use_global_memory={'true' if am.use_global_memory else 'false'}",
         f"agent.memory_similarity_threshold={am.memory_similarity_threshold}",
         f"agent.memory_embedding_backend={_as_cli_str(am.memory_embedding_backend, 'openai')}",
-        f"agent.memory_embedding_base_url={_as_cli_str(_model_cli_value(embedding_model, 'baseUrl', global_mlevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', ''))))}",
-        f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_mlevolve.get('embeddingModel', '')))}",
+        f"agent.memory_embedding_base_url={_as_cli_str(_model_cli_value(embedding_model, 'baseUrl', global_algoevolve.get('embeddingBaseUrl', getattr(am, 'memory_embedding_base_url', ''))))}",
+        f"agent.memory_embedding_model={_as_cli_str(_model_cli_value(embedding_model, 'model', global_algoevolve.get('embeddingModel', '')))}",
         f"agent.memory_embedding_device={_as_cli_str(am.memory_embedding_device, 'cuda')}",
         f"agent.memory_embedding_model_path={_as_cli_str(am.memory_embedding_model_path, 'BAAI/bge-base-en-v1.5')}",
         f"agent.use_optimization_experience_library={'true' if am.use_optimization_experience_library else 'false'}",
@@ -2382,9 +2389,9 @@ def _build_mlevolve_command(
     return cmd
 
 
-def _write_mlevolve_config(task_id: str, command: list[str]) -> Path:
+def _write_algoevolve_config(task_id: str, command: list[str]) -> Path:
     """Compile frontend-selected dotted overrides into one task-level YAML."""
-    template_path = MLEVOLVE_DIR / "config" / "config.yaml"
+    template_path = ALGOEVOLVE_DIR / "config" / "config.yaml"
     try:
         cfg = yaml.safe_load(template_path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
@@ -2397,7 +2404,7 @@ def _write_mlevolve_config(task_id: str, command: list[str]) -> Path:
         dotted_key = dotted_key.strip()
         if not dotted_key:
             continue
-        if dotted_key in MLEVOLVE_SECRET_CONFIG_KEYS:
+        if dotted_key in ALGOEVOLVE_SECRET_CONFIG_KEYS:
             continue
         try:
             value = yaml.safe_load(raw_value)
@@ -2418,29 +2425,29 @@ def _write_mlevolve_config(task_id: str, command: list[str]) -> Path:
     agent_cfg.setdefault("feedback", {})["api_key"] = ""
     agent_cfg["memory_embedding_api_key"] = ""
 
-    out = STATE_DIR / f"{task_id}.mlevolve.config.yaml"
+    out = STATE_DIR / f"{task_id}.algoevolve.config.yaml"
     write_private_text(out, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
     return out
 
 
-def _without_mlevolve_secret_args(args: list[str]) -> list[str]:
+def _without_algoevolve_secret_args(args: list[str]) -> list[str]:
     return [
         item
         for item in args
-        if not any(item.startswith(f"{key}=") for key in MLEVOLVE_SECRET_CONFIG_KEYS)
+        if not any(item.startswith(f"{key}=") for key in ALGOEVOLVE_SECRET_CONFIG_KEYS)
     ]
 
 
-def _mlevolve_secret_env(gs: GlobalSettingsModel) -> dict[str, str]:
+def _algoevolve_secret_env(gs: GlobalSettingsModel) -> dict[str, str]:
     code_model = _selected_model(gs.llm, "autoMlCode")
     feedback_model = _selected_model(gs.llm, "autoMlFeedback", fallback_role="autoMlCode")
     embedding_model = _selected_model(gs.llm, "embedding")
     code_key = str(code_model.get("apiKey") or "")
     values = {
         "DEEPSEEK_API_KEY": code_key,
-        "MLEVOLVE_CODE_API_KEY": code_key,
-        "MLEVOLVE_FEEDBACK_API_KEY": str(feedback_model.get("apiKey") or ""),
-        "MLEVOLVE_EMBEDDING_API_KEY": str(embedding_model.get("apiKey") or ""),
+        "ALGOEVOLVE_CODE_API_KEY": code_key,
+        "ALGOEVOLVE_FEEDBACK_API_KEY": str(feedback_model.get("apiKey") or ""),
+        "ALGOEVOLVE_EMBEDDING_API_KEY": str(embedding_model.get("apiKey") or ""),
     }
     return {key: value for key, value in values.items() if value}
 
@@ -2583,10 +2590,14 @@ def _wait_for_service_ready(
 def _service_base_urls(gs: GlobalSettingsModel) -> tuple[str, str, str, int]:
     core = gs.coreServices or {}
     ar_base = str(core.get("autoRealizeBaseUrl") or "http://127.0.0.1:18101").strip().rstrip("/")
-    mlevolve_base = str(core.get("mlevolveBaseUrl") or "http://127.0.0.1:18103").strip().rstrip("/")
+    algoevolve_base = str(
+        core.get("algoEvolveBaseUrl")
+        or core.get("mlevolveBaseUrl")
+        or "http://127.0.0.1:18103"
+    ).strip().rstrip("/")
     report_base = str(core.get("autoReportBaseUrl") or "http://127.0.0.1:18104").strip().rstrip("/")
     timeout_secs = int(core.get("requestTimeoutSecs") or 10)
-    return ar_base, mlevolve_base, report_base, timeout_secs
+    return ar_base, algoevolve_base, report_base, timeout_secs
 
 
 class _ServicePollCancelled(RuntimeError):
@@ -2705,6 +2716,7 @@ def _is_automl_budget_exhausted_status(status: dict[str, Any]) -> bool:
     return (
         "search budget was exhausted" in text
         or "Search budget is exhausted" in text
+        or "AlgoEvolve search budget exhausted" in text
         or "MLEvolve search budget exhausted" in text
         or "Time limit reached (configured=" in text
     )
@@ -2966,7 +2978,7 @@ def _start_task_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        ar_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        ar_base, algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
         input_root, output_root = _validate_start(task)
         run_started_at = now_ts()
         layout = _task_layout(task, output_root)
@@ -3037,7 +3049,7 @@ def _start_task_thread(task_id: str) -> None:
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
             env=env,
-            mlevolve_service_base=mlevolve_base,
+            algoevolve_service_base=algoevolve_base,
             req_timeout=req_timeout,
         )
         if not ok:
@@ -3081,20 +3093,20 @@ def _run_automl_stage(
     ml_log_dir: Path,
     ml_ws_dir: Path,
     env: dict[str, str],
-    mlevolve_service_base: str,
+    algoevolve_service_base: str,
     req_timeout: int,
     resume_existing: bool = False,
     append_resume_budget: bool = False,
 ) -> bool:
     engine = _automl_engine(task)
-    mlevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
-    mlevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
-    ml_cmd = _build_mlevolve_command(
+    algoevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
+    algoevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
+    ml_cmd = _build_algoevolve_command(
         task,
         gs,
         autorealize_dir=autorealize_dir,
-        automl_logs_root=mlevolve_log_dir,
-        automl_workspaces_root=mlevolve_workspace_dir,
+        automl_logs_root=algoevolve_log_dir,
+        automl_workspaces_root=algoevolve_workspace_dir,
         exp_name=exp_name,
         dependency_log_root=automl_logs_root.parent,
     )
@@ -3103,9 +3115,9 @@ def _run_automl_stage(
             "runtime.resume_budget_mode="
             + ("additional" if append_resume_budget else "total")
         )
-    mlevolve_config_path = _write_mlevolve_config(task_id, ml_cmd)
-    service_base = mlevolve_service_base
-    working_dir = str(MLEVOLVE_DIR)
+    algoevolve_config_path = _write_algoevolve_config(task_id, ml_cmd)
+    service_base = algoevolve_service_base
+    working_dir = str(ALGOEVOLVE_DIR)
     graceful_shutdown_buffer_secs = 600
 
     store.set_status(
@@ -3121,11 +3133,11 @@ def _run_automl_stage(
             "task_id": task_id,
             "python_executable": str(gs.python.get("executable", "python")),
             "working_dir": working_dir,
-            "env_overrides": _mlevolve_secret_env(gs),
-            "config_path": str(mlevolve_config_path),
-            "args": _without_mlevolve_secret_args(ml_cmd[2:]),
-            "log_dir": str(mlevolve_log_dir),
-            "workspace_dir": str(mlevolve_workspace_dir),
+            "env_overrides": _algoevolve_secret_env(gs),
+            "config_path": str(algoevolve_config_path),
+            "args": _without_algoevolve_secret_args(ml_cmd[2:]),
+            "log_dir": str(algoevolve_log_dir),
+            "workspace_dir": str(algoevolve_workspace_dir),
             "graceful_shutdown_buffer_secs": graceful_shutdown_buffer_secs,
             "resume": bool(resume_existing),
         }
@@ -3392,7 +3404,7 @@ def _monitor_recovered_automl_job(
             status="stopped",
             phase="stopped",
             auto_ml_service_job_id=None,
-            last_error=str(ml_status.get("last_error") or "MLEvolve stopped."),
+            last_error=str(ml_status.get("last_error") or "AlgoEvolve stopped."),
         )
         return
     if ml_state != "completed" or (ml_code != 0 and not budget_exhausted):
@@ -3423,7 +3435,7 @@ def _monitor_recovered_automl_job(
     )
     task = store.get(task_id)
     gs = get_global_settings()
-    _ar_base, _mlevolve_base, report_base, report_timeout = _service_base_urls(gs)
+    _ar_base, _algoevolve_base, report_base, report_timeout = _service_base_urls(gs)
     layout = _task_layout(task, resolve_output_root(task.output_root))
     ml_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
     ml_ws_dir = Path(task.auto_ml_workspace_dir).expanduser().resolve() if task.auto_ml_workspace_dir else None
@@ -3455,7 +3467,7 @@ def _monitor_recovered_automl_job(
 def _recover_persisted_automl_jobs() -> None:
     try:
         gs = get_global_settings()
-        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        _ar_base, algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     except Exception:
         return
     for task in store.recoverable_remote_tasks():
@@ -3468,8 +3480,8 @@ def _recover_persisted_automl_jobs() -> None:
             task.id,
             RuntimeHandle(
                 process=None,
-                source="mlevolve_service_recovered",
-                remote_base_url=mlevolve_base,
+                source="algoevolve_service_recovered",
+                remote_base_url=algoevolve_base,
                 remote_job_id=job_id,
                 started_at=now_ts(),
             ),
@@ -3479,11 +3491,11 @@ def _recover_persisted_automl_jobs() -> None:
             status="running",
             phase="automl_reconnecting",
             auto_ml_service_job_id=job_id,
-            last_error="Reconnecting to the existing MLEvolve job after gateway interruption.",
+            last_error="Reconnecting to the existing AlgoEvolve job after gateway interruption.",
         )
         threading.Thread(
             target=_monitor_recovered_automl_job,
-            args=(task.id, mlevolve_base, job_id, req_timeout),
+            args=(task.id, algoevolve_base, job_id, req_timeout),
             daemon=True,
         ).start()
 
@@ -3492,7 +3504,7 @@ def _rerun_autorealize_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        ar_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        ar_base, _algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
         input_root, run_dir, autorealize_dir, _automl_root, _report_dir = _validate_autorealize_rerun(task)
 
         store.set_status(
@@ -3553,7 +3565,7 @@ def _rerun_autoreport_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        _ar_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
         run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, report_dir = _validate_autoreport_rerun(task)
 
         store.set_status(
@@ -3623,11 +3635,11 @@ def _rerun_autoreport_thread(task_id: str) -> None:
 def _rerun_automl_thread(task_id: str) -> None:
     task = store.get(task_id)
     gs = get_global_settings()
-    _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     autorealize_dir, automl_logs_root, automl_workspaces_root, _old_ml_log_dir, _old_ml_ws_dir = _validate_automl_rerun(task)
     run_dir = _resolve_task_run_dir_for_rerun(task)
     try:
-        _wait_for_service_ready(mlevolve_base, "AutoML")
+        _wait_for_service_ready(algoevolve_base, "AutoML")
     except Exception as e:
         store.set_status(
             task_id,
@@ -3692,7 +3704,7 @@ def _rerun_automl_thread(task_id: str) -> None:
         ml_log_dir=ml_log_dir,
         ml_ws_dir=ml_ws_dir,
         env=env,
-        mlevolve_service_base=mlevolve_base,
+        algoevolve_service_base=algoevolve_base,
         req_timeout=req_timeout,
     )
     if not ok:
@@ -3704,7 +3716,7 @@ def _start_direct_automl_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
-        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        _ar_base, algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
         input_root, run_dir, autorealize_dir, automl_logs_root, automl_workspaces_root = _validate_direct_automl_start(task)
         use_existing_autorealize = (autorealize_dir / "description.md").is_file()
 
@@ -3775,7 +3787,7 @@ def _start_direct_automl_thread(task_id: str) -> None:
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
             env=env,
-            mlevolve_service_base=mlevolve_base,
+            algoevolve_service_base=algoevolve_base,
             req_timeout=req_timeout,
         )
         if not ok:
@@ -3802,8 +3814,8 @@ def _continue_automl_thread(task_id: str) -> None:
             ml_ws_dir,
         ) = _validate_continue_automl(task)
         gs = get_global_settings()
-        _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
-        _wait_for_service_ready(mlevolve_base, "AutoML")
+        _ar_base, algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+        _wait_for_service_ready(algoevolve_base, "AutoML")
 
         env = os.environ.copy()
         code_model = _selected_model(gs.llm, "autoMlCode")
@@ -3831,7 +3843,7 @@ def _continue_automl_thread(task_id: str) -> None:
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
             env=env,
-            mlevolve_service_base=mlevolve_base,
+            algoevolve_service_base=algoevolve_base,
             req_timeout=req_timeout,
             resume_existing=True,
             append_resume_budget=resume_from_completed,
@@ -3864,7 +3876,7 @@ def _resume_task_thread(task_id: str) -> None:
         return
 
     gs = get_global_settings()
-    ar_base, mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    ar_base, algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
 
     if not task.input_root.strip() or not task.output_root.strip():
         store.set_status(task_id, status="failed", phase="resume_failed", last_error="缺少输入或输出目录配置，无法继续")
@@ -3999,7 +4011,7 @@ def _resume_task_thread(task_id: str) -> None:
         ml_log_dir=ml_log_dir,
         ml_ws_dir=ml_ws_dir,
         env=env,
-        mlevolve_service_base=mlevolve_base,
+        algoevolve_service_base=algoevolve_base,
         req_timeout=req_timeout,
         resume_existing=can_resume_automl,
         append_resume_budget=can_resume_automl and resume_from_completed,
@@ -4218,7 +4230,7 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
 
 
 def _automl_run_identity(path: Path) -> str:
-    """Normalize service-wrapper and MLEvolve artifact directory names."""
+    """Normalize service-wrapper and AlgoEvolve artifact directory names."""
     name = path.name
     wrapper = re.match(r"^(\d{8})_(\d{6})_(.+)$", name)
     if wrapper:
@@ -4227,6 +4239,19 @@ def _automl_run_identity(path: Path) -> str:
     if engine:
         return f"{engine.group(1)}|{engine.group(2)}"
     return ""
+
+
+def _algoevolve_log_path(log_dir: Path, *, verbose: bool = False) -> Path:
+    names = (
+        ("AlgoEvolve.verbose.log", "MLEvolve.verbose.log")
+        if verbose
+        else ("AlgoEvolve.log", "MLEvolve.log")
+    )
+    for name in names:
+        candidate = log_dir / name
+        if candidate.is_file():
+            return candidate
+    return log_dir / names[0]
 
 
 def _automl_log_dir_score(path: Path) -> tuple[int, float]:
@@ -4238,7 +4263,7 @@ def _automl_log_dir_score(path: Path) -> tuple[int, float]:
         score += 700
     if (path / "run_status.json").is_file():
         score += 300
-    if (path / "MLEvolve.log").is_file():
+    if (path / "AlgoEvolve.log").is_file() or (path / "MLEvolve.log").is_file():
         score += 200
     if (path / "pending_nodes.json").is_file():
         score += 100
@@ -4303,7 +4328,7 @@ def _pick_local_automl_log_dir(task: TaskModel) -> Path | None:
             and _automl_run_identity(candidate) == preferred_identity
         )
     ]
-    # A real MLEvolve directory has at least a journal, run log, pending state,
+    # A real AlgoEvolve directory has at least a journal, run log, pending state,
     # or run status. Wrapper folders contain only service/frontend tail logs.
     meaningful = [candidate for candidate in matching if _automl_log_dir_score(candidate)[0] >= 100]
     if meaningful:
@@ -4600,7 +4625,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
             best_node_kind = "provisional"
     journal_node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
     pending_nodes = [
-        node for node in read_mlevolve_pending_nodes(log_dir)
+        node for node in read_algoevolve_pending_nodes(log_dir)
         if str(node.get("id")) not in journal_node_ids
     ]
     engine = _automl_engine(task)
@@ -4630,7 +4655,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "log_dir": str(log_dir),
         "workspace_dir": str(ws_dir) if ws_dir is not None else "",
         "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400)
-        or _parse_log_events_tail_local(log_dir / "MLEvolve.log", limit=400),
+        or _parse_log_events_tail_local(_algoevolve_log_path(log_dir), limit=400),
         "nodes": nodes,
         "pending_nodes": pending_nodes,
         "best_node_id": best_id,
@@ -4640,8 +4665,8 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "resource_usage": safe_read_json(log_dir / "resource_usage.json", {}),
         "dependency_installations": dependency_installations,
         "dependency_installation_summary": dependency_summary,
-        "ml_log": safe_read_text_tail(log_dir / "MLEvolve.log", limit=60000),
-        "verbose_log": safe_read_text_tail(log_dir / "MLEvolve.verbose.log", limit=60000),
+        "ml_log": safe_read_text_tail(_algoevolve_log_path(log_dir), limit=60000),
+        "verbose_log": safe_read_text_tail(_algoevolve_log_path(log_dir, verbose=True), limit=60000),
         "frontend_stdout": safe_read_text_tail(log_dir / "_frontend_stdout.log", limit=60000),
         "frontend_stderr": safe_read_text_tail(log_dir / "_frontend_stderr.log", limit=60000),
         "service_stdout": safe_read_text_tail(log_dir / "_service_stdout.log", limit=60000),
@@ -4710,7 +4735,7 @@ def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     if not task.run_dir:
         return {}
     gs = get_global_settings()
-    ar_base, _mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    ar_base, _algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     try:
         payload = {"run_dir": str(task.run_dir)}
         return _json_post(ar_base, "/snapshot", payload, timeout_secs=req_timeout)
@@ -4723,7 +4748,7 @@ def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
 
 def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
-    _ar_base, mlevolve_base, _report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     engine = _automl_engine(task)
     local = _build_local_automl_snapshot(task)
     if local:
@@ -4736,7 +4761,7 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "task_name": str(task.task_name or ""),
     }
     try:
-        remote = _json_post(mlevolve_base, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
+        remote = _json_post(algoevolve_base, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
         remote["snapshot_source"] = "remote"
         return remote
     except Exception:
@@ -4745,7 +4770,7 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
 
 def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
-    _ar_base, _mlevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
     report_dir = task.report_dir or (str(Path(task.run_dir).expanduser().resolve() / "report") if task.run_dir else "")
     if not report_dir:
         return {}
@@ -5334,17 +5359,17 @@ def put_settings(payload: GlobalSettingsModel) -> dict[str, str]:
 @app.get("/api/resources/inventory")
 def get_resource_inventory() -> dict[str, Any]:
     gs = get_global_settings()
-    _autorealize_base, mlevolve_base, _report_base, request_timeout = _service_base_urls(gs)
+    _autorealize_base, algoevolve_base, _report_base, request_timeout = _service_base_urls(gs)
     python_executable = str(gs.python.get("executable") or "python").strip() or "python"
     query = urllib.parse.urlencode({"python_executable": python_executable})
     try:
         return _json_get(
-            mlevolve_base,
+            algoevolve_base,
             f"/resources/inventory?{query}",
             timeout_secs=max(30, request_timeout),
         )
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"MLEvolve resource detection failed: {exc}") from exc
+        raise HTTPException(status_code=503, detail=f"AlgoEvolve resource detection failed: {exc}") from exc
 
 
 @app.get("/api/tasks")
@@ -5430,9 +5455,9 @@ def rerun_automl(payload: RerunAutoMLRequest) -> dict[str, Any]:
     task = store.get(payload.task_id)
     _validate_automl_rerun(task)
     gs = get_global_settings()
-    _ar_base, mlevolve_base, _report_base, _req_timeout = _service_base_urls(gs)
+    _ar_base, algoevolve_base, _report_base, _req_timeout = _service_base_urls(gs)
     try:
-        _wait_for_service_ready(mlevolve_base, "AutoML")
+        _wait_for_service_ready(algoevolve_base, "AutoML")
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     thread = threading.Thread(target=_rerun_automl_thread, args=(payload.task_id,), daemon=True)
@@ -5501,13 +5526,13 @@ def stop_task(payload: StopTaskRequest) -> dict[str, Any]:
     handle = store.get_handle(payload.task_id)
     if handle is None and task.auto_ml_service_job_id:
         try:
-            _ar_base, mlevolve_base, _report_base, _timeout = _service_base_urls(
+            _ar_base, algoevolve_base, _report_base, _timeout = _service_base_urls(
                 get_global_settings()
             )
             handle = RuntimeHandle(
                 process=None,
-                source="mlevolve_service_recovered_for_stop",
-                remote_base_url=mlevolve_base,
+                source="algoevolve_service_recovered_for_stop",
+                remote_base_url=algoevolve_base,
                 remote_job_id=task.auto_ml_service_job_id,
                 started_at=now_ts(),
             )

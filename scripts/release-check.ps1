@@ -25,7 +25,7 @@ try {
     python scripts/repository-audit.py
   }
 
-  $repositories = @(".", "core/AutoRealize", "core/MLEvolve-Alter", "core/AutoReport")
+  $repositories = @(".", "core/AutoRealize", "core/AlgoEvolve", "core/AutoReport")
   foreach ($repository in $repositories) {
     Invoke-Checked "Checking whitespace in $repository..." {
       git -C $repository diff --check
@@ -36,7 +36,7 @@ try {
   Write-Host "Checking required release files..."
   $required = @(
     "README.md", "docs/THIRD_PARTY_NOTICES.md", "docs/release-checklist.md",
-    "core/AutoRealize/config/config.yaml", "core/MLEvolve-Alter/config/config.yaml",
+    "core/AutoRealize/config/config.yaml", "core/AlgoEvolve/config/config.yaml",
     "core/AutoReport/config/config.yaml"
   )
   foreach ($file in $required) {
@@ -61,10 +61,10 @@ try {
       Pop-Location
     }
 
-    Push-Location core/MLEvolve-Alter
+    Push-Location core/AlgoEvolve
     try {
-      Invoke-Checked "Running MLEvolve tests..." { python -m pytest -q }
-      Invoke-Checked "Checking MLEvolve Python syntax..." {
+      Invoke-Checked "Running AlgoEvolve tests..." { python -m pytest -q }
+      Invoke-Checked "Checking AlgoEvolve Python syntax..." {
         python -m ruff check agents config engine llm utils run.py service_api.py tests --select E9,F63,F7,F82
       }
     } finally {
@@ -91,7 +91,7 @@ try {
   }
 
   if (-not (Test-Path -LiteralPath "LICENSE")) {
-    Write-Warning "BLOCKER: LICENSE is missing. Upstream MLEvolve permission must be resolved before public release."
+    Write-Warning "BLOCKER: LICENSE is missing. Upstream attribution and licensing must be resolved before public release."
   }
   Write-Host "Local checks completed. Full-history secret cleanup remains a manual release blocker."
 } finally {

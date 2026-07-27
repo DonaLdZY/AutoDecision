@@ -23,7 +23,7 @@
 }
 
 export interface AutoMLConfig {
-  engine: 'mlevolve' | string
+  engine: 'algoevolve' | 'mlevolve' | string
   enabled: boolean
   goal: string
   eval: string
@@ -190,11 +190,11 @@ export interface GlobalSettings {
   }
   coreServices: {
     autoRealizeBaseUrl: string
-    mlevolveBaseUrl: string
+    algoEvolveBaseUrl: string
     autoReportBaseUrl: string
     requestTimeoutSecs: number
   }
-  mlevolve: {
+  algoevolve: {
     torchHubDir: string
     pretrainModelDir: string
     embeddingBaseUrl: string

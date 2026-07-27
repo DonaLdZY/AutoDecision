@@ -29,7 +29,7 @@ def test_missing_global_settings_file_is_created(tmp_path: Path, monkeypatch) ->
     code_model = next(item for item in saved["llm"]["modelLibrary"] if item["id"] == "default-code")
     assert code_model["contextWindowTokens"] == 131072
     assert code_model["maxTokens"] == 32768
-    assert settings["coreServices"]["mlevolveBaseUrl"] == "http://127.0.0.1:18103"
+    assert settings["coreServices"]["algoEvolveBaseUrl"] == "http://127.0.0.1:18103"
 
 
 def test_legacy_json_is_migrated_once_with_api_key(tmp_path: Path, monkeypatch) -> None:
