@@ -1,0 +1,7 @@
+row_id,store_id,day_index,promotion,weekday
+29,A,15,0,0
+30,B,15,0,0
+31,A,16,1,1
+32,B,16,1,1
+33,A,17,0,2
+34,B,17,0,2
