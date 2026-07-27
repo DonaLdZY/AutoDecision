@@ -21,20 +21,20 @@ AutoDecision 是一套从**原始数据与自然语言需求**出发，自动完
 
 一次完整任务会产生四类可审计产物：
 
-| 产物 | 作用 |
-| --- | --- |
+| 产物              | 作用                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------- |
 | Kaggle 风格任务包 | `description.md`、数据访问协议、评估合同、输出合同和可选的 `sample_submission.csv` |
-| 搜索与执行结果 | 搜索树、节点代码、真实执行输出、统一指标、Result Review、最佳方案和 Top-K |
-| 可复用方案 | 模型、预处理器、策略或求解器 artifact，以及机器可读的 `solution_manifest.json` |
-| 交付报告 | 问题建模、重要约束、候选对比、最佳方法、提升来源、直接推理和重新训练说明 |
+| 搜索与执行结果    | 搜索树、节点代码、真实执行输出、统一指标、Result Review、最佳方案和 Top-K              |
+| 可复用方案        | 模型、预处理器、策略或求解器 artifact，以及机器可读的`solution_manifest.json`        |
+| 交付报告          | 问题建模、重要约束、候选对比、最佳方法、提升来源、直接推理和重新训练说明               |
 
 ## 支持范围
 
-| 问题类型 | 当前定位 | 典型任务 |
-| --- | --- | --- |
-| 机器学习预测 | 核心支持 | 分类、回归、时序预测及其他 `data -> prediction` 任务 |
-| 决策与优化 | 部分支持 | 数学规划、组合优化、调度、分配、路径规划、启发式与混合求解 |
-| 强化学习 | 部分支持，实验性更强 | 可定义 state、action、transition、reward、终止条件和合法动作的序贯决策 |
+| 问题类型     | 当前定位             | 典型任务                                                               |
+| ------------ | -------------------- | ---------------------------------------------------------------------- |
+| 机器学习预测 | 核心支持             | 分类、回归、时序预测及其他`data -> prediction` 任务                  |
+| 决策与优化   | 部分支持             | 数学规划、组合优化、调度、分配、路径规划、启发式与混合求解             |
+| 强化学习     | 部分支持，实验性更强 | 可定义 state、action、transition、reward、终止条件和合法动作的序贯决策 |
 
 Optimization 在系统中属于 Decision 问题。启发式、数学优化、局部/元启发式搜索、RL 和混合方法是可由搜索过程选择的方法族，而不是互斥的问题类型。决策与 RL 的可靠性取决于任务是否提供明确约束、可行性校验器和统一评分函数；项目不宣称可以自动解决任意形式的决策问题。
 
@@ -95,13 +95,13 @@ Vue 前端只访问 Gateway。Gateway 持久化任务和全局设置，生成三
 
 ## 服务组成
 
-| 服务 | 默认地址 | OpenAPI | 作用 |
-| --- | --- | --- | --- |
-| AutoRealize API | `http://127.0.0.1:18101` | `/docs` | 数据认知与任务定义 |
-| AlgoEvolve API | `http://127.0.0.1:18103` | `/docs` | 预测、优化、决策和 RL 方案搜索 |
-| AutoReport API | `http://127.0.0.1:18104` | `/docs` | 交付报告生成 |
-| Gateway API | `http://127.0.0.1:18080` | `/docs` | 配置、任务编排与状态聚合 |
-| Vue Frontend | `http://127.0.0.1:5173` | - | 用户操作界面 |
+| 服务            | 默认地址                   | OpenAPI   | 作用                           |
+| --------------- | -------------------------- | --------- | ------------------------------ |
+| AutoRealize API | `http://127.0.0.1:18101` | `/docs` | 数据认知与任务定义             |
+| AlgoEvolve API  | `http://127.0.0.1:18103` | `/docs` | 预测、优化、决策和 RL 方案搜索 |
+| AutoReport API  | `http://127.0.0.1:18104` | `/docs` | 交付报告生成                   |
+| Gateway API     | `http://127.0.0.1:18080` | `/docs` | 配置、任务编排与状态聚合       |
+| Vue Frontend    | `http://127.0.0.1:5173`  | -         | 用户操作界面                   |
 
 Core 服务使用 `/health` 健康检查，Gateway 使用 `/api/health`。
 
@@ -159,11 +159,11 @@ git submodule update --init --recursive
 
 ## 使用 Conda 和 Python 3.12 安装
 
-根目录的 `environment.yml` 会创建名为 `automl` 的 Python 3.12 环境：
+根目录的 `environment.yml` 会创建名为 `autodecision` 的 Python 3.12 环境：
 
 ```bash
 conda env create -f environment.yml
-conda activate automl
+conda activate autodecision
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
@@ -171,8 +171,8 @@ python -m pip install -r requirements.txt
 已有环境可以这样更新：
 
 ```bash
-conda activate automl
-conda env update -n automl -f environment.yml --prune
+conda activate autodecision
+conda env update -n autodecision -f environment.yml --prune
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
@@ -189,7 +189,7 @@ python -c "import sys; print(sys.executable); print(sys.version)"
 python -m pip install -r core/AlgoEvolve/requirements_domain.txt
 ```
 
-如需 GPU 版 PyTorch，请先按 [PyTorch 官方安装器](https://pytorch.org/get-started/locally/) 或设备厂商文档安装匹配版本，再安装项目其余依赖。本项目不固定 CUDA、ROCm、XPU、MPS 或 Ascend 版本。
+如需 GPU 版 PyTorch，请先按 [PyTorch 官方安装器](https://pytorch.org/get-started/locall本项目不固定 CUDA、ROCm、XPU、MPS 或 Ascend 版本。y/) 或设备厂商文档安装匹配版本，再安装项目其余依赖。
 
 安装前端依赖：
 
@@ -203,13 +203,13 @@ cd ../..
 
 推荐先启动服务，再在前端右上角的“全局设置”中配置。全局设置支持模型库和角色分配：
 
-| 角色 | 用途 |
-| --- | --- |
-| AutoRealize | 文件认知、任务建模和任务书生成 |
-| AutoRealize Vision | 可选的图片语义认知 |
-| AutoML Code | Draft、Debug、Improve、Evolution 和 Fusion |
-| AutoML Feedback | 代码评审、结果评审，以及 AutoReport；未配置时回退到 Code 模型 |
-| Embedding | AlgoEvolve 全局语义记忆，可选 |
+| 角色               | 用途                                                          |
+| ------------------ | ------------------------------------------------------------- |
+| AutoRealize        | 文件认知、任务建模和任务书生成                                |
+| AutoRealize Vision | 可选的图片语义认知                                            |
+| AutoML Code        | Draft、Debug、Improve、Evolution 和 Fusion                    |
+| AutoML Feedback    | 代码评审、结果评审，以及 AutoReport；未配置时回退到 Code 模型 |
+| Embedding          | AlgoEvolve 全局语义记忆，可选                                 |
 
 每个模型可以配置模型名、Base URL、API Key、thinking 模式、reasoning effort、输出上限和上下文窗口。DeepSeek 默认配置保留 `/beta` endpoint，以便在支持时使用 prefix completion；其他 OpenAI-compatible Provider 应填写其实际兼容地址和字段。
 
@@ -258,17 +258,17 @@ export ALGOEVOLVE_EMBEDDING_API_KEY="your-embedding-key"
 
 前端已经按阶段组织配置。首次运行时重点检查：
 
-| 配置 | 主要影响 |
-| --- | --- |
-| 输出语言 | 统一 AutoRealize、AlgoEvolve 和 AutoReport 的模型输出语言 |
-| AutoRealize LLM 并发 | 数据认知速度、Provider 限流和瞬时 token 消耗 |
-| QDI 问题/轮次/脚本上限 | 对杂乱数据的取证深度和耗时 |
-| AutoML 总步数与时间 | 搜索规模和总费用的主要上限 |
-| 并行搜索 Worker | 同时生成/执行节点的数量及资源压力 |
-| 初始 Draft 数量 | 初始方法多样性与首轮成本 |
-| 生成、评审和预检重试 | Provider 不稳定时的恢复能力与额外调用量 |
-| CPU、总内存和加速卡 | 整个 AlgoEvolve 任务进程树的共享预算 |
-| 报告受众、详细度、候选数 | 报告篇幅、对比深度和生成成本 |
+| 配置                     | 主要影响                                                  |
+| ------------------------ | --------------------------------------------------------- |
+| 输出语言                 | 统一 AutoRealize、AlgoEvolve 和 AutoReport 的模型输出语言 |
+| AutoRealize LLM 并发     | 数据认知速度、Provider 限流和瞬时 token 消耗              |
+| QDI 问题/轮次/脚本上限   | 对杂乱数据的取证深度和耗时                                |
+| AutoML 总步数与时间      | 搜索规模和总费用的主要上限                                |
+| 并行搜索 Worker          | 同时生成/执行节点的数量及资源压力                         |
+| 初始 Draft 数量          | 初始方法多样性与首轮成本                                  |
+| 生成、评审和预检重试     | Provider 不稳定时的恢复能力与额外调用量                   |
+| CPU、总内存和加速卡      | 整个 AlgoEvolve 任务进程树的共享预算                      |
+| 报告受众、详细度、候选数 | 报告篇幅、对比深度和生成成本                              |
 
 高并发不一定更快：Provider 限流、CPU/内存不足或多个训练任务争用同一加速卡时，过高并发会增加失败和重试。
 
@@ -277,7 +277,7 @@ export ALGOEVOLVE_EMBEDDING_API_KEY="your-embedding-key"
 启动前先激活 Conda 环境：
 
 ```bash
-conda activate automl
+conda activate autodecision
 ```
 
 ### Windows PowerShell
@@ -286,7 +286,7 @@ conda activate automl
 powershell -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1 -Wait -Open
 ```
 
-Windows 脚本使用当前终端解析到的 `python`，所以必须先激活 `automl` 环境。
+Windows 脚本使用当前终端解析到的 `python`，所以必须先激活 `autodecision` 环境。
 
 ### Linux / macOS
 
@@ -302,12 +302,12 @@ Linux/macOS 脚本优先读取 `frontend/config/global_settings.yaml` 中的 `py
 
 常用管理命令：
 
-| 操作 | Windows PowerShell | Linux / macOS |
-| --- | --- | --- |
-| 查看状态 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-status.ps1` | `./scripts/dev-status.sh` |
-| 查看日志 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-logs.ps1` | `./scripts/dev-logs.sh` |
+| 操作     | Windows PowerShell                                                     | Linux / macOS                |
+| -------- | ---------------------------------------------------------------------- | ---------------------------- |
+| 查看状态 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-status.ps1`  | `./scripts/dev-status.sh`  |
+| 查看日志 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-logs.ps1`    | `./scripts/dev-logs.sh`    |
 | 重启服务 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-restart.ps1` | `./scripts/dev-restart.sh` |
-| 停止服务 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1` | `./scripts/dev-down.sh` |
+| 停止服务 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1`    | `./scripts/dev-down.sh`    |
 
 启动成功后访问 [http://127.0.0.1:5173](http://127.0.0.1:5173)。
 
@@ -365,14 +365,14 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 任务操作的语义如下：
 
-| 操作 | 语义 |
-| --- | --- |
-| 执行 AutoRealize | 只生成或重建任务包；首次执行时会创建任务目录 |
-| 执行 AutoML | 启动新的 AlgoEvolve 搜索；必须已有 AutoRealize 输出、输入目录中的 `description.md`，或同时配置 Goal 与 Eval |
-| 继续执行 AutoML | 在原搜索树、journal、UCT 统计和 Top-K 基础上追加搜索预算 |
-| 执行报告生成 | 使用已有 AutoML 结果生成报告；AutoML 被中断但已有有效候选时也可以执行 |
-| 执行任务 | 从 AutoRealize 到 AlgoEvolve 再到 AutoReport 完整执行；完全重跑会要求确认并清理原执行目录 |
-| 从中断继续任务 | 根据持久化阶段和检查点继续未完成流程 |
+| 操作             | 语义                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| 执行 AutoRealize | 只生成或重建任务包；首次执行时会创建任务目录                                                                 |
+| 执行 AutoML      | 启动新的 AlgoEvolve 搜索；必须已有 AutoRealize 输出、输入目录中的`description.md`，或同时配置 Goal 与 Eval |
+| 继续执行 AutoML  | 在原搜索树、journal、UCT 统计和 Top-K 基础上追加搜索预算                                                     |
+| 执行报告生成     | 使用已有 AutoML 结果生成报告；AutoML 被中断但已有有效候选时也可以执行                                        |
+| 执行任务         | 从 AutoRealize 到 AlgoEvolve 再到 AutoReport 完整执行；完全重跑会要求确认并清理原执行目录                    |
+| 从中断继续任务   | 根据持久化阶段和检查点继续未完成流程                                                                         |
 
 删除任务默认只删除前端任务记录；只有明确勾选删除相关文件时才会删除系统判定为安全的任务输出目录。
 
@@ -470,91 +470,23 @@ Windows 使用 CPU affinity 和 Job Object；Linux 优先使用 CPU affinity 与
 
 Gateway 的常用端点：
 
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/api/health` | 健康检查 |
-| `GET/PUT` | `/api/settings/global` | 读取或保存脱敏后的全局设置 |
-| `GET` | `/api/resources/inventory` | 探测 CPU、内存、Python 和加速卡 |
-| `GET/POST` | `/api/tasks` | 列出或创建任务 |
-| `PUT/DELETE` | `/api/tasks/{task_id}` | 更新或删除任务 |
-| `POST` | `/api/tasks/start` | 执行完整任务 |
-| `POST` | `/api/tasks/start-automl` | 直接启动 AutoML |
-| `POST` | `/api/tasks/continue-automl` | 在原树上继续 AutoML |
-| `POST` | `/api/tasks/rerun-autorealize` | 单独执行 AutoRealize |
-| `POST` | `/api/tasks/rerun-autoreport` | 单独生成报告 |
-| `POST` | `/api/tasks/resume` | 从中断阶段继续完整任务 |
-| `POST` | `/api/tasks/stop` | 请求可恢复停止 |
-| `GET` | `/api/tasks/{task_id}/snapshot` | 聚合三个阶段的前端快照 |
+| 方法           | 路径                              | 作用                            |
+| -------------- | --------------------------------- | ------------------------------- |
+| `GET`        | `/api/health`                   | 健康检查                        |
+| `GET/PUT`    | `/api/settings/global`          | 读取或保存脱敏后的全局设置      |
+| `GET`        | `/api/resources/inventory`      | 探测 CPU、内存、Python 和加速卡 |
+| `GET/POST`   | `/api/tasks`                    | 列出或创建任务                  |
+| `PUT/DELETE` | `/api/tasks/{task_id}`          | 更新或删除任务                  |
+| `POST`       | `/api/tasks/start`              | 执行完整任务                    |
+| `POST`       | `/api/tasks/start-automl`       | 直接启动 AutoML                 |
+| `POST`       | `/api/tasks/continue-automl`    | 在原树上继续 AutoML             |
+| `POST`       | `/api/tasks/rerun-autorealize`  | 单独执行 AutoRealize            |
+| `POST`       | `/api/tasks/rerun-autoreport`   | 单独生成报告                    |
+| `POST`       | `/api/tasks/resume`             | 从中断阶段继续完整任务          |
+| `POST`       | `/api/tasks/stop`               | 请求可恢复停止                  |
+| `GET`        | `/api/tasks/{task_id}/snapshot` | 聚合三个阶段的前端快照          |
 
 需要保护 Gateway API 时可以设置 `AUTODECISION_API_TOKEN`，随后除健康检查外的 `/api` 请求都必须携带 `Authorization: Bearer <token>`。跨域来源可通过逗号分隔的 `AUTODECISION_ALLOWED_ORIGINS` 配置。
-
-## 测试
-
-安装开发依赖：
-
-```bash
-conda activate automl
-python -m pip install -r requirements-dev.txt
-```
-
-运行 Python 测试：
-
-```bash
-python -m pytest frontend/backend/tests -q
-python -m pytest core/AutoRealize/tests -q
-python -m pytest core/AlgoEvolve/tests -q
-python -m pytest core/AutoReport/tests -q
-```
-
-运行前端测试和生产构建：
-
-```bash
-cd frontend/ui
-npm test
-npm run build
-```
-
-检查仓库中的文本编码、结构化文件和意外生成物：
-
-```powershell
-python .\scripts\repository-audit.py
-```
-
-```bash
-python ./scripts/repository-audit.py
-```
-
-默认单元测试不应调用真实 LLM。真实端到端任务会产生 Provider 费用，并可能运行较长时间。
-
-## 常见问题
-
-### 前端能打开，但任务无法启动
-
-先检查五个服务的健康状态和 `.dev-state/logs/`。确认全局设置中的 Python 指向 `automl` 环境，并确认 Core 子模块已初始化。
-
-### 直接执行 AutoML 提示输入不完整
-
-必须满足以下任一条件：已经执行 AutoRealize；输入目录已有 `description.md`；或者 AutoML 配置同时填写 Goal 与 Eval。复杂任务推荐先执行 AutoRealize，避免数据读取、字段和指标语义不明确。
-
-### 指标异常地好或不同节点口径不一致
-
-优先检查 AutoRealize 的评估合同、指标方向和公式。AlgoEvolve 会进行确定性检查与 Result Review，但复杂 evaluator 仍应由领域人员复核。不要用任意常数平移、符号翻转或自定义归一化改变节点间的指标语义。
-
-### 停止后还能否继续
-
-检查任务状态是否为 `interrupted_resumable`，以及日志目录是否有 `checkpoint_manifest.json`、journal 和工作区。预算正常耗尽的 `completed` AutoML 任务也可以继续追加搜索。
-
-### 报告能否直接作为外部证据发布
-
-`report.md` 是面向用户的交付报告；`report_trace.json` 可能包含代码路径、方法分析和内部证据摘要，不应直接作为对外报告发布。
-
-## 安全说明
-
-- 不要提交 API Key、全局设置、任务级配置、日志、数据和模型；
-- 不要在无隔离环境中对不可信数据运行自动生成代码；
-- 面向网络部署时设置 API token、严格 CORS、反向代理和 TLS；
-- 对敏感任务限制网络访问、文件系统范围、CPU、内存、磁盘和执行时间；
-- 最佳方案和报告仍应经过领域专家复核后再进入生产决策链路。
 
 ## License
 

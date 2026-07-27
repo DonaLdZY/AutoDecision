@@ -1,4 +1,4 @@
-name: automl
+name: autodecision
 channels:
   - conda-forge
 dependencies:
