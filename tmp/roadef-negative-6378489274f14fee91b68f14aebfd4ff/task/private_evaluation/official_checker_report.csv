@@ -1,2 +1,0 @@
-scope;anomaly;data;
-Constraint W2;the weight on middle axle of the trailer exceeds max weight;truck id = P202152725;recalculated weight on middle axle of the trailer = 12101.34;max weight on middle axle of the trailer = 12000.00;with suppliers = [0009624700]
