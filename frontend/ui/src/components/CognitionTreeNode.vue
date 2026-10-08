@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
+import { ChevronRight, Folder, FileText } from 'lucide-vue-next'
 import { readStateLabel, type CognitionTreeNode } from './cognition-tree-types'
 
 const props = defineProps<{
@@ -34,18 +35,17 @@ const canPreview = computed(() => {
 
 <template>
   <li>
-    <span
+    <div
       class="node-row"
       :class="{ clickable: canToggle, previewable: canPreview, bold: canPreview }"
-      @click="toggle"
-      @dblclick.stop="canPreview && onDblclick()"
     >
-      <span v-if="canToggle" class="caret" :class="{ open: expanded }">▶</span>
+      <button v-if="canToggle" class="caret tree-toggle" :class="{ open: expanded }" :aria-label="`${expanded ? '收起' : '展开'} ${node.name}`" :aria-expanded="expanded" @click="toggle"><ChevronRight :size="13" /></button>
       <span class="caret empty" v-else></span>
+      <component :is="node.isDir ? Folder : FileText" :size="14" />
+      <button class="tree-file" :disabled="!canPreview && !canToggle" :title="node.path" @click="canPreview ? onDblclick() : toggle()">{{ node.name }}<span v-if="node.isDir">/</span></button>
       <span class="dot" :class="node.readState"></span>
-      <span>{{ node.name }}<span v-if="node.isDir">/</span></span>
       <small>{{ readStateLabel(node.readState) }}</small>
-    </span>
+    </div>
     <ul v-if="hasChildren && expanded">
       <CognitionTreeNode
         v-for="child in node.children"
@@ -71,13 +71,16 @@ ul {
 }
 
 .node-row {
-  display: inline-flex;
+  display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 13px;
-  color: #2f4a72;
+  font-size: 11px;
+  color: #78896c;
   line-height: 1.5;
 }
+.tree-toggle { border: 0; padding: 0; background: transparent; height: 22px; display: inline-flex; align-items: center; }
+.tree-file { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: #4c6540; background: transparent; border: 0; padding: 7px 0; font-size: 11px; font-weight: 500; }
+.node-row small { margin-left: auto; font-size: 9px; white-space: nowrap; }
 
 .node-row.clickable {
   cursor: pointer;

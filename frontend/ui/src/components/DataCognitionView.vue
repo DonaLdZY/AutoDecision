@@ -278,7 +278,6 @@ function onRootDblclick() {
     <section class="overall-progress" :class="cognitionProgress.status">
       <div class="progress-heading">
         <div>
-          <p class="eyebrow">Live Cognition Progress</p>
           <div class="progress-title-row">
             <h3>数据总体认知</h3>
             <span class="overall-state" :class="cognitionProgress.status">{{ cognitionProgress.statusLabel }}</span>
@@ -314,7 +313,6 @@ function onRootDblclick() {
       <aside class="left">
       <header class="section-header">
         <div>
-          <p class="eyebrow">Data Cognition</p>
           <h4>数据目录树</h4>
         </div>
         <button class="root-button" type="button" @click="onRootDblclick">总认知</button>
@@ -329,7 +327,7 @@ function onRootDblclick() {
 
       <ul v-if="tree" class="root">
         <li>
-          <div class="title root-title" @dblclick.stop="onRootDblclick">
+          <div class="title root-title" role="button" tabindex="0" @click="onRootDblclick" @keydown.enter="onRootDblclick">
             <span class="dot" :class="tree.readState"></span>
             <strong>{{ tree.name }}</strong>
           </div>
@@ -363,7 +361,6 @@ function onRootDblclick() {
         </div>
       </section>
 
-        <p class="tip">单击目录展开/收起；双击加粗节点预览认知文档；目录有目录级认知时也可双击预览。</p>
       </aside>
 
       <main class="right">
@@ -372,7 +369,7 @@ function onRootDblclick() {
           :payload="selectedPayload"
           :is-root="selectedIsRoot"
         />
-        <p v-if="!selectedPayload" class="empty">请选择左侧已加粗的认知节点。</p>
+        <p v-if="!selectedPayload" class="empty">暂无文件认知记录</p>
         <p class="trace-footnote">本任务已有 {{ traceCount }} 个文件保存了结构化 agent 探查轨迹。</p>
       </main>
     </div>

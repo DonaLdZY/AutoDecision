@@ -1,14 +1,108 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AutoMLConfig } from '../types'
+import { api } from '../api'
+import type { AutoMLConfig, SnapshotPayload } from '../types'
 import {
   defaultAutoML,
   defaultAutoRealize,
   defaultTaskConfig,
   newTaskConfigFromHistory,
   normalizeTaskConfig,
+  useTasks,
 } from './useTasks'
 import type { Task } from '../types'
+
+afterEach(() => vi.restoreAllMocks())
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+function snapshot(task: Task, code: string): SnapshotPayload {
+  return { task, auto_ml: { nodes: [{ id: code, code }] } } as SnapshotPayload
+}
+
+describe('task polling races', () => {
+  function rig() {
+    const state = useTasks()
+    const task = { id: 'task', status: 'completed', config: defaultTaskConfig(1) } as Task
+    state.tasks.value = [task]
+    state.activeTaskId.value = task.id
+    return { state, task }
+  }
+
+  it('keeps the newest requested snapshot when responses arrive out of order', async () => {
+    const { state, task } = rig()
+    const old = deferred<SnapshotPayload>()
+    vi.spyOn(api, 'getSnapshot').mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot(task, 'new'))
+    const pending = state.refreshSnapshot(task.id)
+    await state.refreshSnapshot(task.id)
+    old.resolve(snapshot(task, 'old'))
+    await pending
+    expect(state.snapshots[task.id]?.auto_ml.nodes?.[0]?.code).toBe('new')
+  })
+
+  it('does not restore completed artifacts after a full rerun', async () => {
+    const { state, task } = rig()
+    const old = deferred<SnapshotPayload>()
+    const running = { ...task, status: 'running' }
+    vi.spyOn(api, 'getSnapshot').mockReturnValueOnce(old.promise)
+    vi.spyOn(api, 'rerunFull').mockResolvedValue({ status: 'running', task_id: task.id, mode: 'full' })
+    vi.spyOn(api, 'listTasks').mockResolvedValue([running])
+    state.snapshots[task.id] = snapshot(task, 'old')
+    const pending = state.refreshSnapshot(task.id)
+    await state.rerunFull(task.id)
+    old.resolve(snapshot(task, 'old'))
+    await pending
+    expect(state.snapshots[task.id]).toBeUndefined()
+    expect(state.activeTask.value?.status).toBe('running')
+  })
+
+  it('does not resurrect a deleted task from either snapshot or list polling', async () => {
+    const { state, task } = rig()
+    const oldSnapshot = deferred<SnapshotPayload>()
+    const oldList = deferred<Task[]>()
+    vi.spyOn(api, 'getSnapshot').mockReturnValue(oldSnapshot.promise)
+    vi.spyOn(api, 'listTasks').mockReturnValue(oldList.promise)
+    vi.spyOn(api, 'deleteTask').mockResolvedValue({ status: 'deleted', deleted_files: [] })
+    const snapshotPoll = state.refreshSnapshot(task.id)
+    const listPoll = state.refreshTasks({ silent: true })
+    await state.deleteTask(task.id)
+    oldSnapshot.resolve(snapshot(task, 'old'))
+    oldList.resolve([task])
+    await Promise.all([snapshotPoll, listPoll])
+    expect(state.tasks.value).toEqual([])
+    expect(state.snapshots[task.id]).toBeUndefined()
+    expect(state.activeTaskId.value).toBe('')
+  })
+
+  it('does not overwrite a saved configuration with an earlier snapshot', async () => {
+    const { state, task } = rig()
+    const old = deferred<SnapshotPayload>()
+    vi.spyOn(api, 'getSnapshot').mockReturnValue(old.promise)
+    const saved = { ...task, config: { ...task.config, task_name: 'Updated task' } }
+    vi.spyOn(api, 'updateTask').mockResolvedValue(saved)
+    const pending = state.refreshSnapshot(task.id)
+    await state.saveTask(saved)
+    old.resolve(snapshot(task, 'old'))
+    await pending
+    expect(state.activeTask.value?.config.task_name).toBe('Updated task')
+  })
+
+  it('does not overwrite fresh snapshot status with an older task list', async () => {
+    const { state, task } = rig()
+    const old = deferred<Task[]>()
+    vi.spyOn(api, 'listTasks').mockReturnValue(old.promise)
+    vi.spyOn(api, 'getSnapshot').mockResolvedValue(snapshot({ ...task, status: 'running' }, 'new'))
+    const pending = state.refreshTasks({ silent: true })
+    await state.refreshSnapshot(task.id)
+    old.resolve([task])
+    await pending
+    expect(state.activeTask.value?.status).toBe('running')
+  })
+})
 
 describe('task configuration defaults', () => {
   it('uses one output language for the whole task', () => {

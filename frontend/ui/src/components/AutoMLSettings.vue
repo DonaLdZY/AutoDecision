@@ -99,7 +99,7 @@ function commit() {
             <input v-model.number="model.time_limit_secs" type="number" min="60" step="60" :disabled="props.disabled" @input="commit" />
           </label>
           <label class="setting-field emphasis">
-            <span>本次搜索节点数</span>
+            <span title="生成或预检失败也消耗一次尝试">本次搜索尝试上限</span>
             <input v-model.number="model.steps" type="number" min="1" :disabled="props.disabled" @input="commit" />
           </label>
           <label class="setting-field emphasis">
@@ -126,7 +126,7 @@ function commit() {
           </label>
           <label class="toggle-row">
             <input v-model="model.fast_first_draft_skip_pre_review" type="checkbox" :disabled="props.disabled || !model.fast_first_draft" @change="commit" />
-            Fast Draft 先执行，仅在运行证据需要时评审
+            独立搜索跳过首稿预审（认知任务始终预审）
           </label>
           <label class="toggle-row">
             <input v-model="model.use_stepwise_after_first" type="checkbox" :disabled="props.disabled" @change="commit" />

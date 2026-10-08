@@ -17,6 +17,7 @@
   prompt_token_budget: number
   artifact_consistency_enabled: boolean
   artifact_consistency_max_rounds: number
+  review_gate_policy: 'strict' | 'continue_on_exhaustion'
   cross_stage_memory_enabled: boolean
   cross_stage_headroom_ratio: number
   cross_stage_retrieval_enabled: boolean
@@ -227,6 +228,7 @@ export interface ModelRoleSelection {
 
 export interface SnapshotPayload {
   task: Task
+  automl_readiness?: AutoMLReadiness
   auto_realize: {
     report_dir?: string
     current_state?: Record<string, unknown>
@@ -237,6 +239,8 @@ export interface SnapshotPayload {
     task_definition_report?: Record<string, unknown>
     submission_report?: Record<string, unknown>
     evaluation_contract_report?: Record<string, unknown>
+    artifact_consistency_report?: Record<string, unknown>
+    review_gate_decision?: Record<string, unknown>
     main_task_protocol?: Record<string, unknown>
     automl_context_pack?: Record<string, unknown>
     authoritative_task_memory?: Record<string, unknown>
@@ -284,6 +288,23 @@ export interface SnapshotPayload {
   }
 }
 
+export interface AutoMLReadiness {
+  ready: boolean
+  source: string
+  detail: string
+  autorealize_description: string
+  input_description: string
+  configured_goal: boolean
+  configured_eval: boolean
+  blocking_issues?: string[]
+  hard_blocking_issues?: string[]
+  review_issues?: string[]
+  warnings?: string[]
+  review_gate_policy?: 'strict' | 'continue_on_exhaustion'
+  review_bypass_active?: boolean
+  can_repair_review?: boolean
+}
+
 export interface DependencyInstallationRecord {
   timestamp?: string
   run_log_dir?: string
@@ -320,6 +341,8 @@ export interface DependencyInstallationSummary {
 
 export interface MctsNode {
   id: string
+  fusion_sources?: string[]
+  parent_ids?: string[]
   parent_id?: string | null
   stage?: string
   plan?: string
@@ -342,6 +365,7 @@ export interface MctsNode {
   delivery_certified?: boolean | null
   certification_source?: string | null
   certification_notes?: string[] | null
+  preexecution_review_warnings?: string[] | null
   method_mode?: string | null
   visits?: number
   total_reward?: number
@@ -354,6 +378,35 @@ export interface MctsNode {
   status?: string | null
   pending_execution?: boolean | null
   label?: string | null
+}
+
+export type ReplayStage = 'data_cognition' | 'task_definition' | 'automl' | 'report'
+
+export interface ReplayEvent {
+  sequence: number
+  timestamp: number
+  offset_ms: number
+  stage: ReplayStage
+  kind: 'stage' | 'node' | 'artifact' | 'event'
+  label: string
+  payload: {
+    task?: Partial<Task>
+    node?: MctsNode
+    snapshot?: Partial<SnapshotPayload>
+    event?: Record<string, unknown>
+  }
+}
+
+export interface ReplayRecording {
+  schema_version: number
+  task_id: string
+  task_name: string
+  fidelity: 'recorded' | 'reconstructed' | 'mixed'
+  fidelity_notes: string[]
+  started_at: number
+  ended_at: number
+  duration_ms: number
+  events: ReplayEvent[]
 }
 
 export interface DirectoryEntry {
@@ -435,4 +488,3 @@ export interface ResourceInventory {
     error?: string
   }
 }
-

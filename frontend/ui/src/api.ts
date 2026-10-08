@@ -1,4 +1,4 @@
-import type { GlobalSettings, PythonEnvironment, ResourceInventory, SnapshotPayload, Task, TaskConfig } from './types'
+import type { AutoMLReadiness, GlobalSettings, PythonEnvironment, ReplayRecording, ResourceInventory, SnapshotPayload, Task, TaskConfig } from './types'
 
 // Keep browser requests same-origin by default. Vite proxies /api to the local
 // Gateway during development, which also works when Vite selects a port other
@@ -19,7 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`无法连接 AutoDecision Gateway（${API_BASE}）：${detail}。请确认已运行项目根目录的统一启动脚本。`)
+    throw new Error(`无法连接工智寻优网关（${API_BASE}）：${detail}。请确认已运行项目根目录的统一启动脚本。`)
   }
   if (!res.ok) {
     const text = await res.text()
@@ -57,6 +57,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId, confirm: true }),
     }),
+  getReviewRepairPlan: (taskId: string) => request<{
+    plan_token: string; replace_paths: string[]; delete_paths: string[]; archive_root: string;
+    preserve_paths: string[]; files: { path: string; size: number }[]
+  }>(`/tasks/${taskId}/review-repair-plan`),
+  repairReviewAndResume: (taskId: string, planToken: string) =>
+    request<{ status: string; task_id: string; mode: string; repair_required: boolean; review_gate_policy: string }>('/tasks/repair-review-and-resume', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, confirm: true, plan_token: planToken }),
+    }),
   rerunAutoML: (taskId: string) =>
     request<{ status: string; task_id: string; mode: string }>('/tasks/rerun-automl', {
       method: 'POST',
@@ -67,15 +76,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ task_id: taskId, confirm: true }),
     }),
-  getAutoMLReadiness: (taskId: string) => request<{
-    ready: boolean
-    source: string
-    detail: string
-    autorealize_description: string
-    input_description: string
-    configured_goal: boolean
-    configured_eval: boolean
-  }>(`/tasks/${taskId}/automl-readiness`),
+  getAutoMLReadiness: (taskId: string) => request<AutoMLReadiness>(`/tasks/${taskId}/automl-readiness`),
   continueAutoML: (taskId: string) =>
     request<{ status: string; task_id: string; mode: string }>('/tasks/continue-automl', {
       method: 'POST',
@@ -98,6 +99,7 @@ export const api = {
     }),
   stopTask: (taskId: string) => request<{ status: string; checkpoint_ready?: boolean; resumable?: boolean }>('/tasks/stop', { method: 'POST', body: JSON.stringify({ task_id: taskId, confirm: true }) }),
   getSnapshot: (taskId: string) => request<SnapshotPayload>(`/tasks/${taskId}/snapshot`),
+  getReplay: (taskId: string) => request<ReplayRecording>(`/tasks/${taskId}/replay`),
   getGlobalSettings: () => request<GlobalSettings>('/settings/global'),
   saveGlobalSettings: (payload: GlobalSettings) => request<{ status: string }>('/settings/global', { method: 'PUT', body: JSON.stringify(payload) }),
   getResourceInventory: () => request<ResourceInventory>('/resources/inventory'),

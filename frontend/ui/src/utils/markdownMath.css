@@ -1,0 +1,6 @@
+.markdown-body .katex,
+.artifact-prose .katex { font-size: 1.08em; }
+.markdown-body .katex-display,
+.artifact-prose .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 0.3em 0; }
+.markdown-body .katex-display > .katex,
+.artifact-prose .katex-display > .katex { padding: 0 0.2em; }

@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { nextTick, useTemplateRef, watch } from 'vue'
 import type { Task } from '../types'
+import { displayTaskName } from '../utils/taskName'
 
 const props = defineProps<{
   tasks: Task[]
@@ -60,9 +61,9 @@ function requestRemove(task: Task) {
       :class="{ active: task.id === props.activeTaskId }"
       :data-task-id="task.id"
     >
-      <button class="tab-select" type="button" :title="task.task_name" @click="emit('select', task.id)">
+      <button class="tab-select" type="button" :title="displayTaskName(task.config.task_name || task.task_name)" @click="emit('select', task.id)">
         <span class="tab-name">
-          {{ task.config.task_name || task.task_name }}
+          {{ displayTaskName(task.config.task_name || task.task_name) }}
           <span v-if="props.dirtyTaskIds?.[task.id]" class="dirty-dot" title="未保存草稿">●</span>
         </span>
         <span class="tab-status" :class="task.status">{{ statusLabel(task.status) }}</span>

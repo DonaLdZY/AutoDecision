@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, shallowRef } from 'vue'
 import type { Task } from '../types'
+import { displayTaskName } from '../utils/taskName'
 import CognitionTreeNode from './CognitionTreeNode.vue'
 import type { CognitionTreeNode as TreeNode, ReadState } from './cognition-tree-types'
 import { readStateLabel } from './cognition-tree-types'
@@ -219,7 +220,7 @@ function stepClass(step: StepMeta) {
   <section class="timeline-panel">
     <h3>娴佺▼鏃堕棿绾?/h3>
     <div class="runtime-bar" v-if="task">
-      <span>褰撳墠浠诲姟: {{ task.task_name }}</span>
+      <span>褰撳墠浠诲姟: {{ displayTaskName(task.task_name) }}</span>
       <span>褰撳墠鎵ц: {{ activeComponentText }}</span>
       <span>宸茶繍琛? {{ runningElapsed }}</span>
     </div>

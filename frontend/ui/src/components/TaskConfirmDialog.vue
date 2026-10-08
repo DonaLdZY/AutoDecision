@@ -77,6 +77,9 @@ const emit = defineEmits<{
 
 .dialog-panel {
   width: min(480px, 100%);
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   border: 1px solid #c9d4e2;
   border-radius: 8px;
@@ -97,6 +100,9 @@ const emit = defineEmits<{
   color: #38516b;
   line-height: 1.65;
   white-space: pre-line;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  min-height: 0;
 }
 
 .dialog-checkbox {

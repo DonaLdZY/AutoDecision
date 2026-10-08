@@ -2,6 +2,7 @@
 import { computed, reactive, shallowRef, watch } from 'vue'
 import type { SnapshotPayload, Task, TaskConfig } from '../types'
 import { cloneDeep } from '../utils/clone'
+import { displayTaskName } from '../utils/taskName'
 import DirectoryPicker from './DirectoryPicker.vue'
 import TaskResourceSettings from './TaskResourceSettings.vue'
 import AutoRealizeSettings from './AutoRealizeSettings.vue'
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   runAutoRealize: [taskId: string]
   runAutoML: [taskId: string]
   continueAutoML: [taskId: string]
+  repairReview: [taskId: string]
   runReport: [taskId: string]
   runTask: [taskId: string]
   resumeTask: [taskId: string]
@@ -34,6 +36,10 @@ const emit = defineEmits<{
 
 const subTab = reactive({ key: 'basic' })
 const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
+const taskNameInput = computed({
+  get: () => displayTaskName(localConfig.task_name),
+  set: (value: string) => { localConfig.task_name = value },
+})
 
 function normalizeLocalConfig() {
   localConfig.resources = normalizeTaskResources(localConfig.resources)
@@ -81,6 +87,12 @@ const canContinueAutoML = computed(() => (
   && !!props.task.auto_ml_log_dir
   && !!props.task.auto_ml_workspace_dir
 ))
+const canRepairReview = computed(() => (
+  ['failed', 'interrupted_incomplete', 'interrupted_resumable'].includes(props.task.status)
+  && props.snapshot?.automl_readiness?.can_repair_review === true
+  && !props.task.auto_ml_log_dir && !props.task.auto_ml_workspace_dir
+  && !!props.task.run_dir
+))
 const canRunReport = computed(() => (
   props.task.status !== 'running'
   && localConfig.auto_report.enabled
@@ -91,7 +103,7 @@ const canRunTask = computed(() => props.task.status !== 'running' && hasRequired
 const isResumableInterruption = computed(() => props.task.status === 'interrupted_resumable')
 const canResumeTask = computed(() => (
   hasRequiredBasics.value
-  && ['stopped', 'interrupted_resumable', 'interrupted_incomplete'].includes(String(props.task.status))
+  && ['failed', 'stopped', 'interrupted_resumable', 'interrupted_incomplete'].includes(String(props.task.status))
 ))
 const currentStateStatus = computed(() => {
   const status = props.snapshot?.auto_realize?.current_state?.status
@@ -226,7 +238,7 @@ async function openRunDirectory() {
     <div class="sub-body" v-if="subTab.key === 'basic'">
       <label>
         <span>任务名</span>
-        <input v-model="localConfig.task_name" @input="propagateConfig" placeholder="例如 sale_forecast_apr" />
+        <input v-model="taskNameInput" @input="propagateConfig" placeholder="例如 sale_forecast_apr" />
       </label>
       <label>
         <span>输入文件夹</span>
@@ -246,7 +258,7 @@ async function openRunDirectory() {
       <label>
         <span>输出文件夹</span>
         <div class="path-input-row">
-          <input v-model="localConfig.output_root" @input="propagateConfig" placeholder="默认 AutoDecision/runs" />
+          <input v-model="localConfig.output_root" @input="propagateConfig" placeholder="默认使用项目下的 runs 目录" />
           <button
             type="button"
             class="path-btn"
@@ -319,6 +331,7 @@ async function openRunDirectory() {
       :can-run-auto-realize="canRunAutoRealize"
       :can-run-auto-m-l="canRunAutoML"
       :can-continue-auto-m-l="canContinueAutoML"
+      :can-repair-review="canRepairReview"
       :can-run-report="canRunReport"
       :can-run-task="canRunTask"
       :can-resume-task="canResumeTask"
@@ -329,6 +342,7 @@ async function openRunDirectory() {
       @run-auto-realize="emit('runAutoRealize', task.id)"
       @run-auto-m-l="emit('runAutoML', task.id)"
       @continue-auto-m-l="emit('continueAutoML', task.id)"
+      @repair-review="emit('repairReview', task.id)"
       @run-report="emit('runReport', task.id)"
       @run-task="emit('runTask', task.id)"
       @resume-task="emit('resumeTask', task.id)"

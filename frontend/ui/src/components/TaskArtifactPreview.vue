@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
+import { computed, shallowRef, watch } from 'vue'
+import { Code2, Download, FileText, FileJson, BookOpen } from 'lucide-vue-next'
 import type { SnapshotPayload } from '../types'
+import type { ReplayArtifact } from '../utils/replay'
+import { useSafeMarkdown } from '../utils/markdown'
 
 type ArtifactId = 'description' | 'automl_context' | 'main_protocol'
 
 const props = defineProps<{
   snapshot?: SnapshotPayload
+  replayArtifact?: ReplayArtifact
 }>()
 
 const activeArtifact = shallowRef<ArtifactId>('description')
+watch(() => props.replayArtifact, artifact => {
+  if (artifact) activeArtifact.value = artifact
+}, { immediate: true })
+const sourceVisible = shallowRef(false)
 const ar = computed(() => props.snapshot?.auto_realize ?? {})
 const taskDefinitionReport = computed(() => {
   const value = ar.value.task_definition_report
@@ -66,6 +74,13 @@ const contentStats = computed(() => {
     lines: content ? content.split(/\r?\n/).length : 0,
   }
 })
+const rendered = useSafeMarkdown(() => sourceVisible.value || activeArtifact.value === 'main_protocol' ? '' : selectedArtifact.value.content)
+function downloadArtifact() {
+  const blob = new Blob([selectedArtifact.value.content], { type: activeArtifact.value === 'main_protocol' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a'); link.href = url; link.download = selectedArtifact.value.label; link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 
 function selectArtifact(id: ArtifactId) {
   activeArtifact.value = id
@@ -76,9 +91,7 @@ function selectArtifact(id: ArtifactId) {
   <section class="artifact-workspace">
     <header class="artifact-header">
       <div>
-        <p class="artifact-eyebrow">Compiled Artifacts</p>
-        <h3 class="artifact-title">最终产物</h3>
-        <p class="artifact-subtitle">查看 AutoRealize 交付给用户与 AlgoEvolve 的实际文件，而不是内部生成事件。</p>
+        <h3 class="artifact-title"><FileText :size="18" />任务合同</h3>
       </div>
       <div class="artifact-stats">
         <span>{{ contentStats.lines }} 行</span>
@@ -98,9 +111,9 @@ function selectArtifact(id: ArtifactId) {
         @click="selectArtifact(item.id)"
       >
         <span class="artifact-dot" :class="{ ready: Boolean(item.content) }"></span>
+        <component :is="item.id === 'main_protocol' ? FileJson : FileText" :size="15" />
         <span>
           <strong>{{ item.label }}</strong>
-          <small>{{ item.purpose }}</small>
         </span>
       </button>
     </div>
@@ -108,197 +121,31 @@ function selectArtifact(id: ArtifactId) {
     <div class="artifact-preview">
       <div class="preview-toolbar">
         <strong>{{ selectedArtifact.label }}</strong>
-        <span>{{ selectedArtifact.content ? 'ready' : 'waiting' }}</span>
+        <div class="artifact-tools"><div v-if="activeArtifact !== 'main_protocol'" class="segmented"><button :class="{ active: !sourceVisible }" title="文档预览" aria-label="文档预览" @click="sourceVisible = false"><BookOpen :size="14" /></button><button :class="{ active: sourceVisible }" title="查看源文件" aria-label="查看源文件" @click="sourceVisible = true"><Code2 :size="14" /></button></div><button class="icon-button" title="下载当前产物" aria-label="下载当前产物" :disabled="!selectedArtifact.content" @click="downloadArtifact"><Download :size="16" /></button></div>
       </div>
-      <pre v-if="selectedArtifact.content">{{ selectedArtifact.content }}</pre>
+      <article v-if="selectedArtifact.content && !sourceVisible && activeArtifact !== 'main_protocol'" class="artifact-prose" v-html="rendered" />
+      <pre v-else-if="selectedArtifact.content">{{ selectedArtifact.content }}</pre>
       <div v-else class="artifact-empty">
         <strong>{{ selectedArtifact.label }} 尚未生成</strong>
-        <p>任务定义阶段完成后，文件内容会直接显示在这里。</p>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.artifact-workspace {
-  overflow: hidden;
-  border: 1px solid #c9d9e6;
-  border-radius: 18px;
-  background: #f8fbfd;
-  box-shadow: 0 16px 36px rgba(37, 74, 105, 0.07);
-}
-
-.artifact-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  align-items: flex-end;
-  padding: 20px 22px 16px;
-  border-bottom: 1px solid #d7e3eb;
-  background:
-    linear-gradient(100deg, rgba(239, 247, 250, 0.92), rgba(255, 255, 255, 0.9)),
-    repeating-linear-gradient(90deg, transparent 0 36px, rgba(38, 96, 125, 0.04) 36px 37px);
-}
-
-.artifact-eyebrow {
-  margin: 0 0 5px;
-  color: #16776f;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.artifact-title {
-  margin: 0;
-  color: #173f5a;
-  font-size: 24px;
-}
-
-.artifact-subtitle {
-  margin: 7px 0 0;
-  color: #617d91;
-  font-size: 13px;
-}
-
-.artifact-stats,
-.preview-toolbar,
-.artifact-header {
-  display: flex;
-}
-
-.artifact-stats {
-  gap: 7px;
-}
-
-.artifact-stats span,
-.preview-toolbar span {
-  border-radius: 999px;
-  background: #e5eff4;
-  color: #5b7486;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 5px 9px;
-}
-
-.artifact-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 12px;
-  background: #edf4f7;
-}
-
-.artifact-tab {
-  display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  gap: 9px;
-  align-items: start;
-  padding: 11px 12px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.artifact-tab:hover,
-.artifact-tab.active {
-  border-color: #b7d0da;
-  background: #ffffff;
-}
-
-.artifact-tab.active {
-  box-shadow: 0 7px 18px rgba(42, 86, 109, 0.08);
-}
-
-.artifact-dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 4px;
-  border-radius: 50%;
-  background: #a7b6c0;
-}
-
-.artifact-dot.ready {
-  background: #24946d;
-  box-shadow: 0 0 0 3px rgba(36, 148, 109, 0.12);
-}
-
-.artifact-tab span:last-child {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.artifact-tab strong {
-  color: #264e67;
-  font-size: 12px;
-}
-
-.artifact-tab small {
-  color: #718797;
-  font-size: 10px;
-  line-height: 1.4;
-}
-
-.artifact-preview {
-  margin: 0 12px 12px;
-  overflow: hidden;
-  border: 1px solid #d0dfe7;
-  border-radius: 13px;
-  background: #ffffff;
-}
-
-.preview-toolbar {
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  padding: 9px 12px;
-  border-bottom: 1px solid #d8e4ea;
-  background: #f5f9fb;
-}
-
-.preview-toolbar strong {
-  color: #31576d;
-  font-family: Consolas, monospace;
-  font-size: 12px;
-}
-
-.artifact-preview pre {
-  max-height: 680px;
-  margin: 0;
-  overflow: auto;
-  padding: 18px;
-  color: #2d4d60;
-  font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  font-size: 12px;
-  line-height: 1.72;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.artifact-empty {
-  padding: 48px 18px;
-  color: #496b7f;
-  text-align: center;
-}
-
-.artifact-empty p {
-  margin: 7px 0 0;
-  color: #78909e;
-  font-size: 12px;
-}
-
-@media (max-width: 760px) {
-  .artifact-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .artifact-tabs {
-    grid-template-columns: 1fr;
-  }
-}
+.artifact-workspace { min-width: 0; background: #fff; overflow: hidden; }
+.artifact-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+.artifact-title { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 15px; font-weight: 600; color: #4d6641; }
+.artifact-stats { display: flex; gap: 12px; color: #96a18d; font-size: 10px; }
+.artifact-tabs { display: flex; flex-wrap: wrap; padding: 0 18px; border-bottom: 1px solid var(--line); }
+.artifact-tab { display: flex; align-items: center; gap: 7px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 13px 12px; color: #849379; }
+.artifact-tab.active { border-bottom-color: #548b46; color: #507c42; }
+.artifact-tab strong { font: 11px Consolas, monospace; }.artifact-dot { display: none; }
+.preview-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 7px 20px; background: #fafcf8; border-bottom: 1px solid var(--line); }
+.preview-toolbar strong { color: #97a28c; font: 10px Consolas, monospace; }
+.artifact-tools { display: flex; align-items: center; gap: 8px; }
+.artifact-prose { padding: 24px 35px; max-width: 980px; color: #4a5742; font-size: 13px; line-height: 1.9; }
+.artifact-preview > pre { padding: 24px; color: #627554; font-size: 11px; line-height: 1.7; max-height: 760px; overflow: auto; margin: 0; }
+.artifact-empty { padding: 65px 20px; text-align: center; color: #9dab90; font-size: 12px; }
+@media(max-width:600px) { .artifact-header { padding: 16px; }.artifact-stats { font-size: 9px; gap: 6px; }.artifact-tabs { padding: 0 8px; }.artifact-tab { padding: 10px 5px; gap: 4px; }.artifact-tab strong { font-size: 9px; }.artifact-prose { padding: 18px; font-size: 12px; } }
 </style>

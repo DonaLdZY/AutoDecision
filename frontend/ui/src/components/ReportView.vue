@@ -24,7 +24,7 @@ const currentState = computed(() => asRecord(reportSnapshot.value.current_state)
 const events = computed(() => reportSnapshot.value.events ?? [])
 const markdown = computed(() => String(reportSnapshot.value.report_markdown ?? report.value.article_markdown ?? ''))
 const outputDir = computed(() => String(reportSnapshot.value.output_dir ?? ''))
-const title = computed(() => String(report.value.report_title ?? '最终方案报告'))
+const title = computed(() => String(report.value.report_title ?? '最终方案报告').replace(/AutoDecision\s+运行报告$/i, '工智寻优运行报告'))
 const sections = computed<ReportSection[]>(() => {
   const rows = Array.isArray(report.value.sections) ? report.value.sections : []
   return rows.map((value, index) => {
@@ -40,13 +40,13 @@ const sections = computed<ReportSection[]>(() => {
 
 <template>
   <section class="report-page">
-    <ReportProgress :current-state="currentState" :events="events" />
     <ReportDocument
       :title="title"
       :markdown="markdown"
       :sections="sections"
       :output-dir="outputDir"
     />
+    <details class="report-process" :open="!markdown"><summary>报告生成记录</summary><ReportProgress :current-state="currentState" :events="events" /></details>
   </section>
 </template>
 

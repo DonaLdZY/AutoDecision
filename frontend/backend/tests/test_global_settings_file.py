@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 import yaml
 
 import app
@@ -80,3 +82,61 @@ def test_saving_redacted_form_preserves_stored_api_key(tmp_path: Path, monkeypat
 
     saved = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
     assert saved["llm"]["modelLibrary"][0]["apiKey"] == "stored-secret"
+
+
+@pytest.mark.parametrize("invalid", ["", "[]", "llm: [unclosed"])
+def test_invalid_existing_settings_are_never_overwritten(tmp_path: Path, monkeypatch, invalid) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(invalid, encoding="utf-8")
+    with pytest.raises(app.HTTPException) as caught:
+        app.ensure_global_settings()
+    assert caught.value.status_code == 503
+    assert settings_path.read_text(encoding="utf-8") == invalid
+
+
+def test_transient_read_failure_preserves_settings(tmp_path: Path, monkeypatch) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    app.ensure_global_settings()
+    before = settings_path.read_bytes()
+    original_read = Path.read_text
+
+    def fail_settings_read(path, *args, **kwargs):
+        if path == settings_path:
+            raise PermissionError("sharing violation")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_settings_read)
+    with pytest.raises(app.HTTPException):
+        app.ensure_global_settings()
+    assert settings_path.read_bytes() == before
+
+
+def test_unchanged_settings_reads_do_not_write(tmp_path: Path, monkeypatch) -> None:
+    _use_temp_settings(tmp_path, monkeypatch)
+    app.ensure_global_settings()
+    expected = app.ensure_global_settings()
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("A settings GET must not rewrite an unchanged file")
+
+    monkeypatch.setattr(app, "write_yaml", unexpected_write)
+    assert app.ensure_global_settings() == expected
+
+
+def test_concurrent_reads_and_redacted_saves_preserve_provider(tmp_path: Path, monkeypatch) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    settings = app.ensure_global_settings()
+    settings["llm"]["modelLibrary"][0].update(apiKey="private-key", model="chosen-model")
+    app.write_yaml(settings_path, settings, sensitive=True)
+    payload = app.GlobalSettingsModel.model_validate(app._redact_global_settings_for_client(app.ensure_global_settings()))
+
+    def read_or_save(index):
+        if index % 3 == 0:
+            app.save_global_settings(payload)
+        return app.ensure_global_settings()["llm"]["modelLibrary"][0]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(read_or_save, range(40)))
+    assert all(row["apiKey"] == "private-key" and row["model"] == "chosen-model" for row in rows)
+    assert not list(settings_path.parent.glob("*.tmp"))

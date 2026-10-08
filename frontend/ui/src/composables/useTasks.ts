@@ -26,6 +26,7 @@ export function defaultAutoRealize(): AutoRealizeConfig {
     prompt_token_budget: 12000,
     artifact_consistency_enabled: true,
     artifact_consistency_max_rounds: 2,
+    review_gate_policy: 'strict',
     cross_stage_memory_enabled: true,
     cross_stage_headroom_ratio: 0.72,
     cross_stage_retrieval_enabled: true,
@@ -82,7 +83,7 @@ export function defaultAutoML(): AutoMLConfig {
     refine_plan_max_attempts: 3,
     result_adjudicator_on_anomaly: true,
     fast_first_draft: true,
-    fast_first_draft_skip_pre_review: true,
+    fast_first_draft_skip_pre_review: false,
     use_stepwise_after_first: true,
     stepwise_context_max_tokens: 90000,
     stepwise_compaction_keep_recent_steps: 2,
@@ -184,17 +185,31 @@ export function useTasks() {
   const snapshots = reactive<Record<string, SnapshotPayload>>({})
   const loading = shallowRef(false)
   const error = shallowRef('')
+  const taskGenerations = new Map<string, number>()
+  const snapshotRequests = new Map<string, number>()
+  let listGeneration = 0
+  let listRequest = 0
+
+  // In-flight polls belong to the state before a save, restart, or deletion.
+  function invalidateTask(taskId: string, clearSnapshot = false) {
+    taskGenerations.set(taskId, (taskGenerations.get(taskId) ?? 0) + 1)
+    listGeneration += 1
+    if (clearSnapshot) delete snapshots[taskId]
+  }
 
   const activeTask = computed(() => tasks.value.find((t) => t.id === activeTaskId.value) ?? null)
 
   async function refreshTasks(options: { silent?: boolean } = {}) {
     const silent = options.silent === true
+    const request = ++listRequest
+    const generation = listGeneration
     if (!silent) {
       loading.value = true
       error.value = ''
     }
     try {
       const list = (await api.listTasks()).map(normalizeTask)
+      if (request !== listRequest || generation !== listGeneration) return
       tasks.value = list
       if (silent && isConnectivityError(error.value)) error.value = ''
       if (!silent) error.value = ''
@@ -204,7 +219,7 @@ export function useTasks() {
         activeTaskId.value = latestCreatedTaskId(list)
       }
     } catch (e) {
-      if (!silent) error.value = (e as Error).message
+      if (!silent && request === listRequest && generation === listGeneration) error.value = (e as Error).message
     } finally {
       if (!silent) loading.value = false
     }
@@ -215,6 +230,7 @@ export function useTasks() {
     const payload = newTaskConfigFromHistory(tasks.value, next)
     try {
       const task = normalizeTask(await api.createTask(payload))
+      invalidateTask(task.id)
       tasks.value = [...tasks.value, task]
       activeTaskId.value = task.id
       error.value = ''
@@ -226,70 +242,92 @@ export function useTasks() {
 
   async function saveTask(task: Task) {
     const saved = normalizeTask(await api.updateTask(task.id, task.config))
+    invalidateTask(task.id)
     tasks.value = tasks.value.map((t) => (t.id === saved.id ? saved : t))
   }
 
   async function deleteTask(taskId: string, deleteFiles = false) {
     const result = await api.deleteTask(taskId, deleteFiles)
+    invalidateTask(taskId, true)
     tasks.value = tasks.value.filter((t) => t.id !== taskId)
     if (activeTaskId.value === taskId) {
       activeTaskId.value = latestCreatedTaskId(tasks.value)
     }
-    delete snapshots[taskId]
     return result
   }
 
   async function startTask(taskId: string) {
     await api.startTask(taskId)
+    invalidateTask(taskId, true)
     await refreshTasks()
   }
 
   async function stopTask(taskId: string) {
     const result = await api.stopTask(taskId)
+    invalidateTask(taskId)
     await refreshTasks()
     return result
   }
 
   async function rerunAutoRealize(taskId: string) {
     await api.rerunAutoRealize(taskId)
-    delete snapshots[taskId]
+    invalidateTask(taskId, true)
     await refreshTasks()
+  }
+
+  async function repairReviewAndResume(taskId: string, planToken: string) {
+    const result = await api.repairReviewAndResume(taskId, planToken)
+    invalidateTask(taskId)
+    await refreshTasks()
+    return result
   }
 
   async function rerunAutoML(taskId: string) {
     await api.rerunAutoML(taskId)
+    invalidateTask(taskId, true)
     await refreshTasks()
   }
 
   async function startAutoML(taskId: string) {
     await api.startAutoML(taskId)
+    invalidateTask(taskId)
     await refreshTasks()
   }
 
   async function continueAutoML(taskId: string) {
     await api.continueAutoML(taskId)
+    invalidateTask(taskId)
     await refreshTasks()
   }
 
   async function rerunAutoReport(taskId: string) {
     await api.rerunAutoReport(taskId)
+    invalidateTask(taskId)
     await refreshTasks()
   }
 
   async function rerunFull(taskId: string) {
     await api.rerunFull(taskId)
-    delete snapshots[taskId]
+    invalidateTask(taskId, true)
     await refreshTasks()
   }
 
   async function resumeTask(taskId: string) {
     await api.resumeTask(taskId)
+    invalidateTask(taskId)
     await refreshTasks()
   }
 
   async function refreshSnapshot(taskId: string) {
+    const generation = taskGenerations.get(taskId) ?? 0
+    const request = (snapshotRequests.get(taskId) ?? 0) + 1
+    snapshotRequests.set(taskId, request)
     const data = await api.getSnapshot(taskId)
+    if (generation !== (taskGenerations.get(taskId) ?? 0)
+      || request !== snapshotRequests.get(taskId)
+      || !tasks.value.some(task => task.id === taskId)) return
     const updated = normalizeTask(data.task)
+    listGeneration += 1
     snapshots[taskId] = { ...data, task: updated }
     tasks.value = tasks.value.map((t) => (t.id === updated.id ? updated : t))
   }
@@ -307,6 +345,7 @@ export function useTasks() {
     deleteTask,
     startTask,
     rerunAutoRealize,
+    repairReviewAndResume,
     rerunAutoML,
     startAutoML,
     continueAutoML,
@@ -317,4 +356,3 @@ export function useTasks() {
     refreshSnapshot,
   }
 }
-

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, shallowRef, watch } from 'vue'
+import { Boxes, Check, ChevronRight, Cpu, Database, Network, Plus, RefreshCw, Save, Search, Settings2, Terminal, Trash2, X } from 'lucide-vue-next'
 import type { GlobalSettings, ModelConfig, PythonEnvironment } from '../types'
 import { cloneDeep } from '../utils/clone'
 import { api } from '../api'
@@ -20,13 +21,22 @@ const pythonEnvs = shallowRef<PythonEnvironment[]>([])
 const envLoading = shallowRef(false)
 const envError = shallowRef('')
 const envFilter = shallowRef('')
+const drawer = shallowRef<HTMLElement | null>(null)
+const closeButton = shallowRef<HTMLButtonElement | null>(null)
+let previousFocus: HTMLElement | null = null
+const pages = [
+  { key: 'models', label: '模型配置', icon: Boxes },
+  { key: 'runtime', label: '运行环境', icon: Terminal },
+  { key: 'services', label: '服务编排', icon: Network },
+  { key: 'algoevolve', label: 'AlgoEvolve', icon: Cpu },
+] as const
 
-const roleLabels: Array<{ key: keyof GlobalSettings['llm']['roleModels']; label: string; hint: string }> = [
-  { key: 'autoRealize', label: 'AutoRealize 模型', hint: '数据认知、QDI、任务定义和 description 生成。' },
-  { key: 'autoRealizeVision', label: 'AutoRealize 视觉模型', hint: '图片/视觉文件认知，受任务配置里的 VLLM 开关控制。' },
-  { key: 'autoMlCode', label: 'AutoML 编码模型', hint: 'AlgoEvolve 生成方案和代码。' },
-  { key: 'autoMlFeedback', label: 'AutoML feedback 模型', hint: '反馈、评审、修复建议和报告优先使用。' },
-  { key: 'embedding', label: '向量化模型', hint: 'AlgoEvolve 全局记忆的远程 embedding 模型。' },
+const roleLabels: Array<{ key: keyof GlobalSettings['llm']['roleModels']; label: string }> = [
+  { key: 'autoRealize', label: '数据认知与任务定义' },
+  { key: 'autoRealizeVision', label: '图片与视觉认知' },
+  { key: 'autoMlCode', label: 'AutoML 代码生成' },
+  { key: 'autoMlFeedback', label: '结果评审与报告' },
+  { key: 'embedding', label: '全局记忆向量模型' },
 ]
 
 function modelLabel(modelId: string) {
@@ -88,13 +98,39 @@ watch(
 watch(
   () => props.visible,
   (visible) => {
-    if (visible) void refreshPythonEnvs()
+    if (visible) { void refreshPythonEnvs(); void focusDrawer() }
+    else restoreFocus()
   },
 )
 
 onMounted(() => {
-  if (props.visible) void refreshPythonEnvs()
+  if (props.visible) { void refreshPythonEnvs(); void focusDrawer() }
 })
+
+async function focusDrawer() {
+  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  await nextTick()
+  closeButton.value?.focus({ preventScroll: true })
+}
+
+function restoreFocus() { previousFocus?.focus({ preventScroll: true }); previousFocus = null }
+onBeforeUnmount(restoreFocus)
+
+function trapFocus(event: KeyboardEvent) {
+  const controls = [...(drawer.value?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? [])].filter(element => element.getClientRects().length)
+  const first = controls[0], last = controls.at(-1)
+  if (!first || !last) return
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
+
+function moveTab(event: KeyboardEvent, index: number) {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? pages.length - 1 : (index + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + pages.length) % pages.length
+  activePage.value = pages[next]!.key
+  drawer.value?.querySelector<HTMLButtonElement>(`#global-tab-${activePage.value}`)?.focus()
+}
 
 const filteredEnvs = computed(() => {
   const q = envFilter.value.trim().toLowerCase()
@@ -145,58 +181,52 @@ function saveCurrent() {
 </script>
 
 <template>
-  <div v-if="props.visible" class="overlay" @click.self="emit('close')">
-    <section class="drawer">
-      <header>
-        <h3>全局设置</h3>
-        <button @click="emit('close')">关闭</button>
+  <div v-if="props.visible" class="settings-overlay" @click.self="emit('close')">
+    <section ref="drawer" class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" @keydown.tab="trapFocus" @keydown.esc.stop="emit('close')">
+      <header class="drawer-heading">
+        <h3 id="global-settings-title"><Settings2 :size="19" />全局设置</h3>
+        <button ref="closeButton" type="button" class="settings-icon" title="关闭全局设置" aria-label="关闭全局设置" @click="emit('close')"><X :size="19" /></button>
       </header>
 
       <div class="layout">
-        <aside class="nav">
-          <button :class="{ active: activePage === 'models' }" @click="activePage = 'models'">模型配置</button>
-          <button :class="{ active: activePage === 'runtime' }" @click="activePage = 'runtime'">运行环境</button>
-          <button :class="{ active: activePage === 'services' }" @click="activePage = 'services'">服务编排</button>
-          <button :class="{ active: activePage === 'algoevolve' }" @click="activePage = 'algoevolve'">AlgoEvolve</button>
-        </aside>
+        <nav class="settings-nav" role="tablist" aria-label="全局设置分类">
+          <button v-for="(page, index) in pages" :id="`global-tab-${page.key}`" :key="page.key" type="button" role="tab" :aria-selected="activePage === page.key" aria-controls="global-settings-panel" :tabindex="activePage === page.key ? 0 : -1" :class="{ active: activePage === page.key }" @click="activePage = page.key" @keydown="moveTab($event, index)"><component :is="page.icon" :size="16" /><span>{{ page.label }}</span><ChevronRight :size="12" class="nav-chevron" /></button>
+        </nav>
 
-        <div class="body">
+        <div id="global-settings-panel" class="settings-body" role="tabpanel" :aria-labelledby="`global-tab-${activePage}`">
           <section v-if="activePage === 'models'" class="page">
             <div class="section-head">
               <div>
-                <h4>模型角色选择</h4>
-                <p>所有阶段都从同一个模型配置库里选择模型。Thinking default 表示不向 provider 传 thinking extra_body。</p>
+                <h4>角色模型</h4>
               </div>
             </div>
 
             <div class="role-grid">
-              <label v-for="role in roleLabels" :key="role.key" class="role-card">
+              <label v-for="role in roleLabels" :key="role.key" class="role-field">
                 <span>{{ role.label }}</span>
                 <select v-model="local.llm.roleModels[role.key]">
                   <option v-for="model in local.llm.modelLibrary" :key="model.id" :value="model.id">{{ modelLabel(model.id) }}</option>
                 </select>
-                <small>{{ role.hint }}</small>
               </label>
             </div>
 
             <div class="section-head models-head">
               <div>
-                <h4>模型配置库</h4>
-                <p>新增配置后，可在上方分别指定给 AutoRealize、AutoML、feedback、视觉和向量化角色。</p>
+                <h4>模型库 <span class="section-count">{{ local.llm.modelLibrary.length }}</span></h4>
               </div>
-              <button class="primary-soft" @click="addModel">+ 添加模型</button>
+              <button type="button" class="settings-command" @click="addModel"><Plus :size="15" />添加模型</button>
             </div>
 
             <div class="model-list">
               <article v-for="model in local.llm.modelLibrary" :key="model.id" class="model-card">
                 <div class="model-card-head">
-                  <strong>{{ model.name || model.id }}</strong>
-                  <button class="danger-soft" :disabled="local.llm.modelLibrary.length <= 1" @click="removeModel(model.id)">删除</button>
+                  <strong><Boxes :size="16" />{{ model.name || model.id }}</strong>
+                  <button type="button" class="settings-icon danger" :disabled="local.llm.modelLibrary.length <= 1" :title="`删除 ${model.name || '模型'}`" :aria-label="`删除 ${model.name || '模型'}`" @click="removeModel(model.id)"><Trash2 :size="15" /></button>
                 </div>
                 <div class="grid2">
-                  <label><span>备注名</span><input v-model="model.name" placeholder="例如 DeepSeek 主力模型" /></label>
-                  <label><span>model_name</span><input v-model="model.model" placeholder="例如 deepseek-v4-pro" /></label>
-                  <label><span>Base URL</span><input v-model="model.baseUrl" placeholder="https://api.deepseek.com" /></label>
+                  <label><span>显示名称</span><input v-model="model.name" placeholder="主力代码模型" /></label>
+                  <label><span>API 模型标识</span><input v-model="model.model" placeholder="gpt-5.6-sol" spellcheck="false" /></label>
+                  <label><span>Base URL</span><input v-model="model.baseUrl" placeholder="https://api.example.com/v1" spellcheck="false" /></label>
                   <label>
                     <span>API Key</span>
                     <input
@@ -205,20 +235,20 @@ function saveCurrent() {
                       autocomplete="new-password"
                       :placeholder="model.apiKeyConfigured ? '已配置，输入新值可替换' : '输入 API Key'"
                     />
-                    <small v-if="model.apiKeyConfigured">已配置，后端不会将原值返回浏览器。</small>
+                    <small v-if="model.apiKeyConfigured" class="configured"><Check :size="12" />已配置，留空保留</small>
                   </label>
                   <label>
-                    <span>Thinking Mode</span>
+                    <span>思考模式</span>
                     <select v-model="model.thinkingMode">
-                      <option value="default">default: 不指定 thinking</option>
-                      <option value="enabled">enabled: thinking.enabled</option>
-                      <option value="disabled">disabled: thinking.disabled</option>
+                      <option value="default">遵循供应商默认</option>
+                      <option value="enabled">启用</option>
+                      <option value="disabled">禁用</option>
                     </select>
                   </label>
                   <label>
-                    <span>Reasoning Effort</span>
+                    <span>推理强度</span>
                     <select v-model="model.reasoningEffort">
-                      <option value="default">default: 不指定强度</option>
+                      <option value="default">遵循供应商默认</option>
                       <option value="low">low</option>
                       <option value="medium">medium</option>
                       <option value="high">high</option>
@@ -226,7 +256,7 @@ function saveCurrent() {
                     </select>
                   </label>
                   <label>
-                    <span>Max Tokens</span>
+                    <span>输出 Token 上限</span>
                     <input
                       v-model.number="model.maxTokens"
                       type="number"
@@ -234,10 +264,10 @@ function saveCurrent() {
                       step="1024"
                       placeholder="至少 32768"
                     />
-                    <small>正常业务 LLM 调用的输出上限不得低于 32768；更高值会原样保留。</small>
+                    <small>最低 32768</small>
                   </label>
                   <label>
-                    <span>Context Window Tokens</span>
+                    <span>上下文窗口 Token</span>
                     <input
                       v-model.number="model.contextWindowTokens"
                       type="number"
@@ -245,7 +275,7 @@ function saveCurrent() {
                       step="1024"
                       placeholder="例如 131072"
                     />
-                    <small>用于 AlgoEvolve 在超出上下文前预留推理和输出空间；0 表示使用内置默认值。</small>
+                    <small>0 使用内置默认窗口</small>
                   </label>
                 </div>
               </article>
@@ -255,28 +285,32 @@ function saveCurrent() {
           <section v-else-if="activePage === 'runtime'" class="page">
             <h4>Python 环境</h4>
             <label><span>Python 可执行文件</span><input v-model="local.python.executable" placeholder="例如 /usr/bin/python3 或 C:\\Python311\\python.exe" /></label>
-            <div class="py-env-panel">
+            <div class="py-env-section">
               <div class="py-env-top">
-                <strong>Python 解释器</strong>
+                <strong>可用解释器 <span class="section-count">{{ filteredEnvs.length }}</span></strong>
                 <div class="py-actions">
-                  <input v-model="envFilter" placeholder="搜索路径 / 版本 / 来源" />
-                  <button @click="refreshPythonEnvs" :disabled="envLoading">{{ envLoading ? '扫描中...' : '刷新' }}</button>
+                  <label class="env-search"><Search :size="14" /><input v-model="envFilter" aria-label="搜索 Python 环境" placeholder="路径、版本或来源" /></label>
+                  <button type="button" class="settings-icon" title="刷新 Python 环境" aria-label="刷新 Python 环境" :aria-busy="envLoading" @click="refreshPythonEnvs" :disabled="envLoading"><RefreshCw :size="16" :class="{ spinning: envLoading }" /></button>
                 </div>
               </div>
-              <p v-if="envError" class="env-error">扫描失败: {{ envError }}</p>
+              <p v-if="envError" class="env-error" role="alert">扫描失败: {{ envError }}</p>
+              <p v-else-if="envLoading" class="env-state" role="status">正在检测环境...</p>
+              <p v-else-if="!filteredEnvs.length" class="env-state">{{ envFilter ? '没有匹配的环境' : '未发现可用环境' }}</p>
               <div class="py-env-list">
                 <button
                   v-for="env in filteredEnvs"
                   :key="env.path"
+                  type="button"
                   class="py-env-item"
                   :class="{ selected: local.python.executable === env.path, missing: !env.exists }"
+                  :aria-pressed="local.python.executable === env.path"
                   @click="pickPythonEnv(env.path)"
                 >
-                  <div class="line1"><code>{{ env.path }}</code></div>
+                  <div class="line1"><Terminal :size="14" /><code>{{ env.path }}</code><Check v-if="local.python.executable === env.path" :size="15" class="env-check" /></div>
                   <div class="line2">
                     <span>{{ env.version }}</span>
                     <span class="tag">{{ env.source }}</span>
-                    <span v-if="!env.exists" class="tag warn">not-found</span>
+                    <span v-if="!env.exists" class="tag warn">路径不存在</span>
                   </div>
                 </button>
               </div>
@@ -284,7 +318,7 @@ function saveCurrent() {
           </section>
 
           <section v-else-if="activePage === 'services'" class="page">
-            <h4>Core 服务编排</h4>
+            <h4>核心服务</h4>
             <label><span>AutoRealize Base URL</span><input v-model="local.coreServices.autoRealizeBaseUrl" placeholder="http://127.0.0.1:18101" /></label>
             <label><span>AutoML / AlgoEvolve Base URL</span><input v-model="local.coreServices.algoEvolveBaseUrl" placeholder="http://127.0.0.1:18103" /></label>
             <label><span>AutoReport Base URL</span><input v-model="local.coreServices.autoReportBaseUrl" placeholder="http://127.0.0.1:18104" /></label>
@@ -296,280 +330,290 @@ function saveCurrent() {
             <label>
               <span>Torch Hub 目录</span>
               <input v-model="local.algoevolve.torchHubDir" placeholder="例如 D:\\model_cache\\torch_hub 或 /data/torch_hub" />
-              <small>PyTorch Hub 缓存目录，减少重复下载和外网依赖。</small>
             </label>
             <label>
               <span>预训练模型目录</span>
               <input v-model="local.algoevolve.pretrainModelDir" placeholder="例如 D:\\pretrain_models 或 /data/pretrain_models" />
-              <small>本地预训练权重仓库，便于离线/内网加载模型。</small>
             </label>
-            <p class="note">向量化模型现在在“模型配置”页面选择，不再在这里单独填写 Base URL/API Key。</p>
+            <button type="button" class="settings-command related-setting" @click="activePage = 'models'"><Database :size="15" />向量模型配置<ChevronRight :size="14" /></button>
           </section>
         </div>
       </div>
 
-      <footer>
-        <button @click="emit('close')">取消</button>
-        <button class="primary" @click="saveCurrent">保存设置</button>
+      <footer class="drawer-footer">
+        <button type="button" class="settings-command" @click="emit('close')">取消</button>
+        <button type="button" class="settings-command primary" @click="saveCurrent"><Save :size="15" />保存设置</button>
       </footer>
     </section>
   </div>
 </template>
 
 <style scoped>
-.overlay {
+.settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 20, 44, 0.55);
-  z-index: 30;
+  background: #17221b52;
+  z-index: 90;
   display: flex;
   justify-content: flex-end;
+  animation: overlay-enter 100ms ease-out;
 }
 
-.drawer {
-  width: min(1040px, 96vw);
+.settings-drawer {
+  width: min(940px, 100%);
+  min-width: 0;
   background: #fff;
-  height: 100%;
+  height: 100dvh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: 64px minmax(0, 1fr) 66px;
+  color: #26352b;
+  border-left: 1px solid #dce3dc;
+  box-shadow: -12px 0 44px #13251b12;
+  animation: drawer-enter 150ms ease-out;
 }
 
-header,
-footer {
-  padding: 12px;
-  border-bottom: 1px solid #dbe4f4;
+.drawer-heading,
+.drawer-footer {
+  padding: 0 24px;
+  border-bottom: 1px solid #e4e8e4;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-width: 0;
 }
 
-footer {
-  border-top: 1px solid #dbe4f4;
+.drawer-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.drawer-heading h3 svg { color: #598368; }
+
+.drawer-footer {
+  justify-content: flex-end;
+  gap: 9px;
+  border-top: 1px solid #e4e8e4;
   border-bottom: 0;
 }
 
 .layout {
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 170px 1fr;
+  grid-template-columns: 174px minmax(0, 1fr);
 }
 
-.nav {
-  border-right: 1px solid #dbe4f4;
-  background: #f7faff;
-  padding: 12px;
+.settings-nav {
+  border-right: 1px solid #e4e8e4;
+  background: #f7f9f6;
+  padding: 18px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
+  min-width: 0;
 }
 
-.nav button {
+.settings-nav button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #7b857b;
+  border-radius: 5px;
+  min-height: 41px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
   text-align: left;
 }
 
-.nav button.active {
-  background: #1f5db0;
-  border-color: #1f5db0;
-  color: #fff;
-}
+.settings-nav button:hover { background: #eef2ed; }
+.settings-nav button.active { background: #e8f0e6; color: #356446; border-color: #dbe7d8; }
+.nav-chevron { margin-left: auto; opacity: 0; }
+.active .nav-chevron { opacity: 1; }
 
-.body {
-  padding: 12px;
+.settings-body {
+  padding: 26px;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .page {
   display: grid;
-  gap: 12px;
+  gap: 20px;
+  min-width: 0;
+  align-content: start;
 }
 
 .section-head {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: flex-start;
+  align-items: center;
+  min-width: 0;
 }
 
-.section-head h4,
-.page h4 {
-  margin: 0;
-}
+.models-head { border-top: 1px solid #e4e8e4; padding-top: 22px; margin-top: 4px; }
+.section-head h4, .page h4 { margin: 0; font-size: 13px; font-weight: 600; color: #384b3e; }
+.section-count { margin-left: 5px; color: #8f9a8d; font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
 
-.section-head p,
-.note {
-  margin: 4px 0 0;
-  color: #4c6690;
-  font-size: 12px;
-}
-
-.grid2,
-.role-grid {
+.grid2, .role-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 17px 20px;
+  min-width: 0;
 }
 
-.role-card,
+.role-field { align-content: start; }
+.model-list { display: grid; gap: 16px; min-width: 0; }
 .model-card {
-  border: 1px solid #d4e2f8;
-  border-radius: 12px;
-  background: #f8fbff;
-  padding: 10px;
-}
-
-.model-list {
-  display: grid;
-  gap: 12px;
+  border: 1px solid #e0e6df;
+  border-radius: 6px;
+  background: #fff;
+  padding: 18px;
+  min-width: 0;
 }
 
 .model-card-head {
   display: flex;
   justify-content: space-between;
+  gap: 10px;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 18px;
+  min-width: 0;
 }
 
-label {
-  display: grid;
-  gap: 4px;
-  font-size: 13px;
-}
+.model-card-head strong { min-width: 0; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; font-size: 13px; font-weight: 550; }
+.model-card-head strong svg { color: #6e8d73; }
 
-small {
-  font-size: 12px;
-  color: #4c6690;
-}
-
-input,
-select {
-  border: 1px solid #c8d5ed;
-  border-radius: 8px;
-  padding: 8px;
+label { display: grid; gap: 7px; font-size: 11px; color: #6c786d; min-width: 0; }
+small { font-size: 10px; color: #8c978a; overflow-wrap: anywhere; }
+.configured { color: #57866a; display: flex; align-items: center; gap: 4px; }
+input, select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 36px;
+  border: 1px solid #dce3db;
+  border-radius: 4px;
+  padding: 7px 9px;
   background: #fff;
+  color: #354239;
+  font: inherit;
+  font-size: 12px;
 }
 
-button {
-  border: 1px solid #b9cced;
-  background: #f0f6ff;
-  border-radius: 8px;
-  padding: 8px 12px;
+input::placeholder { color: #a3aaa1; }
+input:focus, select:focus { border-color: #73967a; }
+button { font: inherit; letter-spacing: 0; cursor: pointer; }
+.settings-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid #dce3db;
+  border-radius: 4px;
+  background: #fff;
+  color: #566955;
+  font-size: 11px;
 }
 
-button.primary,
-button.primary-soft {
-  background: #1f5db0;
-  border-color: #1f5db0;
-  color: #fff;
+.settings-command:hover:not(:disabled) { background: #f1f5ef; border-color: #b6cbb4; }
+.settings-command.primary { color: #fff; border-color: #26714b; background: #26714b; }
+.settings-command.primary:hover:not(:disabled) { background: #1d623e; }
+.related-setting { justify-self: start; margin-top: 10px; }
+.settings-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #7f8a7d;
 }
 
-button.danger-soft {
-  background: #fff0f0;
-  border-color: #efc3c3;
-  color: #9a2d2d;
-}
-
-button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.py-env-panel {
-  border: 1px solid #d4e2f8;
-  border-radius: 10px;
-  background: #f8fbff;
-  padding: 10px;
-}
-
+.settings-icon:hover:not(:disabled) { background: #eef3ec; color: #446b48; }
+.settings-icon.danger:hover:not(:disabled) { background: #fcf0ef; color: #b8534c; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.py-env-section { margin-top: 4px; padding-top: 22px; border-top: 1px solid #e4e8e4; min-width: 0; }
 .py-env-top {
   display: flex;
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 
-.py-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.py-actions input {
-  width: 280px;
-}
-
+.py-env-top > strong { font-size: 12px; font-weight: 550; white-space: nowrap; }
+.py-actions { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.env-search { display: flex; align-items: center; border: 1px solid #dce3db; padding-left: 8px; border-radius: 4px; color: #98a192; width: min(230px, 100%); }
+.env-search input { border: 0; height: 32px; }
 .py-env-list {
-  margin-top: 10px;
+  margin-top: 14px;
   display: grid;
-  gap: 8px;
-  max-height: 260px;
+  gap: 7px;
+  max-height: 430px;
   overflow: auto;
+  min-width: 0;
 }
 
 .py-env-item {
   text-align: left;
-  border: 1px solid #cadbf4;
+  border: 1px solid #e1e7de;
   background: #fff;
-  border-radius: 8px;
-  padding: 8px;
+  border-radius: 5px;
+  padding: 12px;
+  min-width: 0;
+  width: 100%;
 }
 
-.py-env-item.selected {
-  border-color: #2f6fbe;
-  background: #edf5ff;
-}
-
-.py-env-item.missing {
-  opacity: 0.7;
-}
-
-.line1 code {
-  font-size: 12px;
-  color: #28456e;
-}
-
-.line2 {
-  margin-top: 4px;
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 12px;
-  color: #48658c;
-}
-
-.tag {
-  border: 1px solid #c8dcfa;
-  border-radius: 999px;
-  padding: 1px 6px;
-  background: #f0f6ff;
-}
-
-.tag.warn {
-  border-color: #f1c2c2;
-  background: #fff0f0;
-  color: #8f3333;
-}
-
-.env-error {
-  margin: 8px 0 0;
-  color: #9d2b2b;
-  font-size: 12px;
-}
-
+.py-env-item:hover { border-color: #aac2a8; background: #f7f9f5; }
+.py-env-item.selected { border-color: #91b38f; background: #f0f6ed; }
+.py-env-item.missing { opacity: .7; }
+.line1 { display: flex; align-items: flex-start; gap: 8px; min-width: 0; color: #7c9073; }
+.line1 code { font-size: 11px; color: #52634d; overflow-wrap: anywhere; min-width: 0; }
+.env-check { color: #357b49; margin-left: auto; }
+.line2 { margin: 7px 0 0 22px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 10px; color: #8a9981; }
+.tag { color: #76906b; }
+.tag.warn { color: #b57542; }
+.env-error { margin: 10px 0 0; color: #ac514b; font-size: 12px; overflow-wrap: anywhere; }
+.env-state { font-size: 12px; color: #99a18f; margin: 24px 0; }
+.spinning { animation: icon-spin 1s linear infinite; }
+@keyframes icon-spin { to { transform: rotate(360deg); } }
+@keyframes overlay-enter { from { opacity: 0; } to { opacity: 1; } }
+@keyframes drawer-enter { from { transform: translateX(18px); } to { transform: translateX(0); } }
 @media (max-width: 760px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
-  .nav {
-    flex-direction: row;
-    overflow: auto;
-    border-right: 0;
-    border-bottom: 1px solid #dbe4f4;
-  }
-
-  .grid2,
-  .role-grid {
-    grid-template-columns: 1fr;
-  }
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; padding: 8px 10px; overflow-x: auto; border-right: 0; border-bottom: 1px solid #e4e8e4; }
+  .settings-nav button { flex-shrink: 0; padding: 8px 9px; gap: 6px; min-height: 35px; font-size: 11px; }
+  .nav-chevron { display: none; }
+  .settings-body { padding: 20px; }
+}
+@media (max-width: 480px) {
+  .settings-drawer { grid-template-rows: 58px minmax(0, 1fr) 62px; }
+  .drawer-heading, .drawer-footer { padding: 0 16px; }
+  .settings-body { padding: 19px 16px; }
+  .grid2, .role-grid { grid-template-columns: minmax(0, 1fr); gap: 15px; }
+  .model-card { padding: 15px; }
+  .py-env-top { align-items: flex-start; flex-direction: column; gap: 13px; }
+  .py-actions { width: 100%; }
+  .env-search { flex: 1; width: auto; }
+  .settings-nav { gap: 1px; }
+  .settings-nav button { font-size: 10px; padding: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-overlay, .settings-drawer, .spinning { animation: none; }
 }
 </style>

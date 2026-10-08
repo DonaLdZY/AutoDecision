@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SnapshotPayload } from '../types'
+import type { ReplayArtifact } from '../utils/replay'
 import TaskArtifactPreview from './TaskArtifactPreview.vue'
 import TaskDefinitionProcessView from './TaskDefinitionProcessView.vue'
 
 const props = defineProps<{
   snapshot?: SnapshotPayload
   activeStepRunning?: boolean
+  replayArtifact?: ReplayArtifact
 }>()
 
 const hasTaskDefinitionData = computed(() => {
@@ -22,11 +24,8 @@ const hasTaskDefinitionData = computed(() => {
 
 <template>
   <section class="page">
-    <TaskDefinitionProcessView
-      :snapshot="snapshot"
-      :active-step-running="activeStepRunning"
-    />
-    <TaskArtifactPreview v-if="hasTaskDefinitionData || activeStepRunning" :snapshot="snapshot" />
+    <TaskArtifactPreview v-if="hasTaskDefinitionData || activeStepRunning || replayArtifact" :snapshot="snapshot" :replay-artifact="replayArtifact" />
+    <details class="definition-process" :open="!hasTaskDefinitionData"><summary>任务定义过程</summary><TaskDefinitionProcessView :snapshot="snapshot" :active-step-running="activeStepRunning" /></details>
   </section>
 </template>
 

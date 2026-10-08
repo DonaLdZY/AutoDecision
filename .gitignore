@@ -55,6 +55,7 @@ frontend/ui/dist/
 # Runtime state and generated output
 runs/
 .dev-state/
+.codex-work/
 frontend/backend/.state/
 frontend/config/global_settings.yaml
 *.log

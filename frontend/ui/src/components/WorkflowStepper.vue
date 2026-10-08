@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed } from 'vue'
+import { Database, FileCheck2, GitBranch, NotebookText, Check } from 'lucide-vue-next'
 import type { Task } from '../types'
 
 export type StepKey = 'data_cognition' | 'task_definition' | 'automl' | 'report'
@@ -114,39 +115,35 @@ function cls(step: StepMeta) {
 </script>
 
 <template>
-  <section class="workflow">
-    <div class="track">
-      <div class="track-line"></div>
+  <nav class="workflow" aria-label="任务阶段">
+    <div class="track" role="tablist">
       <button
         v-for="(step, idx) in steps"
         :key="step.key"
         class="node"
+        role="tab"
+        :aria-selected="activeStep === step.key"
         :class="cls(step)"
         @click="!step.disabled && emit('select', step.key)"
         :title="step.disabled ? '该模块暂未开发完成' : step.label"
         :disabled="!!step.disabled"
       >
-        <span class="index">{{ idx + 1 }}</span>
+        <component :is="[Database, FileCheck2, GitBranch, NotebookText][idx]" :size="15" />
         <span class="label">{{ step.label }}</span>
+        <Check v-if="stepStatus[step.key] === 'done'" :size="11" class="step-check" />
       </button>
     </div>
-  </section>
+  </nav>
 </template>
 
 <style scoped>
-.workflow {
-  background: #f6f9ff;
-  border: 1px solid #d2ddf2;
-  border-radius: 12px;
-  padding: 10px 12px 14px;
-}
+.workflow { min-width: 0; }
 
 .track {
   position: relative;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  align-items: start;
+  display: flex;
+  gap: 22px;
+  align-items: center;
 }
 
 .track-line {
@@ -162,12 +159,15 @@ function cls(step: StepMeta) {
 .node {
   position: relative;
   z-index: 1;
-  border: 1px solid #b7c9e8;
-  background: #eef3ff;
-  border-radius: 10px;
-  padding: 6px 6px 8px;
-  display: grid;
-  gap: 4px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  border-radius: 0;
+  padding: 10px 1px 12px;
+  display: flex;
+  align-items: center;
+  color: #98a28d;
+  gap: 7px;
   cursor: pointer;
   text-align: center;
 }
@@ -184,13 +184,13 @@ function cls(step: StepMeta) {
 }
 
 .label {
-  font-size: 12px;
-  color: #2b4872;
+  font-size: 11px;
+  white-space: nowrap;
+  color: inherit;
 }
 
 .node.active {
-  background: #dcecff;
-  border-color: #67a4e4;
+  color: #4a7966;
 }
 
 .node.active .index {
@@ -199,8 +199,7 @@ function cls(step: StepMeta) {
 }
 
 .node.done {
-  background: #d8f9e7;
-  border-color: #72c093;
+  color: #7d9070;
 }
 
 .node.done .index {
@@ -209,8 +208,11 @@ function cls(step: StepMeta) {
 }
 
 .node.selected {
-  box-shadow: 0 0 0 2px rgba(45, 93, 157, 0.25);
+  border-bottom-color: #357b4c;
+  color: #397340;
 }
+.step-check { color: #73a76b; }
+@media(max-width:600px) { .track { gap: 14px; } .node { gap: 5px; } .label { font-size: 10px; } .step-check { display: none; } }
 
 .node.disabled {
   opacity: 0.75;

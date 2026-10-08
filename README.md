@@ -93,6 +93,12 @@ AutoReport 读取 AutoRealize 的任务合同，以及 AlgoEvolve 已经产生�
 
 Vue 前端只访问 Gateway。Gateway 持久化任务和全局设置，生成三个 Core 的任务级配置，启动或停止独立服务任务，并将三个阶段的快照聚合成统一界面。Core 服务不在 Gateway 进程里直接执行长任务，因此 Gateway 重启后可以重新连接仍在运行的 AlgoEvolve 作业。
 
+新版工作台采用任务侧栏、按需配置抽屉、可平移缩放的搜索图与节点检查器。Fusion 来源单独显示；任务配置、分阶段运行、中断恢复、模型库和资源设置均保留。左侧“演示任务”为明确标记的界面示例，不代表真实训练结果。
+
+已运行任务可进入只读重放：原始时间倍速或固定节点节奏（如 1000 ms/节点）、暂停、逐事件步进、进度跳转、循环和全屏展示。Gateway 独立记录本地产物变化；旧任务依据历史日志保守重建并标记来源，重放不会发起训练或模型请求。详细配置盘点、重放精度及提示词改动见 [前端重构与重放说明](docs/frontend-redesign.md)。
+
+前端回归命令：`npm test`、`npm run build`；启动开发服务器后执行 `npm run test:ui` 可检查桌面/移动端搜索图和重放交互，`npm run test:graph` 验证千节点布局与快速回退，`npm run test:markdown` 检查报告公式、安全过滤和异步渲染。Windows 浏览器检查使用本机 Microsoft Edge，其他平台需安装 Playwright Chromium。
+
 ## 服务组成
 
 | 服务            | 默认地址                   | OpenAPI   | 作用                           |
@@ -370,6 +376,7 @@ npm run dev -- --host 127.0.0.1 --port 5173
 | 执行 AutoRealize | 只生成或重建任务包；首次执行时会创建任务目录                                                                 |
 | 执行 AutoML      | 启动新的 AlgoEvolve 搜索；必须已有 AutoRealize 输出、输入目录中的`description.md`，或同时配置 Goal 与 Eval |
 | 继续执行 AutoML  | 在原搜索树、journal、UCT 统计和 Top-K 基础上追加搜索预算                                                     |
+| 修复审查并继续   | 从任务定义审查检查点重建合同；保留数据认知和 QDI 缓存，通过后自动进入 AutoML                                |
 | 执行报告生成     | 使用已有 AutoML 结果生成报告；AutoML 被中断但已有有效候选时也可以执行                                        |
 | 执行任务         | 从 AutoRealize 到 AlgoEvolve 再到 AutoReport 完整执行；完全重跑会要求确认并清理原执行目录                    |
 | 从中断继续任务   | 根据持久化阶段和检查点继续未完成流程                                                                         |
@@ -385,6 +392,8 @@ npm run dev -- --host 127.0.0.1 --port 5173
 - `completed`：预算正常耗尽，仍可以使用“继续执行 AutoML”追加搜索。
 
 继续搜索会复用原工作区、journal、持久 UCT 统计、最佳方案和 Top-K。未完成节点的临时 virtual visits 不会污染重启后的搜索统计；旧进程的堆内存、模型实例和临时缓存不会恢复。
+
+任务配置的 AutoRealize“质量与交付”页可选择审查门禁策略。`strict` 在审查未通过时停止，并提供“修复审查并继续”；`continue_on_exhaustion` 在有限审查次数耗尽后记录未决风险并推进后续阶段。继续策略只适用于语义审查耗尽，缺少必需文件、不可读合同、确定性产物缺陷以及 AutoML 接口/安全预检仍会阻断。门禁决定保存在 `review_gate_decision.json`，并传入搜索诊断和最终报告。
 
 ## 任务输出目录
 
@@ -481,10 +490,14 @@ Gateway 的常用端点：
 | `POST`       | `/api/tasks/start-automl`       | 直接启动 AutoML                 |
 | `POST`       | `/api/tasks/continue-automl`    | 在原树上继续 AutoML             |
 | `POST`       | `/api/tasks/rerun-autorealize`  | 单独执行 AutoRealize            |
+| `POST`       | `/api/tasks/repair-review-and-resume` | 修复任务定义审查并继续完整流程 |
 | `POST`       | `/api/tasks/rerun-autoreport`   | 单独生成报告                    |
 | `POST`       | `/api/tasks/resume`             | 从中断阶段继续完整任务          |
 | `POST`       | `/api/tasks/stop`               | 请求可恢复停止                  |
 | `GET`        | `/api/tasks/{task_id}/snapshot` | 聚合三个阶段的前端快照          |
+| `GET`        | `/api/tasks/{task_id}/automl-readiness` | 查询硬阻断、审查问题和恢复能力 |
+| `GET`        | `/api/tasks/{task_id}/replay` | 获取只读重放事件和历史精度说明 |
+| `GET`        | `/api/tasks/{task_id}/replay/snapshot?sequence=N` | 投影至指定历史事件 |
 
 需要保护 Gateway API 时可以设置 `AUTODECISION_API_TOKEN`，随后除健康检查外的 `/api` 请求都必须携带 `Authorization: Bearer <token>`。跨域来源可通过逗号分隔的 `AUTODECISION_ALLOWED_ORIGINS` 配置。
 

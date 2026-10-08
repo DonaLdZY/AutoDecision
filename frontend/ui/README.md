@@ -1,6 +1,6 @@
-# AutoDecision 前端
+# 工智寻优前端
 
-AutoDecision 的浏览器界面，使用 Vue 3、TypeScript 和 Vite 构建。界面只访问 AutoDecision Gateway，由 Gateway 编排 AutoRealize、AlgoEvolve 和 AutoReport。
+工智寻优的浏览器界面，使用 Vue 3、TypeScript 和 Vite 构建。界面只访问工智寻优网关，由网关编排 AutoRealize、AlgoEvolve 和 AutoReport。
 
 ## 环境要求
 
@@ -15,7 +15,7 @@ npm install
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-单独运行 `npm run dev` 不会启动 Gateway。完整开发环境建议从 AutoDecision 根目录运行统一启动脚本；详见根目录 [README](../../README.md)。
+单独运行 `npm run dev` 不会启动 Gateway。完整开发环境建议从项目根目录运行统一启动脚本；详见根目录 [README](../../README.md)。
 
 Vite 开发服务器会将同源 `/api` 请求代理到 Gateway。如需修改代理目标，启动 Vite 前设置 `AUTODECISION_GATEWAY_TARGET`。
 

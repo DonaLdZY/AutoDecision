@@ -2,7 +2,9 @@
 
 import csv
 import hmac
+import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -27,6 +29,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, Field
+
+from replay import ReplayRecorder, bundle as build_replay_bundle, project as project_replay, read_events
+from report_recovery import validate_report_recovery
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -59,6 +64,11 @@ SERVICE_START_READY_POLL_SECS = 0.5
 MINIMUM_LLM_OUTPUT_TOKENS = 32768
 _UNSET = object()
 DIRECTORY_PICKER_LOCK = threading.Lock()
+GLOBAL_SETTINGS_LOCK = threading.RLock()
+REPAIR_ACTION_LOCK = threading.Lock()
+REPAIR_CONFIRMATION_SECRET = os.urandom(32)
+REPAIR_PENDING_TASKS: set[str] = set()
+replay_recorder = ReplayRecorder()
 DEFAULT_ALLOWED_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -192,7 +202,7 @@ def write_yaml(path: Path, payload: Any, *, sensitive: bool = False) -> None:
     """Atomically write a human-readable YAML configuration file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (
-        "# AutoDecision 前端全局设置。此文件由 Gateway 自动生成和维护。\n"
+        "# 工智寻优前端全局设置。此文件由 Gateway 自动生成和维护。\n"
         "# 文件可能包含明文 API Key，已被 Git 忽略，请勿提交或分享。\n"
     )
     text = header + yaml.safe_dump(
@@ -202,12 +212,22 @@ def write_yaml(path: Path, payload: Any, *, sensitive: bool = False) -> None:
         default_flow_style=False,
     )
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    if sensitive:
-        _restrict_sensitive_file(temp_path)
-    os.replace(temp_path, path)
-    if sensitive:
-        _restrict_sensitive_file(path)
+    try:
+        temp_path.write_text(text, encoding="utf-8")
+        if sensitive:
+            _restrict_sensitive_file(temp_path)
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+        if sensitive:
+            _restrict_sensitive_file(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def write_private_text(path: Path, text: str) -> None:
@@ -268,6 +288,10 @@ class AutoRealizeConfigPayload(BaseModel):
     prompt_token_budget: int = 12000
     artifact_consistency_enabled: bool = True
     artifact_consistency_max_rounds: int = 2
+    # How a task proceeds after bounded semantic review rounds are exhausted.
+    # Strict keeps the historical safety gate; continue_on_exhaustion records
+    # the review findings as warnings and lets later stages run.
+    review_gate_policy: Literal["strict", "continue_on_exhaustion"] = "strict"
     cross_stage_memory_enabled: bool = True
     cross_stage_headroom_ratio: float = 0.72
     cross_stage_retrieval_enabled: bool = True
@@ -322,7 +346,7 @@ class AutoMLConfigPayload(BaseModel):
     refine_plan_max_attempts: int = 3
     result_adjudicator_on_anomaly: bool = True
     fast_first_draft: bool = True
-    fast_first_draft_skip_pre_review: bool = True
+    fast_first_draft_skip_pre_review: bool = False
     use_stepwise_after_first: bool = True
     stepwise_context_max_tokens: int = 90000
     stepwise_compaction_keep_recent_steps: int = 2
@@ -395,6 +419,7 @@ class TaskModel(BaseModel):
     auto_ml_service_job_id: str | None = None
     report_dir: str | None = None
     last_error: str | None = None
+    interrupted_from_phase: str | None = None
 
 
 class StartTaskRequest(BaseModel):
@@ -423,9 +448,21 @@ class ContinueAutoMLRequest(BaseModel):
 class RerunAutoRealizeRequest(BaseModel):
     task_id: str
     confirm: bool = False
+    preserve_cache: bool = False
+
+
+class RepairReviewRequest(BaseModel):
+    task_id: str
+    confirm: bool = False
+    plan_token: str = ""
 
 
 class RerunAutoReportRequest(BaseModel):
+    task_id: str
+    confirm: bool = False
+
+
+class RecoverAutoReportRequest(BaseModel):
     task_id: str
     confirm: bool = False
 
@@ -525,6 +562,7 @@ class TaskStore:
                         task.updated_at = now_ts()
                         changed = True
                         continue
+                    task.interrupted_from_phase = task.phase
                     task.status = "failed"
                     task.phase = "interrupted"
                     if not task.last_error:
@@ -553,6 +591,7 @@ class TaskStore:
                 started_at = float(task.run_started_at or 0.0)
                 if started_at > 0 and (now_ts() - started_at) < 20:
                     continue
+                task.interrupted_from_phase = task.phase
                 task.status = "failed"
                 task.phase = "interrupted"
                 if not task.last_error:
@@ -624,6 +663,16 @@ class TaskStore:
             del self._tasks[task_id]
             self._persist()
 
+    def claim_review_repair(self, expected: TaskModel) -> None:
+        with self._lock:
+            task = self._tasks.get(expected.id)
+            if task is None or task.model_dump() != expected.model_dump() or expected.id in self._handles:
+                raise HTTPException(status_code=409, detail="任务状态已变化，请重新确认修复范围。")
+            task.status, task.phase = "running", "review_repair"
+            task.run_started_at = task.updated_at = now_ts()
+            task.last_error = None
+            self._persist()
+
     def set_status(
         self,
         task_id: str,
@@ -642,6 +691,10 @@ class TaskStore:
             task = self._tasks.get(task_id)
             if task is None:
                 raise HTTPException(status_code=404, detail="task not found")
+            if status in {"stopped", "interrupted_resumable", "interrupted_incomplete"} and task.status == "running":
+                task.interrupted_from_phase = task.phase
+            elif status == "running":
+                task.interrupted_from_phase = None
             task.status = status
             if phase is not None:
                 task.phase = phase
@@ -662,7 +715,38 @@ class TaskStore:
             task.updated_at = now_ts()
             self._tasks[task_id] = task
             self._persist()
+            try:
+                replay_recorder.observe_task(STATE_DIR, task.model_dump())
+            except Exception:
+                logging.getLogger(__name__).exception("Could not persist replay stage for task %s", task_id)
             return task
+
+    def recover_report(self, task_id: str) -> TaskModel:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            if task_id in self._handles:
+                raise HTTPException(status_code=409, detail="Task still has an active service handle")
+            snapshot = task.model_dump()
+        try:
+            report_dir = Path(snapshot.get("run_dir") or "").resolve() / "report"
+            validate_report_recovery(snapshot, report_dir)
+        except (ValueError, OSError, TypeError, KeyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.model_dump() != snapshot or task_id in self._handles:
+                raise HTTPException(status_code=409, detail="Task changed during report evidence verification")
+            task.status, task.phase = "completed", "report_completed"
+            task.report_dir, task.last_error = str(report_dir), None
+            task.updated_at = now_ts()
+            self._persist()
+            try:
+                replay_recorder.observe_task(STATE_DIR, task.model_dump())
+            except Exception:
+                logging.getLogger(__name__).exception("Could not persist recovered report replay for %s", task_id)
+            return task.model_copy(deep=True)
 
     def reset_runtime(self, task_id: str, *, status: str = "idle", phase: str = "config", last_error: str | None = None) -> TaskModel:
         with self._lock:
@@ -677,10 +761,15 @@ class TaskStore:
             task.auto_ml_workspace_dir = None
             task.auto_ml_service_job_id = None
             task.report_dir = None
+            task.interrupted_from_phase = None
             task.last_error = last_error
             task.updated_at = now_ts()
             self._tasks[task_id] = task
             self._persist()
+            try:
+                replay_recorder.reset_task(STATE_DIR, task.model_dump())
+            except Exception:
+                logging.getLogger(__name__).exception("Could not persist replay reset for task %s", task_id)
             return task
 
     def clear_output_paths(self, task_id: str, *, auto_ml: bool = False, report: bool = False) -> TaskModel:
@@ -733,10 +822,17 @@ store = TaskStore()
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
     threading.Thread(target=_recover_persisted_automl_jobs, daemon=True).start()
-    yield
+    replay_stop = threading.Event()
+    replay_thread = threading.Thread(target=_record_running_replays, args=(replay_stop,), daemon=True)
+    replay_thread.start()
+    try:
+        yield
+    finally:
+        replay_stop.set()
+        replay_thread.join(timeout=2)
 
 
-app = FastAPI(title="AutoDecision Local API", version="0.1.0", lifespan=app_lifespan)
+app = FastAPI(title="工智寻优 API", version="0.1.0", lifespan=app_lifespan)
 _allowed_origins = _allowed_origins_from_env()
 app.add_middleware(
     CORSMiddleware,
@@ -856,17 +952,31 @@ def _default_global_settings() -> dict[str, Any]:
 
 
 def _load_persisted_global_settings() -> tuple[dict[str, Any], bool]:
-    current = safe_read_yaml(GLOBAL_SETTINGS_FILE, {})
-    if isinstance(current, dict) and current:
-        return current, False
-    if not GLOBAL_SETTINGS_FILE.exists():
+    # A read failure must never become permission to overwrite credentials with defaults.
+    try:
+        text = GLOBAL_SETTINGS_FILE.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
         legacy = safe_read_json(LEGACY_GLOBAL_SETTINGS_FILE, {})
         if isinstance(legacy, dict) and legacy:
             return legacy, True
-    return {}, False
+        return {}, False
+    except OSError:
+        raise HTTPException(status_code=503, detail="Global settings could not be read; existing configuration was preserved") from None
+    try:
+        current = yaml.safe_load(text)
+    except yaml.YAMLError:
+        raise HTTPException(status_code=503, detail="Global settings YAML is invalid; existing configuration was preserved") from None
+    if not isinstance(current, dict) or not current:
+        raise HTTPException(status_code=503, detail="Global settings must be a nonempty mapping; existing configuration was preserved")
+    return current, False
 
 
 def ensure_global_settings() -> dict[str, Any]:
+    with GLOBAL_SETTINGS_LOCK:
+        return _ensure_global_settings_locked()
+
+
+def _ensure_global_settings_locked() -> dict[str, Any]:
     defaults = _default_global_settings()
     current, migrated_legacy = _load_persisted_global_settings()
     if not isinstance(current, dict):
@@ -916,7 +1026,8 @@ def ensure_global_settings() -> dict[str, Any]:
         merged["algoevolve"]["embeddingModel"] = str(embedding_model.get("model") or merged["algoevolve"].get("embeddingModel") or "")
         merged["algoevolve"]["embeddingBaseUrl"] = str(embedding_model.get("baseUrl") or merged["algoevolve"].get("embeddingBaseUrl") or "")
         merged["algoevolve"]["embeddingApiKey"] = str(embedding_model.get("apiKey") or merged["algoevolve"].get("embeddingApiKey") or "")
-    write_yaml(GLOBAL_SETTINGS_FILE, merged, sensitive=True)
+    if merged != current or migrated_legacy:
+        write_yaml(GLOBAL_SETTINGS_FILE, merged, sensitive=True)
     if migrated_legacy:
         try:
             LEGACY_GLOBAL_SETTINGS_FILE.unlink()
@@ -1236,14 +1347,15 @@ def get_global_settings() -> GlobalSettingsModel:
 
 
 def save_global_settings(payload: GlobalSettingsModel) -> None:
-    existing = ensure_global_settings()
-    raw = payload.model_dump()
-    raw = _deep_merge_settings(existing, raw)
-    _preserve_sensitive_settings(raw, existing, payload.model_dump())
-    raw.pop("resource", None)
-    py = raw.get("python", {}) if isinstance(raw, dict) else {}
-    raw["python"] = {"executable": str((py or {}).get("executable", "python"))}
-    write_yaml(GLOBAL_SETTINGS_FILE, raw, sensitive=True)
+    with GLOBAL_SETTINGS_LOCK:
+        existing = ensure_global_settings()
+        raw = payload.model_dump()
+        raw = _deep_merge_settings(existing, raw)
+        _preserve_sensitive_settings(raw, existing, payload.model_dump())
+        raw.pop("resource", None)
+        py = raw.get("python", {}) if isinstance(raw, dict) else {}
+        raw["python"] = {"executable": str((py or {}).get("executable", "python"))}
+        write_yaml(GLOBAL_SETTINGS_FILE, raw, sensitive=True)
 
 
 # Importing the Gateway application is its startup path under uvicorn. Ensure
@@ -1292,6 +1404,122 @@ def _configured_automl_contract(task: TaskModel) -> tuple[str, str]:
     return goal, evaluation
 
 
+_REVIEW_DERIVED_EXECUTION_PREFIXES = (
+    "final artifact consistency review has not passed",
+    "final artifact consistency:",
+    "evaluation contract has not passed executable validation",
+)
+
+
+def _append_unique(target: list[str], message: str) -> None:
+    value = str(message or "").strip()
+    if value and value not in target:
+        target.append(value)
+
+
+def _review_gate_continues(task: TaskModel) -> bool:
+    return task.config.auto_realize.review_gate_policy == "continue_on_exhaustion"
+
+
+def _automl_artifact_issues(autorealize_dir: Path) -> tuple[list[str], list[str]]:
+    """Return (hard blockers, exhausted-review findings) for AutoML handoff."""
+
+    report_dir = autorealize_dir / "realize_report"
+    hard_blockers: list[str] = []
+    review_issues: list[str] = []
+    for filename, fields in (
+        ("artifact_consistency_report.json", ("passed",)),
+        ("evaluation_contract_report.json", ("passed", "executable")),
+    ):
+        path = report_dir / filename
+        if not path.is_file():
+            continue
+        document = safe_read_json(path, None)
+        if not isinstance(document, dict):
+            _append_unique(hard_blockers, f"{filename}: unreadable review artifact")
+            continue
+        final = document.get("final", {}) if isinstance(document, dict) else {}
+        if not isinstance(final, dict) or any(final.get(field) is not True for field in fields):
+            _append_unique(review_issues, f"{filename}: review retries exhausted without approval")
+        elif any(isinstance(issue, dict) and issue.get("severity") == "blocking"
+                 for issue in final.get("issues", []) or []):
+            _append_unique(hard_blockers, f"{filename}: passed review still contains blocking issues")
+    for filename in ("automl_context_pack.json", "task_definition_report.json"):
+        path = report_dir / filename
+        if not path.is_file():
+            continue
+        document = safe_read_json(path, None)
+        if not isinstance(document, dict):
+            _append_unique(hard_blockers, f"{filename}: unreadable task contract")
+            continue
+        pack = document if filename == "automl_context_pack.json" else document.get("automl_context_pack", {})
+        execution = pack.get("execution_contract", {}) if isinstance(pack, dict) else {}
+        if isinstance(execution, dict) and execution.get("readiness") == "blocked":
+            reasons = [str(item).strip() for item in execution.get("blocking_issues", []) or [] if str(item).strip()]
+            if reasons:
+                for reason in reasons:
+                    target = (
+                        review_issues
+                        if reason.lower().startswith(_REVIEW_DERIVED_EXECUTION_PREFIXES)
+                        else hard_blockers
+                    )
+                    _append_unique(target, f"{filename}: {reason}")
+            elif review_issues:
+                _append_unique(review_issues, f"{filename}: execution contract remains blocked by final review")
+            else:
+                _append_unique(hard_blockers, f"{filename}: execution contract is blocked without a reason")
+        if document.get("defects_after_gate"):
+            _append_unique(hard_blockers, f"{filename}: unresolved deterministic artifact defects")
+        context = document.get("downstream_context", {})
+        if isinstance(context, dict) and "artifact_consistency_review" in context:
+            review = context["artifact_consistency_review"]
+            if not isinstance(review, dict) or review.get("passed") is not True:
+                _append_unique(review_issues, f"{filename}: final artifact review retries exhausted")
+    return hard_blockers, review_issues
+
+
+def _automl_gate_decision(task: TaskModel, autorealize_dir: Path) -> dict[str, Any]:
+    hard_blockers, review_issues = _automl_artifact_issues(autorealize_dir)
+    continue_reviews = _review_gate_continues(task)
+    return {
+        "policy": task.config.auto_realize.review_gate_policy,
+        "blocking_issues": hard_blockers + ([] if continue_reviews else review_issues),
+        "hard_blocking_issues": hard_blockers,
+        "review_issues": review_issues,
+        "warnings": review_issues if continue_reviews else [],
+        "review_bypass_active": bool(review_issues and continue_reviews and not hard_blockers),
+    }
+
+
+def _write_review_gate_decision(task: TaskModel, autorealize_dir: Path, decision: dict[str, Any]) -> Path:
+    path = autorealize_dir / "realize_report" / "review_gate_decision.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "autodecision.review_gate_decision.v1",
+        "task_id": task.id,
+        "task_name": task.task_name,
+        "policy": decision["policy"],
+        "proceeded": not bool(decision["blocking_issues"]),
+        "review_bypass_active": bool(decision["review_bypass_active"]),
+        "review_issues": list(decision["review_issues"]),
+        "hard_blocking_issues": list(decision["hard_blocking_issues"]),
+        "recorded_at": now_ts(),
+        "reporting_rule": (
+            "Preserve these exhausted-review findings as unresolved risks in search diagnostics and the final report. "
+            "They are not evidence that the underlying constraints were satisfied."
+        ),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _automl_artifact_blockers(autorealize_dir: Path) -> list[str]:
+    """Compatibility helper returning the historical strict gate."""
+
+    hard_blockers, review_issues = _automl_artifact_issues(autorealize_dir)
+    return hard_blockers + review_issues
+
+
 def _automl_input_readiness(task: TaskModel) -> dict[str, Any]:
     input_root = Path(task.input_root).expanduser().resolve() if task.input_root.strip() else None
     run_dir = _resolve_task_run_dir_for_rerun(task)
@@ -1314,11 +1542,23 @@ def _automl_input_readiness(task: TaskModel) -> dict[str, Any]:
         source = ""
 
     ready = bool(source) and input_root is not None and input_root.is_dir()
+    gate = _automl_gate_decision(task, autorealize_description.parent)
+    blockers = list(gate["blocking_issues"])
+    if (source == "autorealize_description"
+            and _sample_submission_required(autorealize_description.parent, task.config.auto_realize.generate_sample_submission)
+            and not (autorealize_description.parent / "sample_submission.csv").is_file()):
+        blockers.append("Required sample_submission.csv is missing")
+    if blockers:
+        ready = False
     detail = ""
     if input_root is None:
         detail = "请先配置输入文件夹。"
     elif not input_root.is_dir():
         detail = f"输入文件夹不存在: {input_root}"
+    elif blockers:
+        detail = "AutoML 输入审查未通过，请先修复任务定义：" + "; ".join(blockers)
+    elif gate["warnings"]:
+        detail = "任务策略允许在审查重试耗尽后继续；未决审查项会写入 AutoML 诊断与最终报告。"
     elif not source:
         detail = (
             "AutoML 输入未就绪：请先执行 AutoRealize，或在输入目录提供 description.md，"
@@ -1333,6 +1573,13 @@ def _automl_input_readiness(task: TaskModel) -> dict[str, Any]:
         "input_description": str(original_description) if original_description else "",
         "configured_goal": bool(goal),
         "configured_eval": bool(evaluation),
+        "blocking_issues": blockers,
+        "hard_blocking_issues": gate["hard_blocking_issues"],
+        "review_issues": gate["review_issues"],
+        "warnings": gate["warnings"],
+        "review_gate_policy": gate["policy"],
+        "review_bypass_active": gate["review_bypass_active"],
+        "can_repair_review": _review_repair_eligible(task),
     }
 
 
@@ -1360,6 +1607,10 @@ def _direct_mode_enabled(task: TaskModel) -> bool:
 def _sample_submission_required(autorealize_dir: Path, configured: bool) -> bool:
     if not configured:
         return False
+    output = _autorealize_output_contract(autorealize_dir)
+    required = output.get("sample_submission_required")
+    if type(required) is bool:
+        return required
     context_required = _algoevolve_generate_submission_required(autorealize_dir, configured)
     if context_required is False:
         return False
@@ -1625,7 +1876,7 @@ def _prepare_direct_autorealize_output(
                 "# 数据与任务说明",
                 "",
                 "本任务启用了“跳过 AutoRealize，直接启动 AutoML”模式。",
-                "输入目录中的 `description.md` 被视为人工确认的最高优先级任务说明；AutoDecision 未重新生成赛题描述、提交格式或评估协议。",
+                "输入目录中的 `description.md` 被视为人工确认的最高优先级任务说明；工智寻优未重新生成赛题描述、提交格式或评估协议。",
                 "",
                 "## 原始任务说明",
                 f"- 来源: `{description_rel}`",
@@ -1776,6 +2027,9 @@ def _resolve_autorealize_dir(task: TaskModel) -> Path:
 def _validate_automl_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path, Path]:
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoML")
+    readiness = _automl_input_readiness(task)
+    if not readiness["ready"]:
+        raise HTTPException(status_code=400, detail=str(readiness["detail"]))
 
     if _direct_mode_enabled(task):
         run_dir = _resolve_task_run_dir_for_rerun(task)
@@ -1892,6 +2146,66 @@ def _validate_autorealize_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path
             detail=f"Refused to rewrite unsafe task directory: {run_dir}",
         )
     return input_root, run_dir, run_dir / "autorealize", run_dir / "automl", run_dir / "report"
+
+
+def _review_repair_eligible(task: TaskModel) -> bool:
+    if task.status not in {"failed", "interrupted_incomplete", "interrupted_resumable"}:
+        return False
+    if task.phase not in {"autorealize_failed", "prepare_automl_input_failed", "review_repair_failed", "interrupted"}:
+        return False
+    root = _resolve_task_run_dir_for_rerun(task)
+    # Downstream artifacts bind an existing definition. Old review findings must
+    # never send a report/search recovery back to task definition.
+    if task.auto_ml_log_dir or task.auto_ml_workspace_dir:
+        return False
+    if any((root / "automl").glob("logs/*")) or any((root / "automl").glob("workspaces/*")):
+        return False
+    if any((root / "report").glob("*")):
+        return False
+    cognition = safe_read_json(root / "autorealize/realize_report/data_cognition_report.json", {})
+    return bool(isinstance(cognition, dict) and cognition.get("files")
+                and cognition.get("task_hint") == task.config.auto_realize.task_hint)
+
+
+def _validate_review_repair(task: TaskModel) -> dict[str, Any]:
+    if not _review_repair_eligible(task):
+        raise HTTPException(status_code=409, detail=(
+            "仅任务定义异常中断且存在完整数据理解检查点时可修复审查。"
+            "已进入 AutoML 的任务不能回退修复；报告失败请使用报告生成或从中断继续。"
+        ))
+    _validate_autorealize_rerun(task)
+    return _automl_input_readiness(task)
+
+
+def _review_repair_plan(task: TaskModel) -> dict[str, Any]:
+    _validate_review_repair(task)
+    root = _resolve_task_run_dir_for_rerun(task)
+    files = []
+    for path in sorted((root / "autorealize").rglob("*")):
+        if path.is_file():
+            stat_info = path.stat()
+            files.append({"path": path.relative_to(root).as_posix(), "size": stat_info.st_size,
+                          "mtime_ns": stat_info.st_mtime_ns})
+    plan = {
+        "task_id": task.id, "phase": task.phase, "updated_at": task.updated_at,
+        "stage": "task_definition", "files": files,
+        "replace_paths": [str(root / "autorealize")], "delete_paths": [],
+        "archive_root": str(root / "stage-history"),
+        "preserve_paths": [str(root / "autorealize/realize_report/data_cognition_report.json"),
+                           str(root / "autorealize/realize_report/data_description.md"),
+                           str(root / "autorealize/realize_report/file_cognition")],
+        "config": task.config.model_dump(),
+        "input_files": [
+            (str(path.relative_to(Path(task.input_root))), path.stat().st_size, path.stat().st_mtime_ns)
+            for path in sorted(Path(task.input_root).rglob("*")) if path.is_file()
+        ],
+    }
+    digest = hmac.new(REPAIR_CONFIRMATION_SECRET,
+                      json.dumps(plan, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                      hashlib.sha256).hexdigest()
+    plan.pop("config")
+    plan["plan_token"] = digest
+    return plan
 
 
 def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path | None, Path | None, Path]:
@@ -2099,7 +2413,7 @@ def _build_automl_paths(
     return exp_name, ml_log_dir, ml_ws_dir
 
 
-def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
+def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel, *, resume_definition: bool = False) -> Path:
     template_path = AUTOREALIZE_DIR / "config" / "config.yaml"
     try:
         cfg = yaml.safe_load(template_path.read_text(encoding="utf-8-sig")) or {}
@@ -2121,6 +2435,7 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
 
     cfg["switches"]["run_data_cognition"] = True
     cfg["switches"]["run_task_definition"] = True
+    cfg["switches"]["resume_task_definition"] = resume_definition
     cfg["switches"]["enable_fewshot"] = ar.enable_fewshot
     cfg["switches"]["optimize_llm_cost"] = ar.optimize_llm_cost
     cfg["switches"]["generate_sample_submission"] = ar.generate_sample_submission
@@ -2149,6 +2464,11 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg["prompt"]["control_language"] = task.config.output_language
     cfg["prompt"]["artifact_consistency_enabled"] = bool(ar.artifact_consistency_enabled)
     cfg["prompt"]["artifact_consistency_max_rounds"] = max(1, int(ar.artifact_consistency_max_rounds))
+    cfg["prompt"]["review_gate_policy"] = ar.review_gate_policy
+    # Keep the internal compiler's deterministic defects safety gate aligned
+    # with the task-level policy. Review exhaustion is handled by the Gateway;
+    # only actual deterministic defects remain fatal in continue mode.
+    cfg["prompt"]["artifact_consistency_fail_on_blocking"] = ar.review_gate_policy == "strict"
     cfg["context"]["cross_stage_memory_enabled"] = bool(ar.cross_stage_memory_enabled)
     cfg["context"]["cross_stage_headroom_ratio"] = min(
         0.9,
@@ -2171,7 +2491,8 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel) -> Path:
     cfg["llm"]["reasoning_effort"] = None if effort == "default" else effort
     max_tokens = _normal_max_tokens(autorealize_model.get("maxTokens", autorealize_model.get("max_tokens")))
     effective_max_tokens = max(MINIMUM_LLM_OUTPUT_TOKENS, int(max_tokens or 0))
-    cfg["llm"]["minimum_output_tokens"] = MINIMUM_LLM_OUTPUT_TOKENS
+    cfg["llm"]["context_window_tokens"] = _normal_max_tokens(autorealize_model.get("contextWindowTokens")) or 0
+    cfg["llm"]["minimum_output_tokens"] = effective_max_tokens
     cfg["llm"]["max_tokens"] = effective_max_tokens
     cfg["llm"]["structured_max_tokens"] = effective_max_tokens
     cfg["llm"]["structured_length_retry_max_tokens"] = effective_max_tokens
@@ -2194,10 +2515,7 @@ def _automl_engine(task: TaskModel) -> str:
     return "algoevolve"
 
 
-def _algoevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
-    """Honor AutoRealize's output protocol while preserving manual disable."""
-    if not configured:
-        return False
+def _autorealize_output_contract(autorealize_dir: Path) -> dict[str, Any]:
     report_dir = autorealize_dir / "realize_report"
     automl_pack = safe_read_json(report_dir / "automl_context_pack.json", {})
     output = {}
@@ -2206,6 +2524,15 @@ def _algoevolve_generate_submission_required(autorealize_dir: Path, configured: 
     if not output:
         bundle = safe_read_json(report_dir / "description_protocol_bundle.json", {})
         output = bundle.get("output") if isinstance(bundle, dict) and isinstance(bundle.get("output"), dict) else {}
+    return output
+
+
+def _algoevolve_generate_submission_required(autorealize_dir: Path, configured: bool) -> bool:
+    """Honor AutoRealize's output protocol while preserving manual disable."""
+    if not configured:
+        return False
+    report_dir = autorealize_dir / "realize_report"
+    output = _autorealize_output_contract(autorealize_dir)
     if output:
         if bool(output.get("sample_submission_required")):
             return True
@@ -2296,7 +2623,7 @@ def _build_algoevolve_command(
         f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
         f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
-        f"agent.code.minimum_output_tokens={MINIMUM_LLM_OUTPUT_TOKENS}",
+        f"agent.code.minimum_output_tokens={_model_max_tokens_cli(code_model)}",
         f"agent.code.request_timeout_seconds={am.code_request_timeout_secs}",
         f"agent.code.generation_max_retries={am.code_generation_max_retries}",
         f"agent.code.continuation_max_rounds={am.code_continuation_max_rounds}",
@@ -2306,7 +2633,7 @@ def _build_algoevolve_command(
         f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
         f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
-        f"agent.feedback.minimum_output_tokens={MINIMUM_LLM_OUTPUT_TOKENS}",
+        f"agent.feedback.minimum_output_tokens={_model_max_tokens_cli(feedback_model)}",
         f"agent.feedback.request_timeout_seconds={am.feedback_request_timeout_secs}",
         f"agent.feedback.generation_max_retries={am.feedback_generation_max_retries}",
         f"agent.feedback.continuation_max_rounds={am.feedback_continuation_max_rounds}",
@@ -2338,6 +2665,7 @@ def _build_algoevolve_command(
         f"agent.draft.stepwise_compaction_max_tokens={am.stepwise_compaction_max_tokens}",
         f"agent.draft.stepwise_context_headroom_ratio={am.stepwise_context_headroom_ratio}",
         f"agent.retries.code_review_max_attempts={am.code_review_max_attempts}",
+        f"agent.retries.review_gate_policy={task.config.auto_realize.review_gate_policy}",
         f"agent.retries.preflight_regeneration_max_attempts={am.preflight_regeneration_max_attempts}",
         f"agent.retries.code_review_escalate_to_code={'true' if am.code_review_escalate_to_code else 'false'}",
         f"agent.retries.code_generation_extract_max_attempts={am.code_generation_extract_max_attempts}",
@@ -2745,11 +3073,17 @@ def _report_evidence_paths(
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     evidence.append({"label": "autorealize", "path": str(autorealize_dir), "kind": "autorealize", "required": True})
+    provenance = automl_root.parent / "evaluation_provenance.json"
+    if provenance.is_file():
+        evidence.append({"label": "evaluation_provenance", "path": str(provenance), "kind": "automl", "required": True})
+    resource_override = automl_root.parent / "runtime_resource_override.json"
+    if resource_override.is_file():
+        evidence.append({"label": "latest_user_resource_update", "path": str(resource_override), "kind": "automl", "required": True})
     if ml_log_dir is not None and ml_log_dir.exists():
         evidence.append({"label": "automl_logs", "path": str(ml_log_dir), "kind": "automl", "required": False})
     if ml_ws_dir is not None and ml_ws_dir.exists():
         evidence.append({"label": "automl_workspace", "path": str(ml_ws_dir), "kind": "automl", "required": False})
-    if len(evidence) == 1 and automl_root.exists():
+    if not any(item["label"] in {"automl_logs", "automl_workspace"} for item in evidence) and automl_root.exists():
         evidence.append({"label": "automl_root", "path": str(automl_root), "kind": "automl", "required": False})
     return evidence
 
@@ -2771,6 +3105,20 @@ def _run_report_stage(
     if not cfg.enabled:
         return True
     report_dir.mkdir(parents=True, exist_ok=True)
+    live_definition = autorealize_dir
+    if ml_ws_dir is not None and (ml_ws_dir / "input/description.md").is_file():
+        autorealize_dir = ml_ws_dir / "input"
+    alignment = {
+        "schema_version": "autodecision.report_definition_alignment.v1",
+        "scored_definition_path": str(autorealize_dir / "description.md"),
+        "current_definition_path": str(live_definition / "description.md"),
+        "scored_definition_sha256": hashlib.sha256((autorealize_dir / "description.md").read_bytes()).hexdigest() if (autorealize_dir / "description.md").is_file() else None,
+        "current_definition_sha256": hashlib.sha256((live_definition / "description.md").read_bytes()).hexdigest() if (live_definition / "description.md").is_file() else None,
+        "reporting_rule": "Use the frozen AutoML input to interpret existing scores. A subsequently regenerated definition does not validate these scores under its new rules. Disclose any mismatch.",
+    }
+    alignment["definition_changed_since_search"] = alignment["scored_definition_sha256"] != alignment["current_definition_sha256"]
+    alignment_path = report_dir / "task_definition_alignment.json"
+    alignment_path.write_text(json.dumps(alignment, ensure_ascii=False, indent=2), encoding="utf-8")
     feedback_model = _selected_model(gs.llm, "autoMlFeedback", fallback_role="autoMlCode")
     code_model = _selected_model(gs.llm, "autoMlCode")
     report_model = feedback_model
@@ -2802,6 +3150,14 @@ def _run_report_stage(
         context_window_tokens = int(report_model.get("contextWindowTokens") or 131072)
     except (TypeError, ValueError):
         context_window_tokens = 131072
+    context_window_tokens = max(8192, context_window_tokens)
+    # Detail level sizes supplemental material, not mandatory task contracts.
+    # AutoReport still checks the full input against token/output/headroom budgets.
+    detail_prompt_chars = max(detail_prompt_chars, context_window_tokens * 4)
+    review_gate_policy = str(
+        getattr(getattr(task.config, "auto_realize", None), "review_gate_policy", "strict")
+        or "strict"
+    )
     store.set_status(
         task_id,
         status="running",
@@ -2820,9 +3176,10 @@ def _run_report_stage(
             automl_root=automl_root,
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
-        ),
+        ) + [{"label": "task_definition_alignment", "path": str(alignment_path), "kind": "automl", "required": True}],
         "config": {
-            "report_title": f"{task.task_name} AutoDecision 运行报告",
+            "review_gate_policy": review_gate_policy,
+            "report_title": f"{task.task_name} 工智寻优运行报告",
             "audience": cfg.audience,
             "language": "zh-CN" if task.config.output_language == "zh" else "en-US",
             "include_raw_logs": False,
@@ -2855,7 +3212,13 @@ def _run_report_stage(
                 "context_headroom_ratio": 0.18,
             },
         },
-        "env_overrides": {"DEEPSEEK_API_KEY": report_api_key},
+        # Let AutoReport partition complete task rules when the frozen prefix
+        # cannot fit alongside evidence and output headroom. The partitioner
+        # preserves every source and runs an audit sweep over the final draft.
+        "env_overrides": {
+            "DEEPSEEK_API_KEY": report_api_key,
+            "AUTOREPORT_PARTITIONED_CONTEXT": "validated",
+        },
     }
     try:
         report_start = _json_post(report_base, "/jobs/start", payload, timeout_secs=req_timeout)
@@ -2880,10 +3243,15 @@ def _run_report_stage(
         report_status = _poll_remote_job(report_base, report_job_id, timeout_secs=req_timeout)
     except Exception as e:
         store.pop_handle(task_id)
+        if store.get(task_id).status == "stopped":
+            return False
         store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport service poll failed: {e}")
         return False
     store.pop_handle(task_id)
     report_state = str(report_status.get("status") or "")
+    if report_state in {"stopped", "cancelled", "canceled", "interrupted"} or store.get(task_id).status == "stopped":
+        store.set_status(task_id, status="stopped", phase="stopped", last_error=None)
+        return False
     report_code = report_status.get("exit_code")
     if report_code is None and report_state == "completed":
         report_code = 0
@@ -2906,8 +3274,9 @@ def _run_autorealize_stage(
     run_dir: Path,
     ar_base: str,
     req_timeout: int,
+    resume_definition: bool = False,
 ) -> bool:
-    ar_cfg_path = _write_autorealize_config(task, gs)
+    ar_cfg_path = _write_autorealize_config(task, gs, resume_definition=resume_definition)
     py = str(gs.python.get("executable", "python"))
     autorealize_model = _selected_model(gs.llm or {}, "autoRealize", fallback_role="autoMlCode")
     vllm = _selected_model(gs.llm or {}, "autoRealizeVision")
@@ -2915,8 +3284,8 @@ def _run_autorealize_stage(
     store.set_status(
         task_id,
         status="running",
-        phase="autorealize",
-        run_dir=str(run_dir),
+        phase="review_repair" if resume_definition else "autorealize",
+        run_dir=task.run_dir if resume_definition else str(run_dir),
         run_started_at=now_ts(),
         last_error=None,
     )
@@ -2959,10 +3328,15 @@ def _run_autorealize_stage(
         ar_status = _poll_remote_job(ar_base, ar_job_id, timeout_secs=req_timeout)
     except Exception as e:
         store.pop_handle(task_id)
+        if store.get(task_id).status == "stopped":
+            return False
         store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=f"AutoRealize service poll failed: {e}")
         return False
     store.pop_handle(task_id)
     ar_state = str(ar_status.get("status") or "")
+    if ar_state in {"stopped", "cancelled", "canceled", "interrupted"} or store.get(task_id).status == "stopped":
+        store.set_status(task_id, status="stopped", phase="stopped", last_error=None)
+        return False
     if ar_state != "completed":
         store.set_status(
             task_id,
@@ -3099,6 +3473,15 @@ def _run_automl_stage(
     append_resume_budget: bool = False,
 ) -> bool:
     engine = _automl_engine(task)
+    gate = _automl_gate_decision(task, autorealize_dir)
+    blockers = list(gate["blocking_issues"])
+    if blockers:
+        store.set_status(
+            task_id, status="failed", phase="prepare_automl_input_failed",
+            last_error="AutoML 输入审查未通过，请先修复任务定义：" + "; ".join(blockers),
+        )
+        return False
+    _write_review_gate_decision(task, autorealize_dir, gate)
     algoevolve_log_dir = ml_log_dir if resume_existing else automl_logs_root
     algoevolve_workspace_dir = ml_ws_dir if resume_existing else automl_workspaces_root
     ml_cmd = _build_algoevolve_command(
@@ -3500,7 +3883,92 @@ def _recover_persisted_automl_jobs() -> None:
         ).start()
 
 
-def _rerun_autorealize_thread(task_id: str) -> None:
+_TASK_DEFINITION_CACHE_PREFIXES = (
+    "problem_paradigm_classifier",
+    "description_protocol_",
+    "description_sections_",
+    "description_section_",
+    "source_field_alias_",
+    "sample_submission_spec_",
+    "evaluation_contract_",
+    "evaluation_section_",
+    "eval_reflector",
+    "description_eval_",
+    "downstream_context_",
+    "artifact_consistency_",
+    "open_question_repair",
+    "section_fact_repair",
+    "derived_contract_repair",
+    "description_repair_",
+    "description_final_composer_",
+)
+
+
+def _load_trace_prompt_names(trace_path: Path) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if not trace_path.is_file():
+        return rows
+    for line in trace_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        prompt_name = str(item.get("prompt_name") or "").strip()
+        response = str(item.get("response") or "")
+        if prompt_name and response:
+            rows.append((response, prompt_name))
+    return rows
+
+
+def _copy_review_repair_cache(source: Path, target: Path) -> dict[str, Any]:
+    """Keep cognition/QDI cache while forcing task-definition review regeneration."""
+
+    kept: list[str] = []
+    invalidated: list[str] = []
+    unlabeled = 0
+    traces = _load_trace_prompt_names(source.parent / "llm_traces.jsonl")
+    if source.is_file():
+        for line in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            prompt_name = str(row.get("prompt_name") or "").strip()
+            response = str(row.get("response") or "")
+            if not prompt_name and response:
+                matches = {
+                    trace_prompt
+                    for trace_response, trace_prompt in traces
+                    if len(trace_response) >= 64
+                    and (response.startswith(trace_response) or trace_response.startswith(response))
+                }
+                if len(matches) == 1:
+                    prompt_name = matches.pop()
+                    row["prompt_name"] = prompt_name
+                else:
+                    unlabeled += 1
+            if prompt_name.lower().startswith(_TASK_DEFINITION_CACHE_PREFIXES):
+                invalidated.append(prompt_name)
+                continue
+            kept.append(json.dumps(row, ensure_ascii=False))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    return {
+        "kept_entries": len(kept),
+        "invalidated_entries": len(invalidated),
+        "invalidated_prompt_names": sorted(set(invalidated)),
+        "unlabeled_entries_kept": unlabeled,
+    }
+
+
+def _rerun_autorealize_thread(
+    task_id: str,
+    preserve_cache: bool = False,
+    *,
+    review_repair: bool = False,
+) -> None:
     try:
         task = store.get(task_id)
         gs = get_global_settings()
@@ -3515,6 +3983,12 @@ def _rerun_autorealize_thread(task_id: str) -> None:
             run_started_at=now_ts(),
             last_error=None,
         )
+        cache_source = None
+        if autorealize_dir.is_dir():
+            archive = run_dir / "stage-history" / ("autorealize-" + uuid.uuid4().hex)
+            shutil.copytree(autorealize_dir, archive)
+            if preserve_cache:
+                cache_source = archive / "realize_report" / "llm_cache.jsonl"
         ok_clean = _remove_stage_dirs_for_rerun(
             task_id=task_id,
             run_dir=run_dir,
@@ -3525,6 +3999,17 @@ def _rerun_autorealize_thread(task_id: str) -> None:
         )
         if not ok_clean:
             return
+        if cache_source is not None and cache_source.is_file():
+            target = autorealize_dir / "realize_report" / "llm_cache.jsonl"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if review_repair:
+                cache_result = _copy_review_repair_cache(cache_source, target)
+                (target.parent / "review_repair_cache.json").write_text(
+                    json.dumps(cache_result, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            else:
+                shutil.copy2(cache_source, target)
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -3561,6 +4046,93 @@ def _rerun_autorealize_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=f"重跑 AutoRealize 异常: {e}")
 
 
+def _repair_review_and_resume_thread(task_id: str, checkpoint_task: TaskModel | None = None) -> None:
+    try:
+        task = checkpoint_task or store.get(task_id).model_copy(deep=True)
+        _validate_review_repair(task)
+        root = _resolve_task_run_dir_for_rerun(task)
+        source = root / "autorealize"
+        saved_data = source / "data" if (source / "data").is_dir() else source
+        for original in Path(task.input_root).rglob("*"):
+            if not original.is_file():
+                continue
+            saved = saved_data / original.relative_to(task.input_root)
+            if original.name == "description.md" and (source / "description_origin.md").is_file():
+                saved = source / "description_origin.md"
+            if not saved.is_file() or not saved.resolve().is_relative_to(source.resolve()):
+                raise ValueError(f"数据理解检查点缺少原始文件：{original.name}")
+            with original.open("rb") as left, saved.open("rb") as right:
+                if hashlib.file_digest(left, "sha256").digest() != hashlib.file_digest(right, "sha256").digest():
+                    raise ValueError(f"数据理解后输入已改变，不能复用旧检查点：{original.name}")
+        repair_root = root / "stage-history" / ("review-repair-" + uuid.uuid4().hex)
+        candidate = repair_root / "autorealize"
+        gs = get_global_settings()
+        ar_base, _ml_base, _report_base, timeout = _service_base_urls(gs)
+        store.set_status(task_id, status="running", phase="review_repair", run_started_at=now_ts(), last_error=None)
+        shutil.copytree(source, candidate)
+        _copy_review_repair_cache(source / "realize_report/llm_cache.jsonl", candidate / "realize_report/llm_cache.jsonl")
+        ok = _run_autorealize_stage(
+            task_id=task_id, task=task, gs=gs, input_root=Path(task.input_root),
+            run_dir=repair_root, ar_base=ar_base, req_timeout=timeout, resume_definition=True,
+        )
+        # The live checkpoint remains intact until the isolated repair succeeds.
+        store.set_status(task_id, status=store.get(task_id).status, run_dir=str(root))
+        if not ok:
+            return
+        protected = [source / "realize_report" / name for name in (
+            "data_cognition_report.json", "data_description.md", "constraint_memory.json",
+            "authoritative_task_memory.json", "question_investigation_report.json", "knowledge_base.json",
+        )]
+        protected.extend((source / "realize_report/file_cognition").rglob("*"))
+        for original in protected:
+            if original.is_file() and original.read_bytes() != (candidate / original.relative_to(source)).read_bytes():
+                raise ValueError(f"修复修改了受保护的数据理解文件，未发布：{original.name}")
+        candidate_task = task.model_copy(deep=True)
+        candidate_task.run_dir = str(repair_root)
+        candidate_readiness = _automl_input_readiness(candidate_task)
+        if not candidate_readiness["ready"]:
+            store.set_status(task_id, status="failed", phase="review_repair_failed",
+                             last_error="修复产物仍未就绪，原任务定义已保留：" + candidate_readiness["detail"])
+            return
+        archive = repair_root / "previous-autorealize"
+        source.rename(archive)
+        try:
+            shutil.copytree(candidate, source)
+        except Exception:
+            if source.exists():
+                shutil.rmtree(source)
+            archive.rename(source)
+            raise
+        store.set_status(task_id, status="completed", phase="autorealize_completed", run_dir=str(root), last_error=None)
+        readiness = _automl_input_readiness(store.get(task_id))
+        if not readiness["ready"]:
+            store.set_status(
+                task_id,
+                status="failed",
+                phase="prepare_automl_input_failed",
+                last_error=str(readiness["detail"]),
+            )
+            return
+        _resume_task_thread(task_id)
+    except HTTPException as exc:
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="review_repair_failed",
+            last_error=str(getattr(exc, "detail", None) or exc),
+        )
+    except Exception as exc:
+        store.set_status(
+            task_id,
+            status="failed",
+            phase="review_repair_failed",
+            last_error=f"任务定义审查恢复异常: {exc}",
+        )
+    finally:
+        with REPAIR_ACTION_LOCK:
+            REPAIR_PENDING_TASKS.discard(task_id)
+
+
 def _rerun_autoreport_thread(task_id: str) -> None:
     try:
         task = store.get(task_id)
@@ -3576,17 +4148,11 @@ def _rerun_autoreport_thread(task_id: str) -> None:
             run_started_at=now_ts(),
             last_error=None,
         )
-        ok_clean = _remove_stage_dirs_for_rerun(
-            task_id=task_id,
-            run_dir=run_dir,
-            targets=[report_dir],
-            allowed_names={"report"},
-            phase="report_failed",
-            label="重跑 AutoReport",
-        )
-        if not ok_clean:
-            return
-        store.clear_output_paths(task_id, report=True)
+        if report_dir.is_dir():
+            archive = run_dir / "stage-history" / ("report-" + uuid.uuid4().hex)
+            shutil.copytree(report_dir, archive)
+            for name in ("_service_stdout.log", "_service_stderr.log"):
+                (report_dir / name).write_text("", encoding="utf-8")
 
         if _direct_mode_enabled(task):
             input_root = Path(task.input_root).expanduser().resolve()
@@ -3869,10 +4435,14 @@ def _continue_automl_thread(task_id: str) -> None:
 
 
 def _resume_task_thread(task_id: str) -> None:
-    task = store.get(task_id)
+    task = store.get(task_id).model_copy(deep=True)
     resume_from_completed = task.status == "completed"
     if task.status == "running":
-        store.set_status(task_id, status="failed", phase="resume_failed", last_error="任务当前仍在运行，无法继续")
+        return
+
+    # Resolve the failed stage before inspecting or creating upstream outputs.
+    if task.phase == "report_failed" or task.interrupted_from_phase in {"report", "report_failed"}:
+        _rerun_autoreport_thread(task_id)
         return
 
     gs = get_global_settings()
@@ -4208,6 +4778,8 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     out["task_definition_report"] = safe_read_json(report_dir / "task_definition_report.json", {})
     out["submission_report"] = safe_read_json(report_dir / "submission_report.json", {})
     out["evaluation_contract_report"] = safe_read_json(report_dir / "evaluation_contract_report.json", {})
+    out["artifact_consistency_report"] = safe_read_json(report_dir / "artifact_consistency_report.json", {})
+    out["review_gate_decision"] = safe_read_json(report_dir / "review_gate_decision.json", {})
     out["main_task_protocol"] = safe_read_json(report_dir / "main_task_protocol.json", {})
     out["automl_context_pack"] = safe_read_json(report_dir / "automl_context_pack.json", {})
     out["authoritative_task_memory"] = safe_read_json(report_dir / "authoritative_task_memory.json", {})
@@ -4566,6 +5138,11 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                 {
                     "id": node_id,
                     "parent_id": node2parent.get(node_id),
+                    "fusion_sources": n.get("fusion_sources") or [],
+                    "parent_ids": list(dict.fromkeys(
+                        ([node2parent[node_id]] if node2parent.get(node_id) else [])
+                        + list(n.get("fusion_sources") or [])
+                    )),
                     "stage": n.get("stage"),
                     "plan": n.get("plan"),
                     "code": n.get("code"),
@@ -4574,6 +5151,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "llm_insight": llm_insight,
                     "parser_analysis": parser_analysis,
                     "decision_signals": n.get("decision_signals"),
+                    "evaluation_protocol": n.get("evaluation_protocol"),
                     "metric": metric_val,
                     "maximize": maximize,
                     "is_buggy": n.get("is_buggy"),
@@ -4592,6 +5170,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
                     "total_reward": n.get("total_reward"),
                     "uct": n.get("_uct"),
                     "finish_time": n.get("finish_time"),
+                    "created_time": n.get("created_time"),
                     "exec_time": n.get("exec_time"),
                     "branch_id": n.get("branch_id"),
                     "from_topk": n.get("from_topk"),
@@ -4723,6 +5302,7 @@ def _build_local_report_snapshot(task: TaskModel) -> dict[str, Any]:
         "output_dir": str(report_dir),
         "current_state": safe_read_json(report_dir / state_name, {}),
         "events": _parse_jsonl_local(report_dir / event_name, limit=event_limit),
+        "event_stream_path": str(report_dir / event_name),
         "report": safe_read_json(report_dir / report_json_name, {}),
         "report_markdown": (report_dir / report_md_name).read_text(encoding="utf-8", errors="ignore") if (report_dir / report_md_name).exists() else "",
         "resolved_config": resolved,
@@ -5443,9 +6023,47 @@ def rerun_autorealize(payload: RerunAutoRealizeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="confirm=true required for rerun autorealize")
     task = store.get(payload.task_id)
     _validate_autorealize_rerun(task)
-    thread = threading.Thread(target=_rerun_autorealize_thread, args=(payload.task_id,), daemon=True)
+    thread = threading.Thread(target=_rerun_autorealize_thread, args=(payload.task_id, payload.preserve_cache), daemon=True)
     thread.start()
     return {"status": "started", "task_id": payload.task_id, "mode": "autorealize_only"}
+
+
+@app.post("/api/tasks/repair-review-and-resume")
+def repair_review_and_resume(payload: RepairReviewRequest) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for task-definition review repair")
+    with REPAIR_ACTION_LOCK:
+        if payload.task_id in REPAIR_PENDING_TASKS:
+            raise HTTPException(status_code=409, detail="审查修复已提交，请勿重复启动。")
+        task = store.get(payload.task_id).model_copy(deep=True)
+        plan = _review_repair_plan(task)
+        if not payload.plan_token or not hmac.compare_digest(payload.plan_token, plan["plan_token"]):
+            raise HTTPException(status_code=409, detail="请先查看并确认文件变更清单；任务或文件变化后需重新确认。")
+        readiness = _automl_input_readiness(task)
+        REPAIR_PENDING_TASKS.add(payload.task_id)
+        claimed = False
+        try:
+            store.claim_review_repair(task)
+            claimed = True
+            threading.Thread(target=_repair_review_and_resume_thread, args=(payload.task_id, task), daemon=True).start()
+        except Exception as exc:
+            REPAIR_PENDING_TASKS.discard(payload.task_id)
+            if claimed:
+                store.set_status(payload.task_id, status="failed", phase=task.phase,
+                                 last_error=f"修复线程未启动，原产物已保留：{exc}")
+            raise
+    return {
+        "status": "started",
+        "task_id": payload.task_id,
+        "mode": "repair_review_and_resume",
+        "repair_required": bool(readiness.get("review_issues")) or not bool(readiness["ready"]),
+        "review_gate_policy": task.config.auto_realize.review_gate_policy,
+    }
+
+
+@app.get("/api/tasks/{task_id}/review-repair-plan")
+def review_repair_plan(task_id: str) -> dict[str, Any]:
+    return _review_repair_plan(store.get(task_id))
 
 
 @app.post("/api/tasks/rerun-automl")
@@ -5508,11 +6126,21 @@ def rerun_full(payload: FullRerunTaskRequest) -> dict[str, Any]:
     return {"status": "started", "task_id": payload.task_id, "mode": "full_rerun"}
 
 
+@app.post("/api/tasks/recover-report")
+def recover_autoreport(payload: RecoverAutoReportRequest) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for report recovery")
+    task = store.recover_report(payload.task_id)
+    return {"status": "completed", "task_id": task.id, "phase": task.phase, "report_dir": task.report_dir}
+
+
 @app.post("/api/tasks/resume")
 def resume_task(payload: ResumeTaskRequest) -> dict[str, Any]:
     task = store.get(payload.task_id)
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task already running")
+    if task.status not in {"failed", "stopped", "interrupted_resumable", "interrupted_incomplete"}:
+        raise HTTPException(status_code=409, detail="仅中断或失败任务可从中断继续。")
     thread = threading.Thread(target=_resume_task_thread, args=(payload.task_id,), daemon=True)
     thread.start()
     return {"status": "started", "task_id": payload.task_id, "mode": "resume"}
@@ -5552,6 +6180,15 @@ def stop_task(payload: StopTaskRequest) -> dict[str, Any]:
             return {"status": "stopped"}
         raise HTTPException(status_code=400, detail="task is not running")
     if handle.remote_base_url and handle.remote_job_id:
+        if handle.source in {"autorealize_service", "autoreport_service"}:
+            stage_name = "autorealize" if handle.source == "autorealize_service" else "report"
+            try:
+                _json_post(handle.remote_base_url, "/jobs/stop", {"job_id": handle.remote_job_id}, timeout_secs=150)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"{stage_name} stop was not confirmed: {exc}") from exc
+            store.pop_handle(payload.task_id)
+            store.set_status(task.id, status="stopped", phase="stopped", auto_ml_service_job_id=None, last_error=None)
+            return {"status": "stopped"}
         try:
             remote_status = _json_post(
                 handle.remote_base_url,
@@ -5685,13 +6322,106 @@ def task_snapshot(task_id: str) -> dict[str, Any]:
         report = _read_report_snapshot(task)
     except Exception as e:
         snapshot_errors["auto_report"] = str(e)
+    try:
+        automl_readiness = _automl_input_readiness(task)
+    except Exception as e:
+        automl_readiness = {
+            "ready": False,
+            "detail": f"无法检查 AutoML 输入状态: {e}",
+            "can_repair_review": False,
+        }
+        snapshot_errors["automl_readiness"] = str(e)
     return {
         "task": task.model_dump(),
         "auto_realize": ar,
         "auto_ml": ml,
         "auto_report": report,
+        "automl_readiness": automl_readiness,
         "snapshot_errors": snapshot_errors,
     }
+
+
+def _local_replay_snapshot(task: TaskModel, *, full_events: bool = False) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    builders = (("auto_realize", _build_local_autorealize_snapshot), ("auto_ml", _build_local_automl_snapshot), ("auto_report", _build_local_report_snapshot))
+    for key, builder in builders:
+        try:
+            snapshot[key] = builder(task)
+        except Exception:
+            logging.getLogger(__name__).exception("Could not read %s replay evidence for task %s", key, task.id)
+            snapshot[key] = {}
+    if full_events:
+        for key, directory in (("auto_realize", snapshot["auto_realize"].get("report_dir")), ("auto_ml", snapshot["auto_ml"].get("log_dir")), ("auto_report", snapshot["auto_report"].get("output_dir"))):
+            if directory:
+                rows = read_events(Path(snapshot[key].get("event_stream_path") or Path(directory) / "event_stream.jsonl"))
+                if rows:
+                    snapshot[key]["events"] = rows
+    return snapshot
+
+
+def _record_running_replays(stop: threading.Event) -> None:
+    watched: set[str] = set()
+    started_at = now_ts()
+    captured_versions: dict[str, float] = {}
+    captured_signatures: dict[str, tuple] = {}
+    while not stop.is_set():
+        try:
+            with store._lock:
+                tasks = [task.model_copy(deep=True) for task in store._tasks.values() if task.status == "running" or task.id in watched or (task.updated_at >= started_at and task.updated_at != captured_versions.get(task.id) and task.status != "idle")]
+            for task in tasks:
+                if stop.is_set():
+                    break
+                if task.run_dir:
+                    signature = _replay_artifact_signature(task)
+                    if captured_signatures.get(task.id) != signature:
+                        snapshot = _local_replay_snapshot(task)
+                        with store._lock:
+                            current = store._tasks.get(task.id)
+                            if current is None or current.updated_at != task.updated_at:
+                                continue
+                            replay_recorder.capture(STATE_DIR, task.model_dump(), snapshot)
+                            captured_signatures[task.id] = signature
+                    captured_versions[task.id] = task.updated_at
+                if task.status == "running":
+                    watched.add(task.id)
+                else:
+                    watched.discard(task.id)
+        except Exception:
+            logging.getLogger(__name__).exception("Could not capture replay observations")
+        stop.wait(1)
+
+
+def _replay_artifact_signature(task: TaskModel) -> tuple:
+    entries: list[tuple] = [(task.updated_at, task.status, task.phase)]
+    directories = [_pick_local_automl_log_dir(task), _pick_local_report_dir(task)]
+    for root in _candidate_task_run_dirs(task):
+        directories.extend([root / "autorealize", root / "autorealize" / "realize_report", root / "autorealize" / "realize_report" / "file_cognition", root / "realize_report"])
+    for directory in directories:
+        if directory is None or not directory.is_dir():
+            continue
+        for path in directory.iterdir():
+            if path.is_file() and path.suffix in {".json", ".jsonl", ".md", ".txt"}:
+                try:
+                    info = path.stat()
+                    entries.append((str(path), info.st_mtime_ns, info.st_size))
+                except OSError:
+                    continue
+    return tuple(sorted(entries, key=str))
+
+
+@app.get("/api/tasks/{task_id}/replay")
+def task_replay(task_id: str) -> dict[str, Any]:
+    task = store.get(task_id)
+    recorded = read_events(replay_recorder.path(STATE_DIR, task_id))
+    return build_replay_bundle(task.model_dump(), _local_replay_snapshot(task, full_events=True), recorded)
+
+
+@app.get("/api/tasks/{task_id}/replay/snapshot")
+def task_replay_snapshot(task_id: str, sequence: int = 0) -> dict[str, Any]:
+    if sequence < 0:
+        raise HTTPException(status_code=422, detail="sequence must be nonnegative")
+    replay = task_replay(task_id)
+    return project_replay(replay["events"], sequence)
 
 
 @app.get("/api/fs/list")

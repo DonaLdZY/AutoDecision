@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
 import { computed, shallowRef, watch } from 'vue'
+import { Download, FileText } from 'lucide-vue-next'
+import { useSafeMarkdown } from '../utils/markdown'
 
 interface ReportSection {
   id: string
@@ -29,7 +29,12 @@ const selected = computed(() => props.sections.find((section) => section.id === 
 const fullMarkdownWithoutTitle = computed(() => props.markdown.replace(/^#\s+[^\r\n]+\r?\n+/, ''))
 const visibleMarkdown = computed(() => selected.value?.content || fullMarkdownWithoutTitle.value)
 const visibleTitle = computed(() => selected.value?.title || props.title)
-const safeHtml = computed(() => DOMPurify.sanitize(String(marked.parse(visibleMarkdown.value || ''))))
+const safeHtml = useSafeMarkdown(visibleMarkdown)
+function downloadReport() {
+  const url = URL.createObjectURL(new Blob([props.markdown], { type: 'text/markdown;charset=utf-8' }))
+  const link = document.createElement('a'); link.href = url; link.download = 'report.md'; link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 </script>
 
 <template>
@@ -56,10 +61,10 @@ const safeHtml = computed(() => DOMPurify.sanitize(String(marked.parse(visibleMa
     <article class="document">
       <header class="document-heading">
         <div>
-          <p>{{ selected ? '章节预览' : '最终报告' }}</p>
+          <p><FileText :size="13" />{{ selected ? '章节预览' : '最终报告' }}</p>
           <h2>{{ visibleTitle }}</h2>
         </div>
-        <span v-if="props.outputDir" :title="props.outputDir">{{ props.outputDir }}</span>
+        <button class="icon-button" title="下载报告" aria-label="下载报告" @click="downloadReport"><Download :size="17" /></button>
       </header>
       <div class="markdown-body" v-html="safeHtml"></div>
     </article>
@@ -67,7 +72,6 @@ const safeHtml = computed(() => DOMPurify.sanitize(String(marked.parse(visibleMa
 
   <section v-else class="empty-report">
     <strong>报告正文尚未生成</strong>
-    <span>完成方法分析、写作和检查后将在这里显示最终报告。</span>
   </section>
 </template>
 

@@ -162,6 +162,14 @@ function commit() {
             <input v-model.number="model.artifact_consistency_max_rounds" type="number" min="1" max="6" :disabled="props.disabled" @input="commit" />
           </label>
         </div>
+        <label class="setting-field policy-field">
+          <span>审查次数耗尽后的推进策略</span>
+          <select v-model="model.review_gate_policy" :disabled="props.disabled" @change="commit">
+            <option value="strict">严格阻断，先修复再进入下一阶段</option>
+            <option value="continue_on_exhaustion">记录风险并继续下一阶段</option>
+          </select>
+          <small>该任务策略同时用于任务定义、AutoML 代码审查和最终报告审查。继续模式仅放行审查重试耗尽；缺文件、不可读合同、确定性接口和产物缺陷仍会阻断。</small>
+        </label>
       </section>
     </div>
   </div>
