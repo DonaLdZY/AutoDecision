@@ -227,6 +227,8 @@ frontend/config/global_settings.yaml
 
 该文件已被 `.gitignore` 排除。Gateway 写入时会限制文件权限，向浏览器返回配置时会清除明文 Key。不要把该文件、任务级临时配置、日志或 `.env` 提交到 Git。
 
+仓库只跟踪无密钥的 [YAML 示例](frontend/config/global_settings.example.yaml)，它不能作为运行配置。实际配置和同目录下以 `global_settings` 命名的备份由 `.gitignore` 排除；通过 `AUTODECISION_GLOBAL_SETTINGS_PATH` 自定义位置时，请把文件放在仓库外。不要把真实密钥填入示例，也不要用 `git add -f` 强制添加私有文件。
+
 可以用环境变量改变全局设置路径和 Python：
 
 ```text

@@ -26,6 +26,8 @@ from typing import Any, Callable, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, Field
@@ -833,6 +835,16 @@ async def app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="工智寻优 API", version="0.1.0", lifespan=app_lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_settings_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.method == "PUT" and request.url.path.rstrip("/") == "/api/settings/global":
+        # A validation error can contain the complete submitted settings object.
+        return JSONResponse(status_code=422, content={"detail": "Invalid global settings format"})
+    return await request_validation_exception_handler(request, exc)
+
+
 _allowed_origins = _allowed_origins_from_env()
 app.add_middleware(
     CORSMiddleware,
@@ -952,6 +964,8 @@ def _default_global_settings() -> dict[str, Any]:
 
 
 def _load_persisted_global_settings() -> tuple[dict[str, Any], bool]:
+    if GLOBAL_SETTINGS_FILE.resolve().name.lower() == "global_settings.example.yaml":
+        raise HTTPException(status_code=503, detail="The public settings example cannot be used as a private settings file")
     # A read failure must never become permission to overwrite credentials with defaults.
     try:
         text = GLOBAL_SETTINGS_FILE.read_text(encoding="utf-8-sig")
@@ -1036,27 +1050,39 @@ def _ensure_global_settings_locked() -> dict[str, Any]:
     return merged
 
 
+def _without_settings_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        visible = {}
+        for name, item in value.items():
+            field = re.sub(r"[^a-z0-9]", "", str(name).lower())
+            if field in {"authorization", "auth", "bearer"} or field.endswith(
+                ("apikey", "token", "secret", "password", "passwd", "credential", "credentials", "privatekey")
+            ):
+                continue
+            visible[name] = _without_settings_secrets(item)
+        return visible
+    if isinstance(value, (list, tuple)):
+        return [_without_settings_secrets(item) for item in value]
+    return value
+
+
 def _redact_global_settings_for_client(settings: dict[str, Any]) -> dict[str, Any]:
     """Return settings metadata without sending stored provider keys to the browser."""
-    redacted = json.loads(json.dumps(settings, ensure_ascii=False, default=str))
-    llm = redacted.get("llm") if isinstance(redacted.get("llm"), dict) else {}
-    library = llm.get("modelLibrary") if isinstance(llm.get("modelLibrary"), list) else []
-    for item in library:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("apiKey") or "")
-        item["apiKeyConfigured"] = bool(key)
-        item["apiKey"] = ""
+    llm = settings.get("llm") if isinstance(settings.get("llm"), dict) else {}
+    redacted = _without_settings_secrets(settings)
+    visible_llm = redacted.get("llm") if isinstance(redacted.get("llm"), dict) else {}
+    library = llm.get("modelLibrary")
+    if isinstance(library, list):
+        for original, visible in zip(library, visible_llm["modelLibrary"]):
+            if isinstance(original, dict):
+                visible.update(apiKey="", apiKeyConfigured=bool(original.get("apiKey") or original.get("api_key")))
     for model_key in ("codeModel", "autoRealizeModel", "feedbackModel", "vllm"):
         model = llm.get(model_key)
         if isinstance(model, dict):
-            key = str(model.get("apiKey") or "")
-            model["apiKeyConfigured"] = bool(key)
-            model["apiKey"] = ""
-    algoevolve = redacted.get("algoevolve") if isinstance(redacted.get("algoevolve"), dict) else {}
-    embedding_key = str(algoevolve.get("embeddingApiKey") or "")
-    algoevolve["embeddingApiKeyConfigured"] = bool(embedding_key)
-    algoevolve["embeddingApiKey"] = ""
+            visible_llm[model_key].update(apiKey="", apiKeyConfigured=bool(model.get("apiKey") or model.get("api_key")))
+    algoevolve = settings.get("algoevolve")
+    if isinstance(algoevolve, dict):
+        redacted["algoevolve"].update(embeddingApiKey="", embeddingApiKeyConfigured=bool(algoevolve.get("embeddingApiKey")))
     return redacted
 
 

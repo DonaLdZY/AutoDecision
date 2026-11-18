@@ -112,8 +112,18 @@ def forbidden_runtime_reason(path: Path, repository: Path) -> str | None:
     relative = path.relative_to(repository).as_posix()
     parts = relative.split("/")
     name = parts[-1]
-    if name == ".env" or name.startswith(".env."):
+    if name == ".env" or (name.startswith(".env.") and not name.endswith(".example")):
         return "environment/secret file"
+    if (
+        parts[:2] == ["frontend", "config"]
+        and name.lstrip(".").startswith("global_settings")
+        and relative != "frontend/config/global_settings.example.yaml"
+    ):
+        return "private settings file"
+    if parts[:2] in (["docs", "test-reports"], ["frontend", "industry-panels"]):
+        return "local test or demo output"
+    if parts[0] == ".local-archive":
+        return "local archive"
     if any(part in {".dev-state", ".state", "runs", "__pycache__"} for part in parts):
         return "runtime output"
     if path.suffix.lower() in {".pyc", ".pyo"}:

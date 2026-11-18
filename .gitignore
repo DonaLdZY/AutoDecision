@@ -13,8 +13,32 @@ Desktop.ini
 # Local environment and secrets
 .env
 .env.*
+!.env.example
+!.env.*.example
 replacements.txt
 gitleaks-report.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+**/secrets/
+**/.secrets/
+
+# Local datasets and databases
+/data/
+/datasets/
+/local-data/
+/local_data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+**/config/local*.yml
+**/config/local*.yaml
+*.local.yml
+*.local.yaml
 
 # Python bytecode, environments, and packaging
 __pycache__/
@@ -51,13 +75,54 @@ node_modules/
 .yarn/
 .vite/
 frontend/ui/dist/
+frontend/decision-studio/review*/
+
+# Local-only credential helper
+scripts/set_api_keys.sh
+
+# Private model/service settings, including backups and atomic write files
+/frontend/config/global_settings*
+/frontend/config/.global_settings*
+!/frontend/config/global_settings.example.yaml
+
+# Local archive for retired test scripts and their configuration
+/.local-archive/
+
+# Local development context and historical working notes
+/PROJECT_CONTEXT.md
+/.local-notes/
+*.local.md
+/docs/optimization-*-v*.md
+/docs/progress-report-v*.md
+/docs/diagnostic-report-v*.md
+/docs/real-run-analysis-*.md
+/docs/prompt-optimization-summary-v*.md
+/docs/cost-optimization-v*.md
+/docs/qdi-cost-optimization-v*.md
+/docs/qdi-online-validation-v*.md
+/docs/bugfix-report-history-v*.md
+/docs/capability-registration-v*.md
+/docs/frontend-optimization-plan.md
+/docs/frontend-refactor-plan-v*.md
+/docs/studio-design-v*.md
+/docs/TaskDetail-v*-refactor-design.vue
+
+# Retired development and test documentation
+/docs/test-plan-v0.11.1.md
+/docs/testing-guide-v0.11.1.md
+/docs/TEST-REPORT-v0.11.1.md
+/docs/SUMMARY-v0.11.1.md
+/docs/QUICK_START_v0.11.0.md
+/docs/implementation-guide-v0.11.0.md
+/docs/v0.11.0-optimization-summary.md
 
 # Runtime state and generated output
 runs/
 .dev-state/
 .codex-work/
 frontend/backend/.state/
-frontend/config/global_settings.yaml
+/docs/test-reports/
+/frontend/industry-panels/
 *.log
 *.pid
 *.out
