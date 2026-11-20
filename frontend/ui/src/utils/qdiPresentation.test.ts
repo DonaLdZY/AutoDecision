@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { deriveQdiLiveProgress, normalizeQdiQuestions } from './qdiPresentation'
+import {
+  deriveQdiLiveProgress,
+  isTerminalQdiStatus,
+  normalizeQdiQuestions,
+  qdiCategoryLabel,
+  qdiFileName,
+  qdiPriorityLabel,
+} from './qdiPresentation'
 
 describe('normalizeQdiQuestions', () => {
   it('merges planner questions, ledger records, and final answers', () => {
@@ -80,5 +87,26 @@ describe('deriveQdiLiveProgress', () => {
 
     expect(result.actionDecisions).toBe(3)
     expect(result.completed).toBe(true)
+  })
+})
+
+describe('QDI display labels', () => {
+  it('treats only active investigation states as non-terminal', () => {
+    expect(isTerminalQdiStatus('pending')).toBe(false)
+    expect(isTerminalQdiStatus('investigating')).toBe(false)
+    expect(isTerminalQdiStatus('resolved')).toBe(true)
+    expect(isTerminalQdiStatus('failed')).toBe(true)
+  })
+
+  it('localizes known and unknown categories and priorities', () => {
+    expect(qdiCategoryLabel('business_rule')).toBe('业务规则')
+    expect(qdiCategoryLabel('other')).toBe('其他问题')
+    expect(qdiCategoryLabel('future_enum')).toBe('其他问题')
+    expect(qdiPriorityLabel('high')).toBe('高优先级')
+    expect(qdiPriorityLabel('future_enum')).toBe('普通')
+  })
+
+  it('shows a readable file name while retaining the original path for technical context', () => {
+    expect(qdiFileName('C:\\project\\input\\sales.csv')).toBe('sales.csv')
   })
 })

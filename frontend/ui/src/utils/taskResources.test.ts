@@ -7,7 +7,7 @@ describe('task resource settings', () => {
     expect(defaultTaskResources()).toEqual({
       cpu_cores: 4,
       memory_limit_gb: 8,
-      accelerator_mode: 'all',
+      accelerator_mode: 'none',
       accelerator_device_ids: [],
       monitor_interval_seconds: 0.5,
     })

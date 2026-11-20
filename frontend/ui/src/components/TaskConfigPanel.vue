@@ -12,6 +12,7 @@ import TaskActionPanel from './TaskActionPanel.vue'
 import { api } from '../api'
 import { normalizeTaskResources } from '../utils/taskResources'
 import { normalizeAutoReportConfig } from '../utils/autoReport'
+import { applyResourcePreset } from '../utils/localProduct'
 
 const props = defineProps<{
   task: Task
@@ -35,6 +36,21 @@ const emit = defineEmits<{
 }>()
 
 const subTab = reactive({ key: 'basic' })
+const expertMode = shallowRef(false)
+const locked = computed(() => props.task.status === 'running' || !!props.task.run_dir || !!props.task.execution_config)
+const presetPending = shallowRef(false)
+async function applyPreset(preset: 'light' | 'standard' | 'full') {
+  if (locked.value) return
+  presetPending.value = true
+  try {
+    const inventory = await api.getResourceInventory()
+    applyResourcePreset(localConfig, preset, inventory.cpu.logical_count, inventory.memory.total_gb)
+    propagateConfig()
+    pickerMessageKind.value = 'info'
+    pickerMessage.value = '已应用资源预设，GPU 默认关闭；需要 GPU 时到任务资源中选择设备。'
+  } catch (e) { pickerMessageKind.value = 'error'; pickerMessage.value = `读取机器资源失败，未更改配置：${String(e)}` }
+  finally { presetPending.value = false }
+}
 const localConfig = reactive<TaskConfig>(cloneDeep(props.task.config))
 const taskNameInput = computed({
   get: () => displayTaskName(localConfig.task_name),
@@ -99,7 +115,7 @@ const canRunReport = computed(() => (
   && !!props.task.auto_ml_log_dir
   && !!props.task.auto_ml_workspace_dir
 ))
-const canRunTask = computed(() => props.task.status !== 'running' && hasRequiredBasics.value)
+const canRunTask = computed(() => props.task.status === 'idle' && !props.task.run_dir && hasRequiredBasics.value)
 const isResumableInterruption = computed(() => props.task.status === 'interrupted_resumable')
 const canResumeTask = computed(() => (
   hasRequiredBasics.value
@@ -206,13 +222,13 @@ async function openRunDirectory() {
     <div class="panel-header">
       <div>
         <h2>任务配置</h2>
-        <p>配置完成后启动：数据认知 → 任务定义 → AutoML → AutoReport</p>
+        <p>选择数据、填写目标与预算。默认自动执行；算法细节可按需展开。</p>
       </div>
       <div class="panel-header-actions">
         <button
           type="button"
           class="reset-config-btn"
-          :disabled="task.status === 'running'"
+          :disabled="locked"
           title="将当前表单恢复为系统默认配置"
           @click="emit('restoreDefaults', task.id)"
         >
@@ -227,14 +243,17 @@ async function openRunDirectory() {
       </div>
     </div>
 
+    <p v-if="locked" class="product-note">当前实验配置已锁定；修改目标、数据或预算请关闭此面板并创建新实验。</p>
+    <label class="expert-toggle"><input v-model="expertMode" type="checkbox" @change="subTab.key = 'basic'" /> 显示高级算法参数与阶段操作</label>
     <div class="sub-tabs">
       <button :class="{ active: subTab.key === 'basic' }" @click="subTab.key = 'basic'">基础配置</button>
       <button :class="{ active: subTab.key === 'resources' }" @click="subTab.key = 'resources'">任务资源</button>
-      <button :class="{ active: subTab.key === 'autorealize' }" @click="subTab.key = 'autorealize'">AutoRealize</button>
-      <button :class="{ active: subTab.key === 'automl' }" @click="subTab.key = 'automl'">AutoML</button>
-      <button :class="{ active: subTab.key === 'report' }" @click="subTab.key = 'report'">AutoReport</button>
+      <button v-if="expertMode" :class="{ active: subTab.key === 'autorealize' }" @click="subTab.key = 'autorealize'">数据分析参数</button>
+      <button v-if="expertMode" :class="{ active: subTab.key === 'automl' }" @click="subTab.key = 'automl'">搜索算法参数</button>
+      <button v-if="expertMode" :class="{ active: subTab.key === 'report' }" @click="subTab.key = 'report'">报告参数</button>
     </div>
 
+    <fieldset class="config-fields" :disabled="locked">
     <div class="sub-body" v-if="subTab.key === 'basic'">
       <label>
         <span>任务名</span>
@@ -291,6 +310,8 @@ async function openRunDirectory() {
         </select>
         <small>统一约束 AutoRealize、AlgoEvolve 和 AutoReport 的模型输出。</small>
       </label>
+      <div class="budget-presets"><span>资源预设（GPU 按需单独启用）</span><div class="product-actions"><button type="button" class="command" :disabled="presetPending" @click="applyPreset('light')">轻量试跑</button><button type="button" class="command" :disabled="presetPending" @click="applyPreset('standard')">标准实验</button><button type="button" class="command" :disabled="presetPending" @click="applyPreset('full')">长时间探索</button></div></div>
+      <label><span>搜索时间上限（分钟）</span><input type="number" min="1" :value="Math.round(localConfig.auto_ml.time_limit_secs / 60)" @change="localConfig.auto_ml.time_limit_secs = Math.max(60, Number(($event.target as HTMLInputElement).value) * 60); propagateConfig()" /><small>不含前置分析、最终评估和报告；API 费用不受此时间预算直接约束。</small></label>
     </div>
 
     <div class="sub-body" v-else-if="subTab.key === 'resources'">
@@ -325,7 +346,9 @@ async function openRunDirectory() {
       />
     </div>
 
+    </fieldset>
     <TaskActionPanel
+      :expert="expertMode"
       :running="task.status === 'running'"
       :can-open-directory="canOpenRunDir"
       :can-run-auto-realize="canRunAutoRealize"
@@ -349,7 +372,7 @@ async function openRunDirectory() {
       @stop-task="emit('stop', task.id)"
     />
 
-    <div class="meta-row">
+    <div v-if="expertMode" class="meta-row">
       <span v-if="isResumableInterruption" class="resume-ready">已中断，搜索树与 Top-K 已保存，可继续搜索或生成报告</span>
       <span>AutoRealize current_state: {{ currentStateStatus }}</span>
       <span v-if="task.run_dir">run_dir: {{ task.run_dir }}</span>
@@ -372,6 +395,10 @@ async function openRunDirectory() {
 </template>
 
 <style scoped>
+.config-fields { padding: 0; margin: 0; border: 0; min-width: 0; }
+.expert-toggle { display: flex; gap: 8px; align-items: center; font-size: 12px; margin: 12px 0; }
+.expert-toggle input { width: auto; }
+.budget-presets { display: grid; gap: 8px; }
 .task-panel {
   width: 100%;
   min-width: 0;

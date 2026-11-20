@@ -73,15 +73,15 @@ function pickCurrent() {
 }
 
 async function initialize() {
-  await loadRoots()
-  const target = props.initialPath?.trim() || roots.value[0] || ''
-  if (target) {
-    await loadDir(target)
-  }
+  try {
+    await loadRoots()
+    const target = props.initialPath?.trim() || roots.value[0] || ''
+    if (target) await loadDir(target)
+  } catch (e) { error.value = String(e) }
 }
 
 onMounted(async () => {
-  await initialize()
+  if (props.visible) await initialize()
 })
 
 watch(

@@ -173,8 +173,8 @@ describe('task configuration defaults', () => {
 
     const inherited = newTaskConfigFromHistory([latest, older], 3)
 
-    expect(inherited.task_name).toBe('latest-template')
-    expect(inherited.input_root).toBe('D:/datasets/latest')
+    expect(inherited.task_name).toMatch(/^task_3_/)
+    expect(inherited.input_root).toBe('')
     expect(inherited.output_language).toBe('en')
     expect(inherited.auto_ml.steps).toBe(137)
     inherited.auto_ml.steps = 1

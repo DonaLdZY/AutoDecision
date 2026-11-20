@@ -122,6 +122,8 @@ def test_empty_client_key_preserves_existing_model_key() -> None:
 def test_cors_defaults_to_local_frontend(monkeypatch) -> None:
     monkeypatch.delenv("AUTODECISION_ALLOWED_ORIGINS", raising=False)
     assert app._allowed_origins_from_env() == [
+        "http://127.0.0.1:5178",
+        "http://localhost:5178",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ]

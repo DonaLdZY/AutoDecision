@@ -5,7 +5,11 @@ import {
   asRecord,
   deriveQdiLiveProgress,
   isResolvedQdiStatus,
+  isTerminalQdiStatus,
   normalizeQdiQuestions,
+  qdiCategoryLabel,
+  qdiFileName,
+  qdiPriorityLabel,
   textList,
 } from '../utils/qdiPresentation'
 import type { QdiQuestionView } from '../utils/qdiPresentation'
@@ -49,17 +53,7 @@ const selectedQuestion = computed(() => {
 
 const resolvedCount = computed(() => questions.value.filter((row) => isResolvedQdiStatus(row.status)).length)
 const unresolvedCount = computed(() => questions.value.filter((row) => row.status === 'unresolved' || Boolean(row.unresolvedReason)).length)
-const terminalCount = computed(() => questions.value.filter((row) => {
-  return !['pending', 'investigating', 'in_progress', 'refined'].includes(row.status)
-}).length)
-const successfulScripts = computed(() => Math.max(
-  liveProgress.value.scriptSuccesses,
-  stepResults.value.filter((row) => String(row.status ?? '').toLowerCase() === 'completed').length,
-))
-const failedScripts = computed(() => Math.max(
-  liveProgress.value.scriptFailures,
-  stepResults.value.filter((row) => String(row.status ?? '').toLowerCase() === 'failed').length,
-))
+const terminalCount = computed(() => questions.value.filter((row) => isTerminalQdiStatus(row.status)).length)
 const currentQuestion = computed(() => {
   return questions.value.find((row) => row.id === liveProgress.value.currentQuestionId) ?? null
 })
@@ -71,7 +65,7 @@ const workbenchStatus = computed(() => {
   if (questions.value.length === 0) return { label: '等待调查', tone: 'idle' }
   if (unresolvedCount.value > 0) return { label: '有待确认项', tone: 'warning' }
   if (resolvedCount.value === questions.value.length) return { label: '调查完成', tone: 'complete' }
-  if (terminalCount.value === questions.value.length) return { label: '调查完成', tone: 'complete' }
+  if (terminalCount.value === questions.value.length) return { label: '调查结束，结论待复核', tone: 'warning' }
   if (pipelineStatus.value === 'running') return { label: '调查进行中', tone: 'running' }
   return { label: '调查进行中', tone: 'running' }
 })
@@ -82,6 +76,8 @@ const currentActionLabel = computed(() => {
   const labels: Record<string, string> = {
     decide_next_action: '决定下一步',
     request_script: '执行只读脚本',
+    request_checks: '批量核查数据',
+    planner_direct_answer: '引用权威原文',
     request_context: '取回相关认知卡片',
     search_document: '检索文档',
     read_document_chunks: '读取文档片段',
@@ -89,8 +85,24 @@ const currentActionLabel = computed(() => {
     answer: '形成结论',
     give_up: '记录未解决原因',
   }
-  return labels[action] ?? action.replaceAll('_', ' ')
+  return labels[action] ?? '调查处理中'
 })
+
+function confidenceLabel(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `${Math.round((value <= 1 ? value : value / 100) * 100)}%`
+  }
+  return String(value ?? '').trim()
+}
+
+function actionStatusLabel(value: unknown) {
+  const status = String(value ?? '').toLowerCase()
+  if (['completed', 'success', 'resolved'].includes(status)) return '已完成'
+  if (['running', 'in_progress', 'started'].includes(status)) return '进行中'
+  if (['failed', 'error'].includes(status)) return '失败'
+  if (['unresolved', 'pending'].includes(status)) return '待处理'
+  return '已记录'
+}
 
 const selectedScripts = computed(() => {
   const id = selectedQuestionId.value
@@ -162,6 +174,46 @@ function compactJson(value: unknown, limit = 1800) {
   return text.length > limit ? `${text.slice(0, limit)}\n... 已在界面截断` : text
 }
 
+function compactText(value: string, limit = 1400) {
+  const text = value.trim()
+  if (!text) return ''
+  if (/^[\[{]/.test(text)) {
+    try {
+      return readableResult(JSON.parse(text), limit)
+    } catch {
+      // Preserve non-JSON output as text.
+    }
+  }
+  return text.length > limit ? `${text.slice(0, limit)}\n…` : text
+}
+
+function readableResult(value: unknown, limit = 1400): string {
+  if (typeof value === 'string') return compactText(value, limit)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    const lines = value.slice(0, 12).map((item) => {
+      return typeof item === 'string' ? item : readableResult(item, 220)
+    }).filter(Boolean)
+    return lines.join('\n') || '检查已完成。'
+  }
+
+  const row = asRecord(value)
+  const fields: [string, string[]][] = [
+    ['结论', ['conclusion', 'summary', 'message', 'answer', 'status']],
+    ['数量', ['count', 'rows', 'matched_rows', 'records']],
+    ['字段', ['columns', 'fields']],
+    ['异常', ['error', 'reason', 'warning']],
+  ]
+  const lines = fields.flatMap(([label, keys]) => {
+    const key = keys.find((candidate) => row[candidate] !== undefined && row[candidate] !== null)
+    if (!key) return []
+    const raw = row[key]
+    const text = Array.isArray(raw) ? raw.join('、') : String(raw)
+    return text ? [`${label}：${text}`] : []
+  })
+  return lines.join('\n').slice(0, limit) || '检查已完成，详细结构化结果已保存在运行记录中。'
+}
+
 function resultArtifact(row: Record<string, unknown>) {
   const result = asRecord(row.result)
   return asRecord(result._full_result_artifact)
@@ -170,40 +222,60 @@ function resultArtifact(row: Record<string, unknown>) {
 function resultPreview(row: Record<string, unknown>) {
   const result = asRecord(row.result)
   const artifact = resultArtifact(row)
-  const visible = artifact.visible_excerpt ?? result.visible_excerpt ?? row.error ?? result
-  return compactJson(visible, 1400)
+  const visible = artifact.visible_excerpt
+    ?? result.visible_excerpt
+    ?? result.stdout
+    ?? result.summary
+    ?? row.error
+  return visible === undefined ? '检查已完成，详细结构化结果已保存在运行记录中。' : readableResult(visible)
+}
+
+function resultDetails(row: Record<string, unknown>) {
+  return compactJson(row.result ?? { error: row.error }, 8000)
 }
 
 function actionName(row: Record<string, unknown>) {
-  return String(row.action ?? row.event_type ?? 'investigate').replaceAll('_', ' ')
+  const action = String(row.action ?? row.event_type ?? '')
+  const labels: Record<string, string> = {
+    decide_next_action: '选择调查方向',
+    request_script: '检查数据',
+    request_checks: '核对数据概况',
+    planner_direct_answer: '查阅公开资料',
+    request_context: '读取相关数据说明',
+    search_document: '搜索项目文档',
+    read_document_chunks: '阅读项目文档',
+    read_qdi_artifact_excerpt: '回看已有调查结果',
+    answer: '形成结论',
+    give_up: '记录待解决问题',
+    refine_current_question: '细化调查问题',
+  }
+  return labels[action] ?? '调查步骤'
 }
 
 function scriptTitle(row: Record<string, unknown>, index: number) {
-  return String(row.goal ?? row.reason ?? row.question_id ?? `脚本 ${index + 1}`)
+  return String(row.goal ?? row.reason ?? `检查脚本 ${index + 1}`)
+}
+
+function fileLabel(value: string) {
+  return qdiFileName(value)
 }
 </script>
 
 <template>
   <section class="qdi-workbench">
-    <header class="qdi-hero">
+    <header v-if="questions.length > 0 || reportSummary" class="qdi-hero">
       <div class="qdi-hero-copy">
-        <p class="qdi-eyebrow">Question-Driven Investigation</p>
         <div class="qdi-title-row">
-          <h3 class="qdi-title">QDI 调查终点</h3>
+          <h3 class="qdi-title">问题调查</h3>
           <span class="qdi-state" :class="workbenchStatus.tone">{{ workbenchStatus.label }}</span>
         </div>
-        <p class="qdi-summary">
-          {{ reportSummary || (enabled ? '围绕阻塞建模的问题执行只读探查，并把证据、结论与剩余不确定性传给任务定义阶段。' : '当前任务未启用 QDI。') }}
-        </p>
+        <p v-if="reportSummary" class="qdi-summary"><strong>调查小结</strong>{{ reportSummary }}</p>
       </div>
 
-      <div class="qdi-metrics" aria-label="QDI 调查统计">
-        <div><span>问题</span><strong>{{ questions.length || liveProgress.queuedQuestions }}</strong></div>
-        <div><span>已解决</span><strong>{{ resolvedCount }}</strong></div>
-        <div><span>调查动作</span><strong>{{ liveProgress.actionDecisions }}</strong></div>
-        <div><span>脚本成功</span><strong>{{ successfulScripts }}</strong></div>
-        <div><span>脚本失败</span><strong>{{ failedScripts }}</strong></div>
-        <div><span>脚本修复</span><strong>{{ liveProgress.repairCalls }}</strong></div>
+      <div v-if="questions.length > 0" class="qdi-counts" aria-label="问题处理情况">
+        <span>{{ questions.length }} 项问题</span>
+        <span>{{ resolvedCount }} 项已解决</span>
+        <span v-if="unresolvedCount > 0">{{ unresolvedCount }} 项待确认</span>
       </div>
     </header>
 
@@ -212,12 +284,9 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
       <div class="live-copy">
         <strong>{{ liveProgress.activityLabel }}</strong>
         <span v-if="currentQuestion">当前问题：{{ currentQuestion.question }}</span>
-        <span v-else-if="liveProgress.currentQuestionId">当前问题：{{ liveProgress.currentQuestionId }}</span>
       </div>
       <div class="live-meta">
         <span v-if="currentActionLabel">{{ currentActionLabel }}</span>
-        <span v-if="liveProgress.actionRound > 0">第 {{ liveProgress.actionRound }} 轮</span>
-        <span v-if="liveProgress.lastUpdate">{{ liveProgress.lastUpdate }}</span>
       </div>
     </div>
 
@@ -225,7 +294,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
       <aside class="question-rail">
         <div class="rail-heading">
           <span>调查问题</span>
-          <small>{{ resolvedCount }}/{{ questions.length }} resolved</small>
+          <small>{{ resolvedCount }}/{{ questions.length }} 项已解决</small>
         </div>
         <button
           v-for="(question, index) in questions"
@@ -238,7 +307,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
           <span class="question-index">{{ String(index + 1).padStart(2, '0') }}</span>
           <span class="question-copy">
             <strong>{{ question.question }}</strong>
-            <small>{{ question.category }} · {{ question.priority }}</small>
+          <small>{{ qdiCategoryLabel(question.category) }} · {{ qdiPriorityLabel(question.priority) }}</small>
           </span>
           <span class="question-status" :class="statusTone(question.status)">{{ statusLabel(question.status) }}</span>
         </button>
@@ -247,20 +316,18 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
       <main v-if="selectedQuestion" class="question-detail">
         <section class="detail-lead">
           <div class="detail-kickers">
-            <span>{{ selectedQuestion.category }}</span>
-            <span>优先级 {{ selectedQuestion.priority }}</span>
-            <span v-if="selectedQuestion.confidence">置信度 {{ selectedQuestion.confidence }}</span>
-            <span v-if="selectedQuestion.depth > 0">追问深度 {{ selectedQuestion.depth }}</span>
+            <span>{{ qdiCategoryLabel(selectedQuestion.category) }}</span>
+            <span>{{ qdiPriorityLabel(selectedQuestion.priority) }}</span>
+            <span v-if="confidenceLabel(selectedQuestion.confidence)">置信度 {{ confidenceLabel(selectedQuestion.confidence) }}</span>
           </div>
           <h4 class="detail-title">{{ selectedQuestion.question }}</h4>
-          <p v-if="selectedQuestion.whyBlocking" class="blocking-note">为什么需要调查：{{ selectedQuestion.whyBlocking }}</p>
+          <p v-if="selectedQuestion.whyBlocking" class="blocking-note">待确认原因：{{ selectedQuestion.whyBlocking }}</p>
         </section>
 
         <section class="conclusion-card" :class="statusTone(selectedQuestion.status)">
           <div class="card-heading">
             <div>
-              <p class="section-kicker">Final Finding</p>
-              <h5 class="section-title">最终结论</h5>
+              <h5 class="section-title">结论</h5>
             </div>
             <span class="question-status" :class="statusTone(selectedQuestion.status)">{{ statusLabel(selectedQuestion.status) }}</span>
           </div>
@@ -277,7 +344,6 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
           <section class="evidence-card">
             <div class="card-heading compact">
               <h5 class="section-title">证据</h5>
-              <span>{{ selectedQuestion.evidence.length }}</span>
             </div>
             <ol v-if="selectedQuestion.evidence.length > 0" class="numbered-list">
               <li v-for="item in selectedQuestion.evidence" :key="item">{{ item }}</li>
@@ -288,7 +354,6 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
           <section class="evidence-card">
             <div class="card-heading compact">
               <h5 class="section-title">下游注意事项</h5>
-              <span>{{ selectedQuestion.downstreamNotes.length }}</span>
             </div>
             <ul v-if="selectedQuestion.downstreamNotes.length > 0" class="plain-list">
               <li v-for="item in selectedQuestion.downstreamNotes" :key="item">{{ item }}</li>
@@ -300,10 +365,8 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
         <section v-if="Object.keys(selectedMemory).length > 0" class="memory-card">
           <div class="card-heading">
             <div>
-              <p class="section-kicker">Working Memory</p>
-              <h5 class="section-title">调查工作记忆</h5>
+              <h5 class="section-title">调查依据</h5>
             </div>
-            <span>更新至动作 {{ selectedMemory.last_updated_sequence ?? '-' }}</span>
           </div>
           <div class="memory-grid">
             <div>
@@ -331,10 +394,8 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
         <section class="timeline-card">
           <div class="card-heading">
             <div>
-              <p class="section-kicker">Investigation Timeline</p>
-              <h5 class="section-title">探索轨迹</h5>
+              <h5 class="section-title">调查过程</h5>
             </div>
-            <span>{{ selectedTimeline.length }} 个动作</span>
           </div>
           <div v-if="selectedTimeline.length > 0" class="timeline-list">
             <article v-for="entry in selectedTimeline" :key="`${selectedQuestion.id}-${entry.sequence}`" class="timeline-entry">
@@ -342,7 +403,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
               <div class="timeline-content">
                 <div class="timeline-heading">
                   <strong>{{ actionName(entry.action) }}</strong>
-                  <span>{{ String(entry.action.status ?? entry.action.result ?? 'completed') }}</span>
+                  <span>{{ actionStatusLabel(entry.action.status ?? entry.action.result) }}</span>
                 </div>
                 <p v-if="entry.digest.what_was_done" class="timeline-summary">{{ entry.digest.what_was_done }}</p>
                 <p v-else-if="entry.action.notes" class="timeline-summary">{{ entry.action.notes }}</p>
@@ -353,9 +414,6 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
                   <p v-if="entry.digest.temporary_conclusion"><strong>临时结论：</strong>{{ entry.digest.temporary_conclusion }}</p>
                   <p v-if="entry.digest.remaining_gap"><strong>剩余缺口：</strong>{{ entry.digest.remaining_gap }}</p>
                 </div>
-                <div v-if="textList(entry.digest.evidence_refs).length > 0" class="artifact-row">
-                  <span v-for="ref in textList(entry.digest.evidence_refs)" :key="ref">{{ ref }}</span>
-                </div>
               </div>
             </article>
           </div>
@@ -365,34 +423,32 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
         <section v-if="selectedResults.length > 0 || selectedScripts.length > 0" class="execution-card">
           <div class="card-heading">
             <div>
-              <p class="section-kicker">Execution Evidence</p>
-              <h5 class="section-title">脚本与执行结果</h5>
+              <h5 class="section-title">数据检查</h5>
             </div>
-            <span>{{ selectedResults.length }} 次执行</span>
+            <span v-if="selectedResults.length > 0">{{ selectedResults.length }} 次检查</span>
           </div>
 
           <div class="execution-list">
             <details v-for="(row, index) in selectedResults" :key="String(row.request_id ?? `result-${index}`)" class="execution-item">
               <summary>
-                <span>{{ String(row.request_id ?? `执行 ${index + 1}`) }}</span>
-                <span class="execution-status" :class="String(row.status ?? '').toLowerCase()">{{ row.status ?? 'unknown' }}</span>
-                <span v-if="row.output_truncated" class="truncated-label">输出已截断</span>
+                <span>第 {{ index + 1 }} 次检查</span>
+                <span class="execution-status" :class="String(row.status ?? '').toLowerCase()">{{ actionStatusLabel(row.status) }}</span>
+                <span v-if="row.output_truncated" class="truncated-label">结果过长，已缩短显示</span>
               </summary>
-              <div class="execution-meta">
-                <span v-if="row.original_output_chars">原始 {{ row.original_output_chars }} 字符</span>
-                <span v-if="row.visible_output_chars">可见 {{ row.visible_output_chars }} 字符</span>
-                <span v-if="resultArtifact(row).artifact_id">artifact {{ resultArtifact(row).artifact_id }}</span>
-              </div>
-              <pre>{{ resultPreview(row) }}</pre>
+              <p class="execution-result">{{ resultPreview(row) }}</p>
+              <details class="technical-result">
+                <summary>查看技术数据</summary>
+                <pre>{{ resultDetails(row) }}</pre>
+              </details>
             </details>
 
             <details v-for="(row, index) in selectedScripts" :key="String(row.request_id ?? `script-${index}`)" class="execution-item script-item">
               <summary>
                 <span>{{ scriptTitle(row, index) }}</span>
-                <span>查看只读脚本</span>
+                <span>查看检查脚本</span>
               </summary>
               <div class="execution-meta">
-                <span v-for="file in textList(row.input_files).slice(0, 6)" :key="file">{{ file }}</span>
+                <span v-for="file in textList(row.input_files).slice(0, 6)" :key="file">{{ fileLabel(file) }}</span>
               </div>
               <pre>{{ String(row.python_code ?? '报告未保存脚本源码。').slice(0, 8000) }}</pre>
             </details>
@@ -402,33 +458,29 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
         <section v-if="selectedQuestion.usedFiles.length > 0" class="used-files-card">
           <strong>本问题使用的数据文件</strong>
           <div class="artifact-row">
-            <span v-for="file in selectedQuestion.usedFiles" :key="file">{{ file }}</span>
+            <span v-for="file in selectedQuestion.usedFiles" :key="file" :title="file">{{ qdiFileName(file) }}</span>
           </div>
         </section>
       </main>
     </div>
 
     <div v-else class="qdi-empty">
-      <strong>{{ enabled ? (liveProgress.active ? 'QDI 正在准备调查记录' : 'QDI 尚未产生调查记录') : 'QDI 已在任务配置中关闭' }}</strong>
-      <p>{{ enabled ? (liveProgress.active ? liveProgress.activityLabel : '数据认知完成并产生阻塞问题后，这里会展示调查轨迹、证据和最终结论。') : '文件认知结果仍可在上方浏览。' }}</p>
+      <h3>问题调查</h3>
+      <p>{{ reportSummary || (enabled ? (liveProgress.active ? liveProgress.activityLabel : '暂无待调查问题') : '本任务未启用问题调查') }}</p>
     </div>
   </section>
 </template>
 
 <style scoped>
 .qdi-workbench {
-  --qdi-ink: #153c57;
-  --qdi-muted: #607d91;
-  --qdi-line: #cfe0e7;
-  --qdi-teal: #087f73;
-  --qdi-blue: #1e5d8d;
+  --qdi-ink: #1d1d1f;
+  --qdi-muted: #6e6e73;
+  --qdi-line: #d2d2d7;
+  --qdi-teal: #0066cc;
+  --qdi-blue: #0071e3;
   overflow: hidden;
-  border: 1px solid #bdd4dd;
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 92% 6%, rgba(30, 138, 153, 0.14), transparent 27%),
-    linear-gradient(145deg, #f7fcfc 0%, #f5f9fd 56%, #edf6f7 100%);
-  box-shadow: 0 18px 44px rgba(28, 66, 91, 0.08);
+  border-top: 1px solid var(--qdi-line);
+  background: #ffffff;
 }
 
 .qdi-hero {
@@ -450,7 +502,6 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   color: var(--qdi-teal);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.13em;
   text-transform: uppercase;
 }
 
@@ -466,8 +517,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .qdi-title {
   margin: 0;
   color: var(--qdi-ink);
-  font-size: clamp(24px, 3vw, 34px);
-  letter-spacing: -0.04em;
+  font-size: 22px;
 }
 
 .qdi-state,
@@ -475,7 +525,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .detail-kickers span,
 .artifact-row span,
 .execution-meta span {
-  border-radius: 999px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
 }
@@ -486,33 +536,51 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 
 .qdi-state.complete,
 .question-status.complete {
-  background: #dff4ea;
-  color: #166a4d;
+  background: #e8f5ed;
+  color: #216e3a;
 }
 
 .qdi-state.running,
 .question-status.running {
-  background: #dfeeff;
-  color: #245f91;
+  background: #eaf3ff;
+  color: #0066cc;
 }
 
 .qdi-state.warning,
 .question-status.warning {
-  background: #fff0d4;
-  color: #91601a;
+  background: #fff5df;
+  color: #805b00;
 }
 
 .qdi-state.idle,
 .question-status.idle {
-  background: #e9eef2;
-  color: #607283;
+  background: #f5f5f7;
+  color: #626267;
 }
 
 .qdi-summary {
+  display: grid;
+  gap: 4px;
   margin: 10px 0 0;
-  color: #46687d;
+  color: #424247;
   font-size: 14px;
   line-height: 1.65;
+}
+
+.qdi-summary strong {
+  color: #6e6e73;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.qdi-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-self: center;
+  color: #626267;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .qdi-metrics {
@@ -552,23 +620,23 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   align-items: center;
   padding: 11px 26px;
   border-bottom: 1px solid rgba(174, 205, 214, 0.72);
-  background: rgba(235, 244, 247, 0.78);
+  background: #f5f5f7;
 }
 
 .qdi-live-ribbon.active {
-  background: linear-gradient(90deg, rgba(224, 246, 241, 0.9), rgba(237, 247, 250, 0.86));
+  background: #eaf3ff;
 }
 
 .live-orb {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #6d8795;
+  background: #86868b;
 }
 
 .qdi-live-ribbon.active .live-orb {
-  background: #0b9081;
-  box-shadow: 0 0 0 0 rgba(11, 144, 129, 0.32);
+  background: #0071e3;
+  box-shadow: 0 0 0 0 rgba(0, 113, 227, 0.24);
   animation: qdi-live-pulse 1.8s infinite;
 }
 
@@ -579,13 +647,13 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .live-copy strong {
-  color: #24566a;
+  color: #1d1d1f;
   font-size: 12px;
 }
 
 .live-copy span {
   overflow: hidden;
-  color: #65808f;
+  color: #626267;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -599,10 +667,10 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .live-meta span {
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.76);
-  color: #4c6f80;
+  background: #ffffff;
+  color: #424247;
   font-size: 10px;
 }
 
@@ -622,7 +690,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   overflow: auto;
   padding: 16px;
   border-right: 1px solid var(--qdi-line);
-  background: rgba(237, 247, 248, 0.62);
+  background: #f5f5f7;
 }
 
 .rail-heading {
@@ -648,7 +716,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   margin-bottom: 8px;
   padding: 12px;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: 4px;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -657,15 +725,14 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .question-button:hover {
-  transform: translateX(2px);
-  border-color: #c3d9df;
-  background: rgba(255, 255, 255, 0.68);
+  border-color: #d2d2d7;
+  background: #ffffff;
 }
 
 .question-button.active {
-  border-color: #88b8be;
+  border-color: #0071e3;
   background: #ffffff;
-  box-shadow: 0 9px 24px rgba(31, 80, 94, 0.09);
+  box-shadow: inset 3px 0 #0071e3;
 }
 
 .question-index {
@@ -683,7 +750,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .question-copy strong {
   display: -webkit-box;
   overflow: hidden;
-  color: #294d62;
+  color: #1d1d1f;
   font-size: 12px;
   line-height: 1.45;
   -webkit-box-orient: vertical;
@@ -691,7 +758,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .question-copy small {
-  color: #718a9a;
+  color: #6e6e73;
   font-size: 10px;
 }
 
@@ -726,14 +793,15 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .artifact-row span,
 .execution-meta span {
   padding: 4px 8px;
-  background: #e7f0f4;
-  color: #527186;
+  border-radius: 4px;
+  background: #f5f5f7;
+  color: #424247;
 }
 
 .detail-title {
   margin: 10px 0 0;
   color: var(--qdi-ink);
-  font-size: clamp(18px, 2vw, 24px);
+  font-size: 21px;
   line-height: 1.42;
 }
 
@@ -753,19 +821,17 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .execution-card,
 .used-files-card {
   border: 1px solid var(--qdi-line);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.86);
+  border-radius: 4px;
+  background: #ffffff;
   padding: 16px;
 }
 
 .conclusion-card.complete {
-  border-color: #a8d8c5;
-  background: linear-gradient(145deg, #f3fcf8, #ffffff);
+  border-left: 3px solid #34a853;
 }
 
 .conclusion-card.warning {
-  border-color: #ead19d;
-  background: linear-gradient(145deg, #fffaf0, #ffffff);
+  border-left: 3px solid #d89900;
 }
 
 .section-title {
@@ -786,7 +852,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 
 .conclusion-text {
   margin: 14px 0 0;
-  color: #294f63;
+  color: #303034;
   font-size: 14px;
   line-height: 1.72;
   white-space: pre-wrap;
@@ -795,9 +861,9 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .uncertainty-note {
   margin-top: 14px;
   padding: 11px 12px;
-  border-radius: 11px;
-  background: #fff7e7;
-  color: #7a5a28;
+  border-radius: 4px;
+  background: #fff8e6;
+  color: #6e5200;
 }
 
 .uncertainty-note p {
@@ -833,21 +899,21 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .memory-grid > div {
   min-width: 0;
   padding: 11px;
-  border-radius: 12px;
-  background: #f5f9fb;
+  border-radius: 4px;
+  background: #f5f5f7;
 }
 
 .memory-grid strong {
-  color: #345c70;
+  color: #303034;
   font-size: 12px;
 }
 
 .next-focus {
   margin: 12px 0 0;
   padding: 10px 12px;
-  border-radius: 10px;
-  background: #e9f4f3;
-  color: #22675f;
+  border-radius: 4px;
+  background: #eaf3ff;
+  color: #004f9e;
   font-size: 12px;
 }
 
@@ -871,7 +937,7 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   bottom: 0;
   left: 15px;
   width: 1px;
-  background: #b8d2d8;
+  background: #d2d2d7;
   content: '';
 }
 
@@ -881,8 +947,8 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 50%;
-  background: #1b7d79;
+  border-radius: 4px;
+  background: #0071e3;
   color: #ffffff;
   font-family: Consolas, monospace;
   font-size: 11px;
@@ -892,26 +958,26 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 .timeline-content {
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid #d8e5e9;
-  border-radius: 12px;
-  background: #fbfdfd;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #ffffff;
 }
 
 .timeline-heading strong {
-  color: #2b566a;
+  color: #1d1d1f;
   font-size: 12px;
   text-transform: capitalize;
 }
 
 .timeline-heading span {
-  color: #76909f;
+  color: #6e6e73;
   font-size: 10px;
 }
 
 .timeline-summary,
 .timeline-findings p {
   margin: 7px 0 0;
-  color: #4a6a7d;
+  color: #424247;
   font-size: 12px;
   line-height: 1.58;
 }
@@ -933,9 +999,9 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .execution-item {
-  border: 1px solid #d9e5e9;
-  border-radius: 11px;
-  background: #f9fbfc;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #ffffff;
 }
 
 .execution-item summary {
@@ -944,26 +1010,26 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   gap: 8px;
   align-items: center;
   padding: 10px 12px;
-  color: #355d72;
+  color: #303034;
   font-size: 12px;
   cursor: pointer;
 }
 
 .execution-status {
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 3px 7px;
-  background: #e7eef2;
-  color: #607888;
+  background: #f5f5f7;
+  color: #626267;
 }
 
 .execution-status.completed {
-  background: #def3e8;
-  color: #237052;
+  background: #e8f5ed;
+  color: #216e3a;
 }
 
 .execution-status.failed {
-  background: #fde8e5;
-  color: #a4473c;
+  background: #fff0ed;
+  color: #a12f23;
 }
 
 .truncated-label {
@@ -980,9 +1046,10 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
   margin: 0 12px 12px;
   overflow: auto;
   padding: 11px;
-  border-radius: 9px;
-  background: #102a38;
-  color: #dceff2;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #f5f5f7;
+  color: #303034;
   font-family: Consolas, monospace;
   font-size: 11px;
   line-height: 1.5;
@@ -1010,12 +1077,55 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
 }
 
 .qdi-empty {
-  padding: 34px 26px;
+  display: grid;
+  gap: 6px;
+  padding: 22px 0;
   color: var(--qdi-ink);
 }
 
+.qdi-empty h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
 .qdi-empty p {
-  margin: 7px 0 0;
+  margin: 0;
+  color: var(--qdi-muted);
+  font-size: 13px;
+}
+
+.execution-result {
+  margin: 0;
+  padding: 12px;
+  color: #303034;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.technical-result {
+  margin: 0 12px 12px;
+  padding-top: 8px;
+  border-top: 1px solid #d2d2d7;
+  color: #626267;
+  font-size: 11px;
+}
+
+.technical-result summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.technical-result pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid #d2d2d7;
+  background: #f5f5f7;
+  color: #303034;
+  font: 11px/1.55 Consolas, 'Cascadia Code', monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1180px) {
@@ -1085,5 +1195,9 @@ function scriptTitle(row: Record<string, unknown>, index: number) {
     grid-column: 2;
     justify-self: start;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qdi-live-ribbon.active .live-orb { animation: none; }
 }
 </style>

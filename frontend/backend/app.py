@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import hmac
@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Literal
 
 import yaml
@@ -34,10 +34,26 @@ from pydantic import AliasChoices, BaseModel, Field
 
 from replay import ReplayRecorder, bundle as build_replay_bundle, project as project_replay, read_events
 from report_recovery import validate_report_recovery
+from snapshot_reads import json_artifact, text_artifact
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path(__file__).resolve().parents[2]
+
+# Load .env file if it exists (for API keys and local config)
+_ENV_FILE = APP_ROOT / ".env"
+if _ENV_FILE.exists():
+    with open(_ENV_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key and value and key not in os.environ:
+                    os.environ[key] = value
 CORE_DIR = APP_ROOT / "core"
 AUTOREALIZE_DIR = CORE_DIR / "AutoRealize"
 ALGOEVOLVE_DIR = CORE_DIR / "AlgoEvolve"
@@ -46,7 +62,7 @@ PROJECT_RUNS_DIR = APP_ROOT / "runs"
 DEFAULT_RUNS_DIR = PROJECT_RUNS_DIR
 LEGACY_AUTOREALIZE_RUNS_DIR = AUTOREALIZE_DIR / "runs"
 LEGACY_BACKEND_RUNS_DIR = BACKEND_DIR / "runs"
-STATE_DIR = BACKEND_DIR / ".state"
+STATE_DIR = Path(os.environ.get("AUTODECISION_STATE_DIR", str(BACKEND_DIR / ".state"))).expanduser().resolve()
 TASKS_FILE = STATE_DIR / "tasks.json"
 GLOBAL_SETTINGS_FILE = Path(
     os.environ.get(
@@ -63,7 +79,10 @@ SERVICE_POLL_RECONNECT_BASE_SLEEP_SECS = 5.0
 SERVICE_POLL_RECONNECT_MAX_SLEEP_SECS = 30.0
 SERVICE_START_READY_TIMEOUT_SECS = 30.0
 SERVICE_START_READY_POLL_SECS = 0.5
-MINIMUM_LLM_OUTPUT_TOKENS = 32768
+DEFAULT_LLM_OUTPUT_TOKENS = 32768
+AUTOREALIZE_STRUCTURED_OUTPUT_CAP = 65536
+AUTOREALIZE_STRUCTURED_RETRY_CAP = 65536
+AUTOREALIZE_CONSTRAINT_OUTPUT_CAP = 16384
 _UNSET = object()
 DIRECTORY_PICKER_LOCK = threading.Lock()
 GLOBAL_SETTINGS_LOCK = threading.RLock()
@@ -72,6 +91,8 @@ REPAIR_CONFIRMATION_SECRET = os.urandom(32)
 REPAIR_PENDING_TASKS: set[str] = set()
 replay_recorder = ReplayRecorder()
 DEFAULT_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:5178",
+    "http://localhost:5178",
     "http://127.0.0.1:5173",
     "http://localhost:5173",
 )
@@ -80,6 +101,19 @@ ALGOEVOLVE_SECRET_CONFIG_KEYS = {
     "agent.feedback.api_key",
     "agent.memory_embedding_api_key",
 }
+
+
+def _is_drive_relative_output_root(value: str | None) -> bool:
+    path = PureWindowsPath(str(value or "").strip())
+    return bool(path.drive and not path.root)
+
+
+def _validate_new_output_root(value: str | None) -> None:
+    if _is_drive_relative_output_root(value):
+        raise HTTPException(
+            status_code=400,
+            detail="输出目录缺少盘符后的路径分隔符，请使用完整路径（例如 D:\\Files\\项目\\runs）或项目内的相对路径。",
+        )
 
 
 def resolve_output_root(value: str | None) -> Path:
@@ -258,6 +292,17 @@ def normalize_automl_config_payload(config: Any) -> Any:
     return config
 
 
+def validate_web_research_payload(config: Any) -> None:
+    auto_ml = getattr(config, "auto_ml", None)
+    if not bool(getattr(auto_ml, "web_research_enabled", False)):
+        return
+    query = str(getattr(auto_ml, "web_research_query", "") or "").strip()
+    if not query:
+        raise HTTPException(422, "启用公开检索时，请填写适合发送到 DeepSeek 的公开检索词。")
+    if len(query) > 128:
+        raise HTTPException(422, "公开检索词不能超过 128 个字符。")
+
+
 def rel_str(path: Path, base: Path) -> str:
     return str(path.resolve().relative_to(base.resolve())).replace("\\", "/")
 
@@ -276,10 +321,12 @@ class AutoRealizeConfigPayload(BaseModel):
     enable_fewshot: bool = False
     generate_sample_submission: bool = True
     direct_automl_from_description: bool = False
+    # Legacy field retained for stored task compatibility; image analysis now
+    # always uses the data-analysis model in Gateway-generated runtime configs.
     enable_vllm: bool = True
     task_hint: str = ""
     llm_timeout: float = 180.0
-    llm_concurrency: int = 100
+    llm_concurrency: int = 8
     optimize_llm_cost: bool = True
     llm_file_cognition_mode: Literal["all", "documents_only", "none"] = "all"
     table_profile_sample_rows: int = 20000
@@ -306,7 +353,7 @@ class AutoMLConfigPayload(BaseModel):
     eval: str = ""
     steps: int = 50
     time_limit_secs: int = 10800
-    parallel_search_num: int = 4
+    parallel_search_num: int = 2
     generate_submission: bool = True
     search_num_drafts: int = 8
     search_num_bugs: int = 1
@@ -349,11 +396,11 @@ class AutoMLConfigPayload(BaseModel):
     result_adjudicator_on_anomaly: bool = True
     fast_first_draft: bool = True
     fast_first_draft_skip_pre_review: bool = False
-    use_stepwise_after_first: bool = True
-    stepwise_context_max_tokens: int = 90000
+    use_stepwise_after_first: bool = False
+    stepwise_context_max_tokens: int = 0
     stepwise_compaction_keep_recent_steps: int = 2
     stepwise_compaction_max_tokens: int = 32768
-    stepwise_context_headroom_ratio: float = 0.15
+    stepwise_context_headroom_ratio: float = 0.01
     search_topk_max_improves: int = 10
     search_debug_prob: float = 1.0
     search_branch_stagnation_threshold: int = 3
@@ -374,10 +421,17 @@ class AutoMLConfigPayload(BaseModel):
     optimization_experience_max_cards: int = 2
     optimization_experience_min_score: float = 3.0
     optimization_experience_max_chars: int = 6000
+    web_research_enabled: bool = False
+    web_research_query: str = Field(default="", max_length=128)
+    web_research_timeout_seconds: float = Field(default=12.0, ge=1, le=30)
+    web_research_fetch_timeout_seconds: float = Field(default=8.0, ge=1, le=10)
+    web_research_max_results: int = Field(default=3, ge=1, le=5)
+    web_research_max_context_chars: int = Field(default=2800, ge=400, le=6000)
 
 
 class AutoReportConfigPayload(BaseModel):
     enabled: bool = True
+    request_timeout_secs: float = Field(default=1200.0, ge=30, le=3600)
     audience: Literal["technical", "executive", "delivery"] = "technical"
     detail_level: Literal["concise", "standard", "detailed"] = "detailed"
     comparison_candidate_limit: int = Field(default=6, ge=2, le=12)
@@ -388,7 +442,7 @@ class AutoReportConfigPayload(BaseModel):
 class TaskResourceConfigPayload(BaseModel):
     cpu_cores: int = Field(default=4, ge=1, le=4096)
     memory_limit_gb: float = Field(default=8.0, ge=0, le=1048576)
-    accelerator_mode: Literal["all", "selected", "none"] = "all"
+    accelerator_mode: Literal["all", "selected", "none"] = "none"
     accelerator_device_ids: list[str] = Field(default_factory=list)
     monitor_interval_seconds: float = Field(default=0.5, ge=0.1, le=10.0)
 
@@ -422,6 +476,10 @@ class TaskModel(BaseModel):
     report_dir: str | None = None
     last_error: str | None = None
     interrupted_from_phase: str | None = None
+    experiment_group_id: str | None = None
+    parent_task_id: str | None = None
+    execution_config: dict[str, Any] | None = None
+    archived_at: float | None = None
 
 
 class StartTaskRequest(BaseModel):
@@ -503,7 +561,7 @@ class PythonEnvModel(BaseModel):
 class TaskStore:
     def __init__(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._tasks: dict[str, TaskModel] = {}
         self._handles: dict[str, RuntimeHandle] = {}
         self._load()
@@ -516,7 +574,13 @@ class TaskStore:
         for item in raw.get("tasks", []):
             try:
                 task = TaskModel.model_validate(item)
-                normalized_output_root = normalize_output_root(task.output_root)
+                # Keep historical drive-relative values visible and unchanged.
+                # Resolving D:Files against today's cwd silently invents a new
+                # location; it cannot repair the recorded execution directory.
+                normalized_output_root = (
+                    task.output_root if _is_drive_relative_output_root(task.output_root)
+                    else normalize_output_root(task.output_root)
+                )
                 if task.output_root != normalized_output_root:
                     task.output_root = normalized_output_root
                     task.config.output_root = normalized_output_root
@@ -544,7 +608,12 @@ class TaskStore:
             self._persist()
 
     def _persist(self) -> None:
-        write_json(TASKS_FILE, {"tasks": [t.model_dump() for t in self._tasks.values()]}, sensitive=True)
+        temporary = TASKS_FILE.with_name(f'.{TASKS_FILE.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            write_json(temporary, {"tasks": [t.model_dump() for t in self._tasks.values()]}, sensitive=True)
+            temporary.replace(TASKS_FILE)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _reconcile_stale_running_on_boot(self) -> None:
         """
@@ -603,21 +672,25 @@ class TaskStore:
             if changed:
                 self._persist()
 
-    def list_tasks(self) -> list[TaskModel]:
+    def list_tasks(self, include_archived: bool = False) -> list[TaskModel]:
         self.reconcile_stale_running()
         with self._lock:
-            return sorted(self._tasks.values(), key=lambda x: x.created_at)
+            return sorted((task for task in self._tasks.values() if include_archived or not task.archived_at), key=lambda x: x.created_at)
 
-    def get(self, task_id: str) -> TaskModel:
+    def get(self, task_id: str, include_archived: bool = False) -> TaskModel:
         self.reconcile_stale_running()
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 raise HTTPException(status_code=404, detail="task not found")
+            if task.archived_at and not include_archived:
+                raise HTTPException(status_code=410, detail="任务已归档，请先在本地存储中还原")
             return task
 
     def create(self, payload: TaskConfigPayload) -> TaskModel:
         with self._lock:
+            _validate_new_output_root(payload.output_root)
+            validate_web_research_payload(payload)
             normalize_automl_config_payload(payload)
             payload.output_root = normalize_output_root(payload.output_root)
             task_id = uuid.uuid4().hex
@@ -644,8 +717,12 @@ class TaskStore:
                 raise HTTPException(status_code=404, detail="task not found")
             if task.status == "running":
                 raise HTTPException(status_code=400, detail="running task cannot be edited")
+            _validate_new_output_root(payload.output_root)
+            validate_web_research_payload(payload)
             normalize_automl_config_payload(payload)
             payload.output_root = normalize_output_root(payload.output_root)
+            if (task.execution_config or task.run_dir) and payload.model_dump() != task.config.model_dump():
+                raise HTTPException(status_code=409, detail="已有运行记录的配置不能覆盖，请创建新实验后修改；恢复继续使用原配置。")
             task.task_name = payload.task_name
             task.input_root = payload.input_root
             task.output_root = payload.output_root
@@ -714,6 +791,9 @@ class TaskStore:
                 task.auto_ml_service_job_id = auto_ml_service_job_id
             if last_error is not _UNSET:
                 task.last_error = last_error
+            handle = self._handles.get(task_id)
+            if status != "running" and handle and handle.source == "stage_transition":
+                self._handles.pop(task_id, None)
             task.updated_at = now_ts()
             self._tasks[task_id] = task
             self._persist()
@@ -883,67 +963,23 @@ def _default_global_settings() -> dict[str, Any]:
         "llm": {
             "modelLibrary": [
                 {
-                    "id": "default-code",
-                    "name": "默认编码模型",
-                    "model": "deepseek-v4-pro",
+                    "id": "default-deepseek",
+                    "name": "deepseek",
+                    "model": "deepseek-flash",
                     "baseUrl": "https://api.deepseek.com",
                     "apiKey": "",
                     "thinkingMode": "default",
                     "reasoningEffort": "default",
-                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
-                    "contextWindowTokens": 131072,
-                },
-                {
-                    "id": "default-autorealize",
-                    "name": "默认 AutoRealize 模型",
-                    "model": "deepseek-v4-pro",
-                    "baseUrl": "https://api.deepseek.com",
-                    "apiKey": "",
-                    "thinkingMode": "default",
-                    "reasoningEffort": "default",
-                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
-                    "contextWindowTokens": 131072,
-                },
-                {
-                    "id": "default-feedback",
-                    "name": "默认反馈模型",
-                    "model": "deepseek-v4-pro",
-                    "baseUrl": "https://api.deepseek.com",
-                    "apiKey": "",
-                    "thinkingMode": "default",
-                    "reasoningEffort": "default",
-                    "maxTokens": MINIMUM_LLM_OUTPUT_TOKENS,
-                    "contextWindowTokens": 131072,
-                },
-                {
-                    "id": "default-vllm",
-                    "name": "默认视觉模型",
-                    "model": "glm-4.6v-flashx",
-                    "baseUrl": "https://open.bigmodel.cn/api/paas/v4/",
-                    "apiKey": "",
-                    "thinkingMode": "default",
-                    "reasoningEffort": "default",
-                    "maxTokens": 0,
-                    "contextWindowTokens": 0,
-                },
-                {
-                    "id": "default-embedding",
-                    "name": "默认向量化模型",
-                    "model": "text-embedding-v4",
-                    "baseUrl": "",
-                    "apiKey": "",
-                    "thinkingMode": "default",
-                    "reasoningEffort": "default",
-                    "maxTokens": 0,
-                    "contextWindowTokens": 0,
+                    "maxTokens": DEFAULT_LLM_OUTPUT_TOKENS,
+                    # DeepSeek Flash official model limit, verified 2026-10-19.
+                    "contextWindowTokens": 1_000_000,
                 },
             ],
             "roleModels": {
-                "autoRealize": "default-autorealize",
-                "autoRealizeVision": "default-vllm",
-                "autoMlCode": "default-code",
-                "autoMlFeedback": "default-feedback",
-                "embedding": "default-embedding",
+                "autoRealize": "default-deepseek",
+                "autoMlCode": "default-deepseek",
+                "autoMlFeedback": "default-deepseek",
+                "embedding": "",
             },
             "vllm": {"enabled": True},
         },
@@ -990,6 +1026,37 @@ def ensure_global_settings() -> dict[str, Any]:
         return _ensure_global_settings_locked()
 
 
+def _upgrade_unconfigured_model_defaults(llm: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    """Collapse only the exact unused five-model factory preset, never user configuration."""
+    expected = {
+        "default-code": ("默认编码模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        "default-autorealize": ("默认 AutoRealize 模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        "default-feedback": ("默认反馈模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        "default-vllm": ("默认视觉模型", "glm-4.6v-flashx", "https://open.bigmodel.cn/api/paas/v4/", 0, 0),
+        "default-embedding": ("默认向量化模型", "text-embedding-v4", "", 0, 0),
+    }
+    library = llm.get("modelLibrary")
+    old_roles = {"autoRealize": "default-autorealize", "autoMlCode": "default-code",
+                 "autoMlFeedback": "default-feedback", "autoRealizeVision": "default-vllm", "embedding": "default-embedding"}
+    if not isinstance(library, list) or len(library) != 5 or llm.get("roleModels") != old_roles:
+        return llm
+    if any(not isinstance(m, dict) for m in library) or {m.get("id") for m in library} != set(expected):
+        return llm
+    for model in library:
+        actual = tuple(model.get(k) for k in ("name", "model", "baseUrl", "maxTokens", "contextWindowTokens"))
+        if actual != expected[model["id"]] or model.get("apiKey") or model.get("api_key"):
+            return llm
+        if model.get("thinkingMode", "default") != "default" or model.get("reasoningEffort", "default") != "default":
+            return llm
+    if any(
+        (llm.get(k) or {}).get(secret_key)
+        for k in ("codeModel", "autoRealizeModel", "feedbackModel", "vllm")
+        for secret_key in ("apiKey", "api_key")
+    ):
+        return llm
+    return {**llm, "modelLibrary": defaults["modelLibrary"], "roleModels": defaults["roleModels"]}
+
+
 def _ensure_global_settings_locked() -> dict[str, Any]:
     defaults = _default_global_settings()
     current, migrated_legacy = _load_persisted_global_settings()
@@ -1002,7 +1069,7 @@ def _ensure_global_settings_locked() -> dict[str, Any]:
         "executable": str(py_merged.get("executable", "python")),
     }
     llm_defaults = defaults.get("llm", {})
-    llm_current = current.get("llm", {})
+    llm_current = _upgrade_unconfigured_model_defaults(current.get("llm", {}), llm_defaults)
     core_defaults = defaults.get("coreServices", {})
     core_current = current.get("coreServices", {})
     merged["coreServices"] = {**core_defaults, **core_current}
@@ -1024,13 +1091,13 @@ def _ensure_global_settings_locked() -> dict[str, Any]:
     auto_ml_code_model = _selected_model(llm_base, "autoMlCode")
     auto_ml_feedback_model = _selected_model(llm_base, "autoMlFeedback", fallback_role="autoMlCode")
     autorealize_model = _selected_model(llm_base, "autoRealize", fallback_role="autoMlCode")
-    vllm_model = _selected_model(llm_base, "autoRealizeVision")
+    vllm_model = autorealize_model
     embedding_model = _selected_model(llm_base, "embedding")
     llm_base["codeModel"] = _role_model_to_legacy(auto_ml_code_model, structured_disable=True)
     llm_base["autoRealizeModel"] = _role_model_to_legacy(autorealize_model, structured_disable=True)
     llm_base["feedbackModel"] = _role_model_to_legacy(auto_ml_feedback_model)
     llm_base["vllm"] = {
-        "enabled": bool((llm_current.get("vllm") or llm_defaults.get("vllm") or {}).get("enabled", True)),
+        "enabled": True,
         "model": str(vllm_model.get("model") or ""),
         "baseUrl": str(vllm_model.get("baseUrl") or ""),
         "apiKey": str(vllm_model.get("apiKey") or ""),
@@ -1084,6 +1151,70 @@ def _redact_global_settings_for_client(settings: dict[str, Any]) -> dict[str, An
     if isinstance(algoevolve, dict):
         redacted["algoevolve"].update(embeddingApiKey="", embeddingApiKeyConfigured=bool(algoevolve.get("embeddingApiKey")))
     return redacted
+
+
+def _test_llm_override_enabled() -> bool:
+    return os.environ.get("AUTODECISION_TEST_LLM_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_test_llm_override(settings: dict[str, Any]) -> dict[str, Any]:
+    """Apply an explicit process-only test model without touching saved settings."""
+    if not _test_llm_override_enabled():
+        return settings
+
+    selected = None
+    for suffix in ("", "_FALLBACK", "_BACKUP"):
+        prefix = "AUTODECISION_TEST_LLM" + suffix
+        base_url = os.environ.get(prefix + "_BASE_URL", "").strip().rstrip("/")
+        model_name = os.environ.get(prefix + "_MODEL", "").strip()
+        api_key = os.environ.get(prefix + "_API_KEY", "").strip()
+        parsed = urllib.parse.urlsplit(base_url)
+        if model_name and api_key and parsed.scheme == "https" and parsed.hostname:
+            selected = {
+                "id": "autodecision-test-model",
+                "name": model_name,
+                "model": model_name,
+                "baseUrl": base_url,
+                "apiKey": api_key,
+                "thinkingMode": _thinking_mode_from_legacy(
+                    os.environ.get(prefix + "_THINKING_MODE")
+                    or ("enabled" if model_name.lower().startswith(("deepseek", "glm")) else "default")
+                ),
+                "reasoningEffort": "default",
+                "maxTokens": _normal_max_tokens(os.environ.get(prefix + "_MAX_TOKENS")) or 32768,
+                "contextWindowTokens": _normal_max_tokens(os.environ.get(prefix + "_CONTEXT_WINDOW_TOKENS")) or 1_000_000,
+            }
+            break
+    if selected is None:
+        raise HTTPException(
+            status_code=503,
+            detail="测试模型覆盖已启用，但 DeepSeek、GLM 与备用模型没有可用的进程环境配置。",
+        )
+
+    result = json.loads(json.dumps(settings, ensure_ascii=False, default=str))
+    llm = result.setdefault("llm", {})
+    llm["modelLibrary"] = [selected]
+    llm["roleModels"] = {
+        "autoRealize": selected["id"],
+        "autoMlCode": selected["id"],
+        "autoMlFeedback": selected["id"],
+        "embedding": "",
+    }
+    legacy = {
+        "model": selected["model"],
+        "baseUrl": selected["baseUrl"],
+        "apiKey": selected["apiKey"],
+        "enableThinking": _legacy_enable_thinking(selected["thinkingMode"]),
+        "reasoningEffort": None,
+        "maxTokens": selected["maxTokens"],
+        "contextWindowTokens": selected["contextWindowTokens"],
+        "structuredDisableThinking": False,
+    }
+    llm["codeModel"] = dict(legacy)
+    llm["autoRealizeModel"] = dict(legacy)
+    llm["feedbackModel"] = dict(legacy)
+    llm["vllm"] = {"enabled": True, **dict(legacy)}
+    return result
 
 
 def _deep_merge_settings(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -1216,10 +1347,14 @@ def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str
         ("default-code", "默认编码模型", llm_current.get("codeModel"), llm_defaults.get("codeModel")),
         ("default-autorealize", "默认 AutoRealize 模型", llm_current.get("autoRealizeModel"), llm_defaults.get("autoRealizeModel") or llm_defaults.get("codeModel")),
         ("default-feedback", "默认反馈模型", llm_current.get("feedbackModel"), llm_defaults.get("feedbackModel")),
-        ("default-vllm", "默认视觉模型", llm_current.get("vllm"), llm_defaults.get("vllm")),
+        # Preserve a configured legacy provider as an unassigned library entry;
+        # its old image-only role is no longer used.
+        ("default-vllm", "已保存模型", llm_current.get("vllm"), {}),
     ]
     if not current_library_explicit:
         for item_id, name, current_model, default_model in legacy_specs:
+            if not isinstance(current_model, dict) or not any(current_model.get(k) for k in ("model", "baseUrl", "apiKey")):
+                continue
             if item_id not in by_id:
                 by_id[item_id] = _legacy_model_to_library_item(
                     item_id=item_id,
@@ -1243,7 +1378,7 @@ def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str
         "baseUrl": str(algoevolve_merged.get("embeddingBaseUrl") or ""),
         "apiKey": str(algoevolve_merged.get("embeddingApiKey") or ""),
     }
-    if (not current_library_explicit and "default-embedding" not in by_id) or (
+    if (
         not current_library_explicit
         and not has_current_library
         and any(str(embedding_defaults.get(key) or "").strip() for key in ("model", "baseUrl", "apiKey"))
@@ -1260,35 +1395,51 @@ def _normalize_model_library(llm_defaults: dict[str, Any], llm_current: dict[str
     first_model_id = next(iter(by_id.keys()), "")
     roles = {
         "autoRealize": str(role_current.get("autoRealize") or (role_defaults.get("autoRealize") if not current_library_explicit else "") or "default-autorealize"),
-        "autoRealizeVision": str(role_current.get("autoRealizeVision") or (role_defaults.get("autoRealizeVision") if not current_library_explicit else "") or "default-vllm"),
         "autoMlCode": str(role_current.get("autoMlCode") or (role_defaults.get("autoMlCode") if not current_library_explicit else "") or "default-code"),
         "autoMlFeedback": str(role_current.get("autoMlFeedback") or (role_defaults.get("autoMlFeedback") if not current_library_explicit else "") or "default-feedback"),
+        "promptOptimizer": str(role_current.get("promptOptimizer") or role_current.get("autoRealize") or ""),
         "embedding": str(role_current.get("embedding") or (role_defaults.get("embedding") if not current_library_explicit else "") or "default-embedding"),
     }
     for role, item_id in list(roles.items()):
+        if role == "embedding" and current_library_explicit and not role_current.get(role):
+            roles[role] = ""
+            continue
         if item_id not in by_id:
             fallback = {
                 "autoRealize": "default-autorealize",
-                "autoRealizeVision": "default-vllm",
                 "autoMlCode": "default-code",
                 "autoMlFeedback": "default-feedback",
+                "promptOptimizer": "default-autorealize",
                 "embedding": "default-embedding",
             }[role]
-            roles[role] = fallback if fallback in by_id else first_model_id
+            roles[role] = fallback if fallback in by_id else ("" if role == "embedding" else first_model_id)
+
+    if not role_current.get("promptOptimizer"):
+        roles["promptOptimizer"] = roles["autoRealize"]
+
+    # Preserve explicit old text-role configuration when importing a pre-library file.
+    if not current_library_explicit:
+        for role, item_id in (("autoRealize", "default-autorealize"), ("autoMlCode", "default-code"), ("autoMlFeedback", "default-feedback")):
+            if item_id in by_id and not role_current.get(role):
+                roles[role] = item_id
 
     return list(by_id.values()), roles
 
 
 def _selected_model(llm: dict[str, Any], role: str, fallback_role: str | None = None) -> dict[str, Any]:
+    # Compatibility alias for older callers; there is no independently assigned vision role.
+    if role == "autoRealizeVision":
+        role, fallback_role = "autoRealize", "autoMlCode"
     library = llm.get("modelLibrary") if isinstance(llm.get("modelLibrary"), list) else []
     roles = llm.get("roleModels") if isinstance(llm.get("roleModels"), dict) else {}
+    if role == "embedding" and role in roles and not roles[role]:
+        return {}
     item_id = str(roles.get(role) or (roles.get(fallback_role) if fallback_role else "") or "").strip()
     for item in library:
         if isinstance(item, dict) and str(item.get("id") or "") == item_id:
             return item
     legacy_key = {
         "autoRealize": "autoRealizeModel",
-        "autoRealizeVision": "vllm",
         "autoMlCode": "codeModel",
         "autoMlFeedback": "feedbackModel",
         "embedding": "",
@@ -1313,6 +1464,8 @@ def _model_thinking_cli(model: dict[str, Any]) -> str:
         return "true"
     if mode == "disabled":
         return "false"
+    if str(model.get("model") or "").lower().startswith("deepseek"):
+        return "true"
     return "null"
 
 
@@ -1321,9 +1474,9 @@ def _model_reasoning_cli(model: dict[str, Any]) -> str:
     return "null" if effort == "default" else effort
 
 
-def _model_max_tokens_cli(model: dict[str, Any]) -> str | None:
+def _model_max_tokens_cli(model: dict[str, Any], default: int = DEFAULT_LLM_OUTPUT_TOKENS) -> str:
     tokens = _normal_max_tokens(model.get("maxTokens", model.get("max_tokens")))
-    return str(max(MINIMUM_LLM_OUTPUT_TOKENS, int(tokens or 0)))
+    return str(tokens if tokens else default)
 
 
 def _preserve_sensitive_settings(merged: dict[str, Any], existing: dict[str, Any], incoming: dict[str, Any]) -> None:
@@ -1369,10 +1522,16 @@ def _preserve_sensitive_settings(merged: dict[str, Any], existing: dict[str, Any
 
 
 def get_global_settings() -> GlobalSettingsModel:
-    return GlobalSettingsModel.model_validate(ensure_global_settings())
+    persisted = ensure_global_settings()
+    return GlobalSettingsModel.model_validate(_apply_test_llm_override(persisted))
 
 
 def save_global_settings(payload: GlobalSettingsModel) -> None:
+    if _test_llm_override_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="当前服务正在使用仅限本次进程的测试模型覆盖；请先结束测试并重启服务后再保存产品模型配置。",
+        )
     with GLOBAL_SETTINGS_LOCK:
         existing = ensure_global_settings()
         raw = payload.model_dump()
@@ -1397,8 +1556,10 @@ def _validate_start(task: TaskModel) -> tuple[Path, Path]:
     output_root = resolve_output_root(task.output_root)
     run_dir = output_root / task.task_name
 
-    if not input_root.exists():
+    if not input_root.is_dir():
         raise HTTPException(status_code=400, detail=f"input_root does not exist: {input_root}")
+    if not task.task_name.strip() or Path(task.task_name).name != task.task_name or task.task_name in {".", ".."} or any(c in task.task_name for c in '/\\:'):
+        raise HTTPException(status_code=400, detail="任务名不能包含路径分隔符或父目录引用")
     if run_dir.exists():
         raise HTTPException(
             status_code=400,
@@ -1470,6 +1631,28 @@ def _automl_artifact_issues(autorealize_dir: Path) -> tuple[list[str], list[str]
         elif any(isinstance(issue, dict) and issue.get("severity") == "blocking"
                  for issue in final.get("issues", []) or []):
             _append_unique(hard_blockers, f"{filename}: passed review still contains blocking issues")
+    scan_path = report_dir / "temporal_scan_requirement.json"
+    if scan_path.is_file():
+        scan_requirement = safe_read_json(scan_path, None)
+        if not isinstance(scan_requirement, dict):
+            _append_unique(hard_blockers, "temporal_scan_requirement.json: unreadable scan requirement")
+        elif scan_requirement.get("required") is True and scan_requirement.get("status") != "passed":
+            reasons = [
+                str(item).strip()
+                for item in scan_requirement.get("blocking_issues", []) or []
+                if str(item).strip()
+            ]
+            if reasons:
+                for reason in reasons:
+                    _append_unique(
+                        hard_blockers,
+                        f"temporal_scan_requirement.json: {reason}",
+                    )
+            else:
+                _append_unique(
+                    hard_blockers,
+                    "temporal_scan_requirement.json: required host full-table scan has not passed",
+                )
     for filename in ("automl_context_pack.json", "task_definition_report.json"):
         path = report_dir / filename
         if not path.is_file():
@@ -2174,10 +2357,22 @@ def _validate_autorealize_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path
     return input_root, run_dir, run_dir / "autorealize", run_dir / "automl", run_dir / "report"
 
 
+def _autorealize_checkpoint_task_hint(task: TaskModel) -> str:
+    hint = str(task.config.auto_realize.task_hint or "").strip()
+    evaluation_contract = str(task.config.auto_ml.eval or "").strip()
+    if not evaluation_contract:
+        return hint
+    heading = "# Explicit evaluation contract supplied with this task"
+    return f"{hint}\n\n{heading}\n{evaluation_contract}" if hint else f"{heading}\n{evaluation_contract}"
+
+
 def _review_repair_eligible(task: TaskModel) -> bool:
-    if task.status not in {"failed", "interrupted_incomplete", "interrupted_resumable"}:
-        return False
-    if task.phase not in {"autorealize_failed", "prepare_automl_input_failed", "review_repair_failed", "interrupted"}:
+    failed_definition = (
+        task.status in {"failed", "interrupted_incomplete", "interrupted_resumable"}
+        and task.phase in {"autorealize_failed", "prepare_automl_input_failed", "review_repair_failed", "interrupted"}
+    )
+    completed_with_exhausted_review = task.status == "completed" and task.phase == "autorealize_completed"
+    if not (failed_definition or completed_with_exhausted_review):
         return False
     root = _resolve_task_run_dir_for_rerun(task)
     # Downstream artifacts bind an existing definition. Old review findings must
@@ -2188,9 +2383,13 @@ def _review_repair_eligible(task: TaskModel) -> bool:
         return False
     if any((root / "report").glob("*")):
         return False
+    if completed_with_exhausted_review:
+        review_gate = _automl_gate_decision(task, root / "autorealize")
+        if not review_gate["review_issues"] or review_gate["hard_blocking_issues"]:
+            return False
     cognition = safe_read_json(root / "autorealize/realize_report/data_cognition_report.json", {})
     return bool(isinstance(cognition, dict) and cognition.get("files")
-                and cognition.get("task_hint") == task.config.auto_realize.task_hint)
+                and cognition.get("task_hint") == _autorealize_checkpoint_task_hint(task))
 
 
 def _validate_review_repair(task: TaskModel) -> dict[str, Any]:
@@ -2237,15 +2436,8 @@ def _review_repair_plan(task: TaskModel) -> dict[str, Any]:
 def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path | None, Path | None, Path]:
     if task.status == "running":
         raise HTTPException(status_code=400, detail="task is running; cannot rerun AutoReport")
-    if not task.config.auto_report.enabled:
-        raise HTTPException(status_code=400, detail="AutoReport is disabled in task config")
 
     run_dir = _resolve_task_run_dir_for_rerun(task)
-    if run_dir.exists() and not _is_safe_task_output_dir(task, run_dir):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Refused to rewrite unsafe task directory: {run_dir}",
-        )
     autorealize_dir = run_dir / "autorealize"
     automl_root = run_dir / "automl"
     ml_log_dir = _pick_local_automl_log_dir(task)
@@ -2253,6 +2445,12 @@ def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path 
         task,
         exp_name=ml_log_dir.name if ml_log_dir else None,
     )
+    if not _is_safe_report_task_dir(task, run_dir, ml_log_dir, ml_ws_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"无法安全确认报告输出位置：任务配置与运行目录不一致，且无法核实历史成果归属。运行目录：{run_dir}",
+        )
+    _validate_report_stage_paths(run_dir)
     if ml_log_dir is None or not ml_log_dir.is_dir() or ml_ws_dir is None or not ml_ws_dir.is_dir():
         raise HTTPException(
             status_code=400,
@@ -2267,6 +2465,65 @@ def _validate_autoreport_rerun(task: TaskModel) -> tuple[Path, Path, Path, Path 
         )
 
     return run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, run_dir / "report"
+
+
+def _is_safe_report_task_dir(
+    task: TaskModel, run_dir: Path, log_dir: Path | None, workspace_dir: Path | None,
+) -> bool:
+    """Reuse verified historical artifacts for reports without permitting deletion.
+
+    Old imports may have a drive-relative or stale output_root. Only report-only
+    recovery can use their persisted, named directory beneath this project's runs.
+    The full-rerun/delete guard intentionally retains its direct-child rule.
+    """
+    if _is_safe_task_output_dir(task, run_dir):
+        return True
+    try:
+        root = run_dir.resolve()
+        if not task.run_dir or Path(task.run_dir).expanduser().resolve() != root:
+            return False
+        if Path(task.run_dir).expanduser().absolute() != root:
+            return False
+        if not root.is_dir() or root.name != task.task_name:
+            return False
+        if root == PROJECT_RUNS_DIR.resolve():
+            return False
+        root.relative_to(PROJECT_RUNS_DIR.resolve())
+        # Compare resolved sources against the intended layout, so directory
+        # junctions and file symlinks cannot borrow another task's evidence.
+        description = root / "autorealize" / "description.md"
+        if not description.is_file() or description.resolve() != description:
+            return False
+        for source, name in ((log_dir, "logs"), (workspace_dir, "workspaces")):
+            expected = root / "automl" / name
+            if expected.resolve() != expected or source is None or not source.is_dir():
+                return False
+            resolved = source.resolve()
+            if resolved == expected:
+                return False
+            resolved.relative_to(expected)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _validate_report_stage_paths(run_dir: Path) -> None:
+    # Report reruns archive and then overwrite only these stages. Validate even
+    # for ordinary tasks; the run-directory guard alone does not protect against
+    # a report folder or an existing output file redirected through a link.
+    for name in ("autorealize", "report", "stage-history"):
+        target = run_dir / name
+        if not _is_safe_stage_dir(run_dir, target, {name}):
+            raise HTTPException(status_code=400, detail=f"报告目录或备份目录指向了任务外部，无法继续：{target}")
+    report_dir = run_dir / "report"
+    if report_dir.exists() and not report_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"报告输出位置已被同名文件占用：{report_dir}")
+    history_dir = run_dir / "stage-history"
+    if history_dir.exists() and not history_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"报告备份位置已被同名文件占用：{history_dir}")
+    for path in report_dir.rglob("*"):
+        if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            raise HTTPException(status_code=400, detail=f"报告目录包含链接文件或链接目录，无法安全覆盖：{path}")
 
 
 def _candidate_full_rerun_dirs(task: TaskModel) -> list[Path]:
@@ -2504,7 +2761,7 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel, *, resum
 
     llm = gs.llm
     autorealize_model = _selected_model(llm, "autoRealize", fallback_role="autoMlCode")
-    vllm = _selected_model(llm, "autoRealizeVision")
+    vllm = autorealize_model
     if autorealize_model.get("baseUrl"):
         cfg["llm"]["base_url"] = autorealize_model.get("baseUrl")
     if autorealize_model.get("model"):
@@ -2512,24 +2769,37 @@ def _write_autorealize_config(task: TaskModel, gs: GlobalSettingsModel, *, resum
     # Secrets are injected through the service process environment and must not
     # be persisted in task YAML under frontend/backend/.state.
     cfg["llm"]["api_key"] = None
-    cfg["llm"]["enable_thinking"] = _legacy_enable_thinking(autorealize_model.get("thinkingMode", autorealize_model.get("enableThinking")))
+    thinking_cli = _model_thinking_cli(autorealize_model)
+    cfg["llm"]["enable_thinking"] = (
+        True if thinking_cli == "true"
+        else False if thinking_cli == "false"
+        else None
+    )
     effort = _normal_reasoning_effort(autorealize_model.get("reasoningEffort"))
     cfg["llm"]["reasoning_effort"] = None if effort == "default" else effort
-    max_tokens = _normal_max_tokens(autorealize_model.get("maxTokens", autorealize_model.get("max_tokens")))
-    effective_max_tokens = max(MINIMUM_LLM_OUTPUT_TOKENS, int(max_tokens or 0))
+    effective_max_tokens = int(_model_max_tokens_cli(autorealize_model))
     cfg["llm"]["context_window_tokens"] = _normal_max_tokens(autorealize_model.get("contextWindowTokens")) or 0
-    cfg["llm"]["minimum_output_tokens"] = effective_max_tokens
+    cfg["llm"]["minimum_output_tokens"] = 0
     cfg["llm"]["max_tokens"] = effective_max_tokens
-    cfg["llm"]["structured_max_tokens"] = effective_max_tokens
-    cfg["llm"]["structured_length_retry_max_tokens"] = effective_max_tokens
-    cfg["llm"]["constraint_memory_max_tokens"] = effective_max_tokens
-    cfg["llm"]["structured_disable_thinking"] = True
+    # A provider's advertised output limit is not a sensible per-call budget.
+    # Keep structured stages bounded while allowing one genuinely larger retry
+    # when a complete JSON contract exceeds the first response budget.
+    cfg["llm"]["structured_max_tokens"] = min(
+        effective_max_tokens, AUTOREALIZE_STRUCTURED_OUTPUT_CAP
+    )
+    cfg["llm"]["structured_length_retry_max_tokens"] = min(
+        effective_max_tokens, AUTOREALIZE_STRUCTURED_RETRY_CAP
+    )
+    cfg["llm"]["constraint_memory_max_tokens"] = min(
+        effective_max_tokens, AUTOREALIZE_CONSTRAINT_OUTPUT_CAP
+    )
+    cfg["llm"]["structured_disable_thinking"] = False
+    cfg["llm"]["structured_reasoning_fallback_on_length"] = False
 
-    cfg["vllm"]["enabled"] = bool(ar.enable_vllm)
-    if vllm.get("baseUrl"):
-        cfg["vllm"]["base_url"] = vllm.get("baseUrl")
-    if vllm.get("model"):
-        cfg["vllm"]["model_name"] = vllm.get("model")
+    cfg["vllm"]["enabled"] = True
+    cfg["vllm"]["base_url"] = str(vllm.get("baseUrl") or "")
+    cfg["vllm"]["model_name"] = str(vllm.get("model") or "")
+    cfg["vllm"]["fail_silently"] = False
     cfg["vllm"]["api_key"] = None
 
     out = STATE_DIR / f"{task.id}.autorealize.config.yaml"
@@ -2649,7 +2919,7 @@ def _build_algoevolve_command(
         f"agent.code.base_url={_as_cli_str(_model_cli_value(code_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.code.enable_thinking={_model_thinking_cli(code_model)}",
         f"agent.code.reasoning_effort={_model_reasoning_cli(code_model)}",
-        f"agent.code.minimum_output_tokens={_model_max_tokens_cli(code_model)}",
+        "agent.code.minimum_output_tokens=0",
         f"agent.code.request_timeout_seconds={am.code_request_timeout_secs}",
         f"agent.code.generation_max_retries={am.code_generation_max_retries}",
         f"agent.code.continuation_max_rounds={am.code_continuation_max_rounds}",
@@ -2659,7 +2929,7 @@ def _build_algoevolve_command(
         f"agent.feedback.base_url={_as_cli_str(_model_cli_value(feedback_model, 'baseUrl', 'https://api.deepseek.com'), 'https://api.deepseek.com')}",
         f"agent.feedback.enable_thinking={_model_thinking_cli(feedback_model)}",
         f"agent.feedback.reasoning_effort={_model_reasoning_cli(feedback_model)}",
-        f"agent.feedback.minimum_output_tokens={_model_max_tokens_cli(feedback_model)}",
+        "agent.feedback.minimum_output_tokens=0",
         f"agent.feedback.request_timeout_seconds={am.feedback_request_timeout_secs}",
         f"agent.feedback.generation_max_retries={am.feedback_generation_max_retries}",
         f"agent.feedback.continuation_max_rounds={am.feedback_continuation_max_rounds}",
@@ -2680,6 +2950,12 @@ def _build_algoevolve_command(
         f"agent.optimization_experience_max_cards={am.optimization_experience_max_cards}",
         f"agent.optimization_experience_min_score={am.optimization_experience_min_score}",
         f"agent.optimization_experience_max_chars={am.optimization_experience_max_chars}",
+        f"agent.web_research.enabled={'true' if am.web_research_enabled else 'false'}",
+        f"agent.web_research.query={_as_cli_str(am.web_research_query, '')}",
+        f"agent.web_research.timeout_seconds={am.web_research_timeout_seconds}",
+        f"agent.web_research.fetch_timeout_seconds={am.web_research_fetch_timeout_seconds}",
+        f"agent.web_research.max_results={am.web_research_max_results}",
+        f"agent.web_research.max_context_chars={am.web_research_max_context_chars}",
         f"agent.draft.fast_first_draft={'true' if am.fast_first_draft else 'false'}",
         f"agent.draft.fast_first_draft_skip_pre_review={'true' if am.fast_first_draft_skip_pre_review else 'false'}",
         "agent.draft.fast_first_draft_compact_context=false",
@@ -2802,15 +3078,28 @@ def _algoevolve_secret_env(gs: GlobalSettingsModel) -> dict[str, str]:
         "ALGOEVOLVE_CODE_API_KEY": code_key,
         "ALGOEVOLVE_FEEDBACK_API_KEY": str(feedback_model.get("apiKey") or ""),
         "ALGOEVOLVE_EMBEDDING_API_KEY": str(embedding_model.get("apiKey") or ""),
+        "ALGOEVOLVE_WEB_SEARCH_API_KEY": (
+            os.environ.get("ALGOEVOLVE_WEB_SEARCH_API_KEY", "").strip()
+            or os.environ.get("DEEPSEEK_SEARCH_API_KEY", "").strip()
+            or os.environ.get("AUTODECISION_DEEPSEEK_TOOLS_API_KEY", "").strip()
+        ),
     }
     return {key: value for key, value in values.items() if value}
 
 
-def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: int = 15) -> dict[str, Any]:
+def _json_post(
+    base_url: str,
+    path: str,
+    payload: dict[str, Any],
+    timeout_secs: int = 15,
+    *,
+    max_attempts: int = NETWORK_RETRY_MAX_ATTEMPTS,
+) -> dict[str, Any]:
     url = base_url.rstrip("/") + path
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_error: Exception | None = None
-    for attempt in range(1, NETWORK_RETRY_MAX_ATTEMPTS + 1):
+    attempt_limit = max(1, int(max_attempts))
+    for attempt in range(1, attempt_limit + 1):
         req = urllib.request.Request(url=url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
@@ -2820,7 +3109,7 @@ def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: 
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")
             retryable = e.code in {429, 500, 502, 503, 504}
-            if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
+            if (not retryable) or attempt >= attempt_limit:
                 raise RuntimeError(f"HTTP {e.code} {url}: {detail}")
             time.sleep(min(30.0, 2.0 ** (attempt - 1)))
             continue
@@ -2849,7 +3138,7 @@ def _json_post(base_url: str, path: str, payload: dict[str, Any], timeout_secs: 
                     "504",
                 ]
             )
-            if (not retryable) or attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
+            if (not retryable) or attempt >= attempt_limit:
                 raise RuntimeError(f"POST {url} failed: {e}")
             time.sleep(min(30.0, 2.0 ** (attempt - 1)))
     raise RuntimeError(f"POST {url} failed: {last_error}")
@@ -3109,6 +3398,10 @@ def _report_evidence_paths(
         evidence.append({"label": "automl_logs", "path": str(ml_log_dir), "kind": "automl", "required": False})
     if ml_ws_dir is not None and ml_ws_dir.exists():
         evidence.append({"label": "automl_workspace", "path": str(ml_ws_dir), "kind": "automl", "required": False})
+        for name in ("inference_repair_provenance.json", "inference_repair_validation.json", "inference_repair_evaluation.json"):
+            repaired_evidence = ml_ws_dir / "best_solution" / name
+            if repaired_evidence.is_file():
+                evidence.append({"label": name.removesuffix(".json"), "path": str(repaired_evidence), "kind": "automl", "required": True})
     if not any(item["label"] in {"automl_logs", "automl_workspace"} for item in evidence) and automl_root.exists():
         evidence.append({"label": "automl_root", "path": str(automl_root), "kind": "automl", "required": False})
     return evidence
@@ -3127,6 +3420,17 @@ def _run_report_stage(
     report_base: str,
     req_timeout: int,
 ) -> bool:
+    # AutoML service wrappers may return a timestamped experiment directory
+    # after the stage has started.  Resolve the persisted paths here as the
+    # final authority so every caller, including report-only reruns, reads the
+    # artifacts that actually exist on disk.
+    effective_log_dir, effective_ws_dir = _effective_automl_stage_paths(
+        task,
+        fallback_log_dir=ml_log_dir,
+        fallback_workspace_dir=ml_ws_dir,
+    )
+    ml_log_dir = effective_log_dir
+    ml_ws_dir = effective_ws_dir
     cfg = task.config.auto_report
     if not cfg.enabled:
         return True
@@ -3161,14 +3465,13 @@ def _run_report_stage(
         "standard": 18000,
         "detailed": 30000,
     }[cfg.detail_level]
-    configured_max_tokens = report_model.get("maxTokens")
-    try:
-        report_max_tokens = int(configured_max_tokens or 0)
-    except (TypeError, ValueError):
-        report_max_tokens = 0
-    report_max_tokens = max(MINIMUM_LLM_OUTPUT_TOKENS, report_max_tokens)
-    thinking_mode = str(report_model.get("thinkingMode") or "default").strip().lower()
-    enable_thinking = True if thinking_mode == "enabled" else False if thinking_mode == "disabled" else None
+    report_max_tokens = int(_model_max_tokens_cli(report_model))
+    thinking_cli = _model_thinking_cli(report_model)
+    enable_thinking = (
+        True if thinking_cli == "true"
+        else False if thinking_cli == "false"
+        else None
+    )
     reasoning_effort = str(report_model.get("reasoningEffort") or "").strip()
     if reasoning_effort.lower() in {"", "default"}:
         reasoning_effort = ""
@@ -3179,7 +3482,18 @@ def _run_report_stage(
     context_window_tokens = max(8192, context_window_tokens)
     # Detail level sizes supplemental material, not mandatory task contracts.
     # AutoReport still checks the full input against token/output/headroom budgets.
-    detail_prompt_chars = max(detail_prompt_chars, context_window_tokens * 4)
+    # Keep the configured evidence budget authoritative. Expanding a detailed
+    # report to the whole model context repeats logs and contracts on every
+    # stage and destroys provider-prefix cache locality.
+    compact_report_context = os.environ.get("AUTOREPORT_COMPACT_CONTEXT", "").strip().lower() in {
+        "1", "true", "yes", "on", "enabled",
+    }
+    if compact_report_context:
+        detail_prompt_chars = min(detail_prompt_chars, 96000)
+    else:
+        # Preserve the legacy standalone configuration contract when compact
+        # mode is explicitly disabled. Gateway jobs enable compact mode below.
+        detail_prompt_chars = max(detail_prompt_chars, context_window_tokens * 4)
     review_gate_policy = str(
         getattr(getattr(task.config, "auto_realize", None), "review_gate_policy", "strict")
         or "strict"
@@ -3191,6 +3505,25 @@ def _run_report_stage(
         report_dir=str(report_dir),
         last_error=None,
     )
+    # Keep the stage owned while freezing large packages and importing documents;
+    # otherwise the runtime reconciler can mistake this work for an abandoned job.
+    store.attach_handle(task_id, RuntimeHandle(process=None, source="report_preparation", started_at=now_ts()))
+    import delivery
+    try:
+        receipt = delivery.begin_report(sys.modules[__name__], store.get(task_id), report_dir)
+    except Exception as exc:
+        store.pop_handle(task_id)
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=f"报告交付准备失败: {detail}")
+        return False
+    if store.get(task_id).status != "running":
+        store.pop_handle(task_id)
+        return False
+    delivery_evidence = [{"label": "delivery_source", "path": str(report_dir / "delivery_source.json"), "kind": "automl", "required": True}]
+    if receipt.get("status") == "prepared":
+        package_dir = Path(receipt["package_dir"])
+        manifest = safe_read_json(package_dir / "solution_manifest.json", {})
+        delivery_evidence.append({"label": "delivery_implementation", "path": str(package_dir / manifest["implementation_path"]), "kind": "automl", "required": True})
     payload = {
         "task_id": task_id,
         "task_name": task.task_name,
@@ -3202,7 +3535,8 @@ def _run_report_stage(
             automl_root=automl_root,
             ml_log_dir=ml_log_dir,
             ml_ws_dir=ml_ws_dir,
-        ) + [{"label": "task_definition_alignment", "path": str(alignment_path), "kind": "automl", "required": True}],
+        ) + [{"label": "task_definition_alignment", "path": str(alignment_path), "kind": "automl", "required": True},
+             *delivery_evidence],
         "config": {
             "review_gate_policy": review_gate_policy,
             "report_title": f"{task.task_name} 工智寻优运行报告",
@@ -3230,12 +3564,13 @@ def _run_report_stage(
                 "base_url": str(report_model.get("baseUrl") or ""),
                 "api_key": None,
                 "temperature": 0.2,
-                "minimum_output_tokens": MINIMUM_LLM_OUTPUT_TOKENS,
+                "request_timeout_seconds": cfg.request_timeout_secs,
+                "minimum_output_tokens": 0,
                 "max_tokens": report_max_tokens,
                 "enable_thinking": enable_thinking,
                 "reasoning_effort": reasoning_effort or None,
                 "context_window_tokens": max(8192, context_window_tokens),
-                "context_headroom_ratio": 0.18,
+                "context_headroom_ratio": 0.01,
             },
         },
         # Let AutoReport partition complete task rules when the frozen prefix
@@ -3244,15 +3579,19 @@ def _run_report_stage(
         "env_overrides": {
             "DEEPSEEK_API_KEY": report_api_key,
             "AUTOREPORT_PARTITIONED_CONTEXT": "validated",
+            "AUTOREPORT_COMPACT_CONTEXT": "enabled",
+            "AUTOREPORT_PROMPT_CACHE_KEY_MODE": "enabled",
         },
     }
     try:
         report_start = _json_post(report_base, "/jobs/start", payload, timeout_secs=req_timeout)
     except Exception as e:
+        store.pop_handle(task_id)
         store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport service start failed: {e}")
         return False
     report_job_id = str(report_start.get("job_id") or "")
     if not report_job_id:
+        store.pop_handle(task_id)
         store.set_status(task_id, status="failed", phase="report_failed", last_error="AutoReport service returned empty job_id")
         return False
     store.attach_handle(
@@ -3268,14 +3607,15 @@ def _run_report_stage(
     try:
         report_status = _poll_remote_job(report_base, report_job_id, timeout_secs=req_timeout)
     except Exception as e:
+        stopped = store.get(task_id).status == "stopped"
         store.pop_handle(task_id)
-        if store.get(task_id).status == "stopped":
+        if stopped:
             return False
         store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport service poll failed: {e}")
         return False
-    store.pop_handle(task_id)
     report_state = str(report_status.get("status") or "")
     if report_state in {"stopped", "cancelled", "canceled", "interrupted"} or store.get(task_id).status == "stopped":
+        store.pop_handle(task_id)
         store.set_status(task_id, status="stopped", phase="stopped", last_error=None)
         return False
     report_code = report_status.get("exit_code")
@@ -3286,8 +3626,20 @@ def _run_report_stage(
         msg = f"AutoReport exited with code {report_code if report_code is not None else '?'}"
         if tail:
             msg = f"{msg}: {tail.splitlines()[-1][:180]}"
+        store.pop_handle(task_id)
         store.set_status(task_id, status="failed", phase="report_failed", last_error=msg)
         return False
+    try:
+        delivery.import_report(sys.modules[__name__], store.get(task_id), report_dir, receipt)
+    except Exception as exc:
+        store.pop_handle(task_id)
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        store.set_status(task_id, status="failed", phase="report_failed", last_error=f"AutoReport 交付整理失败: {detail}")
+        return False
+    # The pipeline still owns this task until the next stage or terminal status.
+    # Removing the handle here lets snapshot polling misclassify the transition
+    # after a long stage as an abandoned task.
+    store.attach_handle(task_id, RuntimeHandle(process=None, source="stage_transition", started_at=now_ts()))
     return True
 
 
@@ -3305,7 +3657,9 @@ def _run_autorealize_stage(
     ar_cfg_path = _write_autorealize_config(task, gs, resume_definition=resume_definition)
     py = str(gs.python.get("executable", "python"))
     autorealize_model = _selected_model(gs.llm or {}, "autoRealize", fallback_role="autoMlCode")
-    vllm = _selected_model(gs.llm or {}, "autoRealizeVision")
+    vllm = autorealize_model
+    cache_identity = hashlib.sha256(str(input_root.expanduser().resolve()).encode("utf-8")).hexdigest()[:24]
+    shared_cognition_cache = STATE_DIR / "autorealize-cognition" / cache_identity
 
     store.set_status(
         task_id,
@@ -3321,6 +3675,7 @@ def _run_autorealize_stage(
         "output_root": str(run_dir),
         "run_name": "autorealize",
         "task_hint": task.config.auto_realize.task_hint,
+        "evaluation_contract": str(task.config.auto_ml.eval or "").strip(),
         "config_path": str(ar_cfg_path),
         "python_executable": py,
         "working_dir": str(AUTOREALIZE_DIR),
@@ -3329,6 +3684,10 @@ def _run_autorealize_stage(
         "env_overrides": {
             "DEEPSEEK_API_KEY": str(autorealize_model.get("apiKey") or ""),
             "AUTOREALIZE_VISION_API_KEY": str(vllm.get("apiKey") or ""),
+            # Stable per-data-root cognition memory. It is outside task runs so
+            # different research tasks over the same database can reuse safe,
+            # content-fingerprinted file summaries and prior QDI conclusions.
+            "AUTOREALIZE_SHARED_CACHE_DIR": str(shared_cognition_cache),
         },
     }
     try:
@@ -3358,7 +3717,7 @@ def _run_autorealize_stage(
             return False
         store.set_status(task_id, status="failed", phase="autorealize_failed", last_error=f"AutoRealize service poll failed: {e}")
         return False
-    store.pop_handle(task_id)
+    store.attach_handle(task_id, RuntimeHandle(process=None, source="stage_transition", started_at=now_ts()))
     ar_state = str(ar_status.get("status") or "")
     if ar_state in {"stopped", "cancelled", "canceled", "interrupted"} or store.get(task_id).status == "stopped":
         store.set_status(task_id, status="stopped", phase="stopped", last_error=None)
@@ -3455,6 +3814,14 @@ def _start_task_thread(task_id: str) -> None:
         if not ok:
             return
 
+        # The service may resolve the requested experiment name to a
+        # timestamped directory. Read the persisted result before reporting.
+        task = store.get(task_id)
+        ml_log_dir, ml_ws_dir = _effective_automl_stage_paths(
+            task,
+            fallback_log_dir=ml_log_dir,
+            fallback_workspace_dir=ml_ws_dir,
+        )
         ok_report = _run_report_stage(
             task_id=task_id,
             task=task,
@@ -3641,7 +4008,7 @@ def _run_automl_stage(
             last_error=f"AutoML service returned a non-recoverable polling error: {e}",
         )
         return False
-    store.pop_handle(task_id)
+    store.attach_handle(task_id, RuntimeHandle(process=None, source="stage_transition", started_at=now_ts()))
     store.set_status(
         task_id,
         status="running",
@@ -4076,6 +4443,10 @@ def _repair_review_and_resume_thread(task_id: str, checkpoint_task: TaskModel | 
     try:
         task = checkpoint_task or store.get(task_id).model_copy(deep=True)
         _validate_review_repair(task)
+        # A repair action must have room for a repair pass and a verification pass.
+        task.config.auto_realize.artifact_consistency_max_rounds = max(
+            2, int(task.config.auto_realize.artifact_consistency_max_rounds or 0)
+        )
         root = _resolve_task_run_dir_for_rerun(task)
         source = root / "autorealize"
         saved_data = source / "data" if (source / "data").is_dir() else source
@@ -4159,12 +4530,14 @@ def _repair_review_and_resume_thread(task_id: str, checkpoint_task: TaskModel | 
             REPAIR_PENDING_TASKS.discard(task_id)
 
 
-def _rerun_autoreport_thread(task_id: str) -> None:
+def _rerun_autoreport_thread(task_id: str, checkpoint_task: TaskModel | None = None) -> None:
     try:
-        task = store.get(task_id)
+        task = checkpoint_task or store.get(task_id)
         gs = get_global_settings()
         _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
         run_dir, autorealize_dir, automl_root, ml_log_dir, ml_ws_dir, report_dir = _validate_autoreport_rerun(task)
+        task = task.model_copy(deep=True)
+        task.config.auto_report.enabled = True  # Explicit report-only action overrides automatic-stage preference.
 
         store.set_status(
             task_id,
@@ -4174,6 +4547,7 @@ def _rerun_autoreport_thread(task_id: str) -> None:
             run_started_at=now_ts(),
             last_error=None,
         )
+        store.attach_handle(task_id, RuntimeHandle(process=None, source="report_preparation", started_at=now_ts()))
         if report_dir.is_dir():
             archive = run_dir / "stage-history" / ("report-" + uuid.uuid4().hex)
             shutil.copytree(report_dir, archive)
@@ -4222,6 +4596,8 @@ def _rerun_autoreport_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="report_failed", last_error=msg)
     except Exception as e:
         store.set_status(task_id, status="failed", phase="report_failed", last_error=f"重跑 AutoReport 异常: {e}")
+    finally:
+        store.pop_handle(task_id)
 
 
 def _rerun_automl_thread(task_id: str) -> None:
@@ -4460,15 +4836,18 @@ def _continue_automl_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="automl_failed", last_error=f"继续 AutoML 异常: {e}")
 
 
-def _resume_task_thread(task_id: str) -> None:
-    task = store.get(task_id).model_copy(deep=True)
+def _resume_task_thread(task_id: str, checkpoint_task: TaskModel | None = None) -> None:
+    task = checkpoint_task or store.get(task_id).model_copy(deep=True)
     resume_from_completed = task.status == "completed"
     if task.status == "running":
         return
 
     # Resolve the failed stage before inspecting or creating upstream outputs.
     if task.phase == "report_failed" or task.interrupted_from_phase in {"report", "report_failed"}:
-        _rerun_autoreport_thread(task_id)
+        if checkpoint_task is not None:
+            _rerun_autoreport_thread(task_id, checkpoint_task)
+        else:
+            _rerun_autoreport_thread(task_id)
         return
 
     gs = get_global_settings()
@@ -4760,20 +5139,23 @@ def _candidate_task_run_dirs(task: TaskModel) -> list[Path]:
         seen.add(k)
         dirs.append(p)
 
-    if task.run_dir:
-        _add(Path(task.run_dir))
-    if task.output_root and task.task_name:
-        _add(resolve_output_root(task.output_root) / task.task_name)
-    if task.task_name:
-        _add(PROJECT_RUNS_DIR / task.task_name)
-        _add(DEFAULT_RUNS_DIR / task.task_name)
-        _add(LEGACY_BACKEND_RUNS_DIR / task.task_name)
-        _add(LEGACY_AUTOREALIZE_RUNS_DIR / task.task_name)
+    run_dir_value = getattr(task, "run_dir", None)
+    output_root_value = getattr(task, "output_root", None)
+    task_name = str(getattr(task, "task_name", "") or "")
+    if run_dir_value:
+        _add(Path(run_dir_value))
+    if output_root_value and task_name:
+        _add(resolve_output_root(output_root_value) / task_name)
+    if task_name:
+        _add(PROJECT_RUNS_DIR / task_name)
+        _add(DEFAULT_RUNS_DIR / task_name)
+        _add(LEGACY_BACKEND_RUNS_DIR / task_name)
+        _add(LEGACY_AUTOREALIZE_RUNS_DIR / task_name)
 
     return [x for x in dirs if x.exists() and x.is_dir()]
 
 
-def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
+def _build_local_autorealize_snapshot(task: TaskModel, *, summary: bool = False, content: bool = True) -> dict[str, Any]:
     run_dir: Path | None = None
     report_dir: Path | None = None
     autorealize_dir: Path | None = None
@@ -4796,6 +5178,21 @@ def _build_local_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
         "run_dir": str(run_dir),
         "report_dir": str(report_dir),
     }
+    if summary:
+        contract = json_artifact(report_dir / "evaluation_contract_report.json", {}) or {}
+        final = contract.get("final") or {}
+        evaluation = {key: final[key] for key in (
+            "primary_metric", "metric_direction", "metric_formula", "computation_scope",
+            "final_evaluation_metric", "final_evaluation_direction", "final_evaluation_formula",
+            "validation_protocol", "prediction_unit", "leakage_guards", "residual_issues",
+        ) if key in final}
+        result = {"evaluation": evaluation} if evaluation else {}
+        if content:
+            result.update({
+            "description_text": text_artifact(autorealize_dir / "description.md"),
+            "data_description_text": text_artifact(report_dir / "data_description.md"),
+            })
+        return result
     out["current_state"] = safe_read_json(report_dir / "current_state.json", {})
     out["frontend_manifest"] = safe_read_json(report_dir / "frontend_manifest.json", {})
     out["run_summary"] = safe_read_json(report_dir / "run_summary.json", {})
@@ -4892,8 +5289,9 @@ def _automl_log_candidates(task: TaskModel) -> tuple[list[Path], Path | None]:
         seen.add(key)
         candidates.append(resolved)
 
-    if task.auto_ml_log_dir:
-        preferred = Path(task.auto_ml_log_dir).expanduser().resolve()
+    persisted_log_value = getattr(task, "auto_ml_log_dir", None)
+    if persisted_log_value:
+        preferred = Path(persisted_log_value).expanduser().resolve()
         _add(preferred)
         if preferred.parent.is_dir():
             for child in preferred.parent.iterdir():
@@ -4941,9 +5339,10 @@ def _pick_local_automl_log_dir(task: TaskModel) -> Path | None:
 
 
 def _pick_local_automl_workspace_dir(task: TaskModel, exp_name: str | None) -> Path | None:
+    persisted_ws_value = getattr(task, "auto_ml_workspace_dir", None)
     preferred = (
-        Path(task.auto_ml_workspace_dir).expanduser().resolve()
-        if task.auto_ml_workspace_dir
+        Path(persisted_ws_value).expanduser().resolve()
+        if persisted_ws_value
         else None
     )
     for run_dir in _candidate_task_run_dirs(task):
@@ -5080,7 +5479,31 @@ def _persist_resolved_automl_paths(task_id: str) -> None:
     )
 
 
-def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
+def _effective_automl_stage_paths(
+    task: TaskModel,
+    *,
+    fallback_log_dir: Path | None = None,
+    fallback_workspace_dir: Path | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Return the actual persisted AutoML artifact paths, with safe fallbacks."""
+    # Keep this helper usable with persisted TaskModel instances and the small
+    # SimpleNamespace fixtures used by the backend tests.
+    persisted_log_value = getattr(task, "auto_ml_log_dir", None)
+    persisted_ws_value = getattr(task, "auto_ml_workspace_dir", None)
+    persisted_log = Path(persisted_log_value).expanduser().resolve() if persisted_log_value else None
+    persisted_ws = Path(persisted_ws_value).expanduser().resolve() if persisted_ws_value else None
+    log_dir = persisted_log if persisted_log is not None and persisted_log.is_dir() else None
+    if log_dir is None:
+        log_dir = _pick_local_automl_log_dir(task) or fallback_log_dir
+    ws_dir = persisted_ws if persisted_ws is not None and persisted_ws.is_dir() else None
+    if ws_dir is None and log_dir is not None:
+        ws_dir = _pick_local_automl_workspace_dir(task, exp_name=log_dir.name)
+    if ws_dir is None:
+        ws_dir = fallback_workspace_dir
+    return log_dir, ws_dir
+
+
+def _build_local_automl_snapshot(task: TaskModel, *, summary: bool = False) -> dict[str, Any]:
     log_dir = _pick_local_automl_log_dir(task)
     if log_dir is None:
         return {}
@@ -5094,13 +5517,13 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
     filtered_journal_path = log_dir / "filtered_journal.json"
     try:
         if journal_path.exists() and journal_path.stat().st_size <= 150 * 1024 * 1024:
-            journal = safe_read_json(journal_path, {})
+            journal = json_artifact(journal_path, {}) if summary else safe_read_json(journal_path, {})
             if isinstance(journal, dict) and journal:
                 journal_source = "journal"
     except Exception:
         journal = {}
     if not isinstance(journal, dict) or not journal:
-        journal = safe_read_json(filtered_journal_path, {})
+        journal = json_artifact(filtered_journal_path, {}) if summary else safe_read_json(filtered_journal_path, {})
         if isinstance(journal, dict) and journal:
             journal_source = "filtered_journal"
     nodes: list[dict[str, Any]] = []
@@ -5234,6 +5657,36 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         if str(node.get("id")) not in journal_node_ids
     ]
     engine = _automl_engine(task)
+    if summary:
+        # Poll only fields used in the human overview. Code, terminal output,
+        # protocols, event streams and file trees are available on demand.
+        fields = {
+            "id", "parent_id", "parent_ids", "stage", "plan", "insight",
+            "metric", "maximize", "is_buggy", "is_valid",
+            "runtime_ok", "search_eligible", "artifact_ready", "delivery_ready",
+            "delivery_certified", "status", "exec_time", "created_time", "finish_time",
+        }
+        try:
+            import delivery
+            split_check = delivery.split_seed_check(sys.modules[__name__], task, ws_dir)
+        except Exception:
+            split_check = {"status": "unverified"}
+        return {
+            "engine": engine,
+            "nodes": [
+                {k: (v[:600] + "…" if k in {"plan", "insight"} and isinstance(v, str) and len(v) > 600 else v)
+                 for k, v in n.items() if k in fields}
+                for n in nodes
+            ],
+            "pending_nodes": [
+                {k: v for k, v in n.items() if k in fields} for n in pending_nodes
+            ],
+            "best_node_id": best_id,
+            "best_node_kind": best_node_kind,
+            "split_seed_check": split_check,
+            "web_research_metrics": json_artifact(log_dir / "web_research_metrics.json", {}),
+            "run_status": json_artifact(log_dir / "run_status.json", {}),
+        }
     task_automl_root = log_dir.parent.parent if log_dir.parent.name == "logs" else None
     dependency_summary = safe_read_json(
         log_dir / "dependency_installations_summary.json",
@@ -5261,6 +5714,7 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "workspace_dir": str(ws_dir) if ws_dir is not None else "",
         "events": _parse_jsonl_local(log_dir / "event_stream.jsonl", limit=400)
         or _parse_log_events_tail_local(_algoevolve_log_path(log_dir), limit=400),
+        "web_research_metrics": safe_read_json(log_dir / "web_research_metrics.json", {}),
         "nodes": nodes,
         "pending_nodes": pending_nodes,
         "best_node_id": best_id,
@@ -5282,6 +5736,11 @@ def _build_local_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         best_metric_text = ws_dir / "best_solution" / "metric.txt"
         out["best_solution_code"] = safe_read_text_tail(best_solution_code, limit=200000)
         out["best_metric_text"] = safe_read_text_tail(best_metric_text, limit=20000)
+    try:
+        import delivery
+        out["split_seed_check"] = delivery.split_seed_check(sys.modules[__name__], task, ws_dir)
+    except Exception:
+        out["split_seed_check"] = {"status": "unverified"}
     return out
 
 
@@ -5340,13 +5799,24 @@ def _build_local_report_snapshot(task: TaskModel) -> dict[str, Any]:
 def _read_autorealize_snapshot(task: TaskModel) -> dict[str, Any]:
     if not task.run_dir:
         return {}
+    local = None
+    if task.status != "running":
+        local = _build_local_autorealize_snapshot(task)
+        if local:
+            return local
     gs = get_global_settings()
     ar_base, _algoevolve_base, _report_base, req_timeout = _service_base_urls(gs)
     try:
         payload = {"run_dir": str(task.run_dir)}
-        return _json_post(ar_base, "/snapshot", payload, timeout_secs=req_timeout)
+        return _json_post(
+            ar_base,
+            "/snapshot",
+            payload,
+            timeout_secs=min(req_timeout, 3),
+            max_attempts=1,
+        )
     except Exception:
-        local = _build_local_autorealize_snapshot(task)
+        local = local or _build_local_autorealize_snapshot(task)
         if local:
             return local
         raise
@@ -5367,7 +5837,13 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
         "task_name": str(task.task_name or ""),
     }
     try:
-        remote = _json_post(algoevolve_base, "/snapshot", payload, timeout_secs=min(req_timeout, 5))
+        remote = _json_post(
+            algoevolve_base,
+            "/snapshot",
+            payload,
+            timeout_secs=min(req_timeout, 3),
+            max_attempts=1,
+        )
         remote["snapshot_source"] = "remote"
         return remote
     except Exception:
@@ -5375,15 +5851,26 @@ def _read_automl_snapshot(task: TaskModel) -> dict[str, Any]:
 
 
 def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
-    gs = get_global_settings()
-    _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
     report_dir = task.report_dir or (str(Path(task.run_dir).expanduser().resolve() / "report") if task.run_dir else "")
     if not report_dir:
         return {}
-    try:
-        return _json_post(report_base, "/snapshot", {"output_dir": report_dir}, timeout_secs=req_timeout)
-    except Exception:
+    local = None
+    if task.status != "running":
         local = _build_local_report_snapshot(task)
+        if local:
+            return local
+    gs = get_global_settings()
+    _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
+    try:
+        return _json_post(
+            report_base,
+            "/snapshot",
+            {"output_dir": report_dir},
+            timeout_secs=min(req_timeout, 3),
+            max_attempts=1,
+        )
+    except Exception:
+        local = local or _build_local_report_snapshot(task)
         if local:
             return local
         raise
@@ -6009,6 +6496,12 @@ def delete_task(task_id: str, delete_files: bool = False) -> dict[str, Any]:
     deleted_paths: list[str] = []
     if delete_files:
         candidates = _candidate_task_run_dirs(task)
+        from storage_management import input_roots, input_error
+        with decision_studio_module.database(sys.modules[__name__]) as db:
+            documents = {kind: db.rows(kind, include_archived=True) for kind in ('projects', 'packages', 'storage_inputs')}
+            protected_inputs = input_roots(documents, store.list_tasks(include_archived=True))
+        if any(input_error(path, protected_inputs) for path in candidates):
+            raise HTTPException(status_code=403, detail="输入数据文件夹只允许归档，不允许删除其内容或上级目录")
         unsafe = [path for path in candidates if not _is_safe_task_output_dir(task, path)]
         if unsafe:
             raise HTTPException(
@@ -6035,11 +6528,21 @@ def automl_readiness(task_id: str) -> dict[str, Any]:
 
 @app.post("/api/tasks/start")
 def start_task(payload: StartTaskRequest) -> dict[str, Any]:
-    task = store.get(payload.task_id)
-    if task.status == "running":
-        raise HTTPException(status_code=400, detail="task already running")
-    thread = threading.Thread(target=_start_task_thread, args=(payload.task_id,), daemon=True)
-    thread.start()
+    with store._lock:
+        task = store.get(payload.task_id)
+        if task.status == "running":
+            raise HTTPException(status_code=409, detail="实验已经启动，请勿重复提交")
+        if task.run_dir or task.execution_config:
+            raise HTTPException(status_code=409, detail="已有实验请恢复，或创建新实验保留历史")
+        _validate_start(task)
+        task.execution_config = task.config.model_dump()
+        store.set_status(task.id, status="running", phase="starting", run_started_at=now_ts(), last_error=None)
+        try:
+            thread = threading.Thread(target=_start_task_thread, args=(payload.task_id,), daemon=True)
+            thread.start()
+        except Exception:
+            store.set_status(task.id, status="failed", phase="start_failed", last_error="后台线程未能启动，可重试恢复")
+            raise
     return {"status": "started", "task_id": payload.task_id}
 
 
@@ -6134,10 +6637,19 @@ def continue_automl(payload: ContinueAutoMLRequest) -> dict[str, Any]:
 def rerun_autoreport(payload: RerunAutoReportRequest) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="confirm=true required for rerun autoreport")
-    task = store.get(payload.task_id)
-    _validate_autoreport_rerun(task)
-    thread = threading.Thread(target=_rerun_autoreport_thread, args=(payload.task_id,), daemon=True)
-    thread.start()
+    import delivery
+    with delivery.operation(payload.task_id), store._lock:
+        task = store.get(payload.task_id)
+        _validate_autoreport_rerun(task)
+        checkpoint = task.model_copy(deep=True)
+        store.set_status(task.id, status="running", phase="report", run_started_at=now_ts(), last_error=None)
+    try:
+        thread = threading.Thread(target=_rerun_autoreport_thread, args=(payload.task_id, checkpoint), daemon=True)
+        thread.start()
+    except Exception:
+        store.set_status(task.id, status=checkpoint.status, phase=checkpoint.phase,
+                         run_started_at=checkpoint.run_started_at, last_error=checkpoint.last_error)
+        raise
     return {"status": "started", "task_id": payload.task_id, "mode": "autoreport_only"}
 
 
@@ -6162,13 +6674,22 @@ def recover_autoreport(payload: RecoverAutoReportRequest) -> dict[str, Any]:
 
 @app.post("/api/tasks/resume")
 def resume_task(payload: ResumeTaskRequest) -> dict[str, Any]:
-    task = store.get(payload.task_id)
-    if task.status == "running":
-        raise HTTPException(status_code=400, detail="task already running")
-    if task.status not in {"failed", "stopped", "interrupted_resumable", "interrupted_incomplete"}:
-        raise HTTPException(status_code=409, detail="仅中断或失败任务可从中断继续。")
-    thread = threading.Thread(target=_resume_task_thread, args=(payload.task_id,), daemon=True)
-    thread.start()
+    with store._lock:
+        task = store.get(payload.task_id)
+        if task.status not in {"failed", "stopped", "interrupted_resumable", "interrupted_incomplete"}:
+            raise HTTPException(status_code=409, detail="仅中断或失败任务可从中断继续。")
+        checkpoint = task.model_copy(deep=True)
+        store.set_status(task.id, status="running", phase="resuming", run_started_at=now_ts(), last_error=None)
+        def run():
+            try:
+                _resume_task_thread(payload.task_id, checkpoint)
+            except Exception as exc:
+                store.set_status(payload.task_id, status="failed", phase="resume_failed", last_error=str(exc))
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except Exception:
+            store.set_status(task.id, status="failed", phase="resume_failed", last_error="恢复线程未能启动")
+            raise
     return {"status": "started", "task_id": payload.task_id, "mode": "resume"}
 
 
@@ -6330,8 +6851,11 @@ def stop_task(payload: StopTaskRequest) -> dict[str, Any]:
 
 
 @app.get("/api/tasks/{task_id}/snapshot")
-def task_snapshot(task_id: str) -> dict[str, Any]:
+def task_snapshot(task_id: str, view: Literal["full", "summary"] = "full",
+                  section: Literal["overview", "data", "report"] = "overview") -> dict[str, Any]:
     task = store.get(task_id)
+    if view == "summary":
+        return _task_summary_snapshot(task, section=section)
     ar: dict[str, Any] = {}
     ml: dict[str, Any] = {}
     report: dict[str, Any] = {}
@@ -6365,6 +6889,40 @@ def task_snapshot(task_id: str) -> dict[str, Any]:
         "automl_readiness": automl_readiness,
         "snapshot_errors": snapshot_errors,
     }
+
+
+def _task_summary_snapshot(task: TaskModel, *, section: str = "overview") -> dict[str, Any]:
+    """Shared-filesystem overview with no Core RPC or developer artifact reads."""
+    result: dict[str, Any] = {"task": task.model_dump(), "snapshot_errors": {}}
+    for key, builder in (
+        ("auto_realize", _build_local_autorealize_snapshot),
+        ("auto_ml", _build_local_automl_snapshot),
+    ):
+        try:
+            result[key] = (builder(task, summary=True, content=section == "data")
+                           if key == "auto_realize" else builder(task, summary=True))
+        except Exception as exc:
+            result[key] = {}
+            result["snapshot_errors"][key] = str(exc)
+    try:
+        directory = _pick_local_report_dir(task) if section == "report" else None
+        if directory is None:
+            result["auto_report"] = {}
+        else:
+            # Honor custom report filenames without loading the report JSON,
+            # resolved credentials, event stream or process logs.
+            config_path = directory / "resolved_config.yaml"
+            if not config_path.exists():
+                config_path = next(iter(sorted(directory.glob("*config*.yaml"))), config_path)
+            resolved = safe_read_yaml(config_path, {}) or safe_read_json(directory / "resolved_config.json", {})
+            generation, runtime = resolved.get("generation") or {}, resolved.get("runtime") or {}
+            result["auto_report"] = {
+                "report_markdown": text_artifact(directory / str(generation.get("report_markdown_filename") or "report.md")),
+            }
+    except Exception as exc:
+        result["auto_report"] = {}
+        result["snapshot_errors"]["auto_report"] = str(exc)
+    return result
 
 
 def _local_replay_snapshot(task: TaskModel, *, full_events: bool = False) -> dict[str, Any]:
@@ -6556,3 +7114,17 @@ def list_python_environments(current: str = "") -> list[dict[str, Any]]:
     current_exe = current.strip() or str(gs.python.get("executable", "")).strip()
     envs = discover_python_environments(current=current_exe)
     return [x.model_dump() for x in envs]
+
+
+from local_product import install as install_local_product
+local_product_api = install_local_product(sys.modules[__name__])
+
+from decision_studio import install as install_decision_studio
+install_decision_studio(sys.modules[__name__])
+
+import decision_studio as decision_studio_module
+from storage_management import install as install_storage_management
+storage_management_api = install_storage_management(sys.modules[__name__], decision_studio_module)
+
+from conversation_management import install as install_conversation_management
+install_conversation_management(sys.modules[__name__], decision_studio_module)

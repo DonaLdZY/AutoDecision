@@ -8,7 +8,6 @@ type ContractPhase = {
   id: string
   index: string
   title: string
-  subtitle: string
   status: ContractStatus
   detail: string
 }
@@ -16,7 +15,6 @@ type ContractPhase = {
 type DataFileView = {
   path: string
   role: string
-  method: string
   summary: string
   sheets: string[]
   fieldCount: number
@@ -84,8 +82,8 @@ function columnsFrom(value: unknown): string[] {
 
 function statusLabel(status: ContractStatus) {
   return {
-    pending: '等待',
-    running: '编译中',
+    pending: '待生成',
+    running: '处理中',
     completed: '已就绪',
     warning: '需确认',
   }[status]
@@ -147,6 +145,40 @@ const paradigm = computed(() => firstText(
   '待分类',
 ))
 
+const paradigmLabel = computed(() => {
+  const value = paradigm.value.trim()
+  if (/[\u3400-\u9fff]/.test(value)) return value
+  const labels: Record<string, string> = {
+    classification: '分类',
+    decision_optimization: '决策优化',
+    forecasting: '预测',
+    hybrid: '混合建模',
+    optimization: '优化决策',
+    regression: '回归',
+    reinforcement_learning: '强化学习',
+    supervised_learning: '监督学习',
+    time_series_forecasting: '时间序列预测',
+  }
+  return labels[value.toLowerCase()] ?? '任务类型待确认'
+})
+
+function fileRoleLabel(value: string) {
+  if (/[\u3400-\u9fff]/.test(value)) return value
+  const role = value.trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_')
+  const labels: Record<string, string> = {
+    feature: '特征数据',
+    features: '特征数据',
+    input: '输入数据',
+    label: '目标数据',
+    sample_submission: '提交样例',
+    submission: '提交样例',
+    target: '目标数据',
+    test: '待预测数据',
+    train: '训练数据',
+  }
+  return labels[role] ?? '数据文件'
+}
+
 const paradigmReason = computed(() => firstText(
   protocolParadigm.value.reasoning,
   paradigmReport.value.reasoning,
@@ -198,7 +230,6 @@ const dataFiles = computed<DataFileView[]>(() => {
     grouped.set(path, {
       path,
       role: firstText(row.file_role, row.role, row.kind, '数据文件'),
-      method: firstText(row.read_method, row.read_example, '按协议读取'),
       summary: firstText(row.row_grain, row.summary),
       sheets: sheet ? [sheet] : [],
       fieldCount: Math.max(fields.length, columns.length),
@@ -351,8 +382,7 @@ const phases = computed<ContractPhase[]>(() => [
   {
     id: 'authority',
     index: '01',
-    title: '权威输入',
-    subtitle: '需求与事实优先级',
+    title: '需求来源',
     status: authorityStatus.value,
     detail: originalRequirementsText.value
       ? `已保留 ${originalRequirementsText.value.length} 字原始需求，并登记 ${authoritySources.value.length} 条权威来源或优先级。`
@@ -361,48 +391,45 @@ const phases = computed<ContractPhase[]>(() => [
   {
     id: 'modeling',
     index: '02',
-    title: '任务建模',
-    subtitle: '目标、范式与数据访问',
+    title: '任务与数据',
     status: modelingStatus.value,
-    detail: `${paradigm.value}；已整理 ${dataFiles.value.length} 个数据文件的读取协议。`,
+    detail: `${paradigmLabel.value}；已整理 ${dataFiles.value.length} 个数据文件。`,
   },
   {
     id: 'evaluation',
     index: '03',
-    title: '评估与约束',
-    subtitle: '统一评分合同',
+    title: '评价标准',
     status: evaluationStatus.value,
     detail: Object.keys(evaluationFinal.value).length > 0
-      ? `${primaryMetric.value}${metricDirection.value ? ` · ${metricDirection.value}` : ''}；${constraints.value.length} 条约束证据。`
+      ? `${primaryMetric.value}${metricDirection.value ? ` · ${metricDirection.value}` : ''}；${constraints.value.length} 条约束。`
       : '等待生成可执行的评价公式和非法解处理规则。',
   },
   {
     id: 'delivery',
     index: '04',
-    title: '输出交付',
-    subtitle: 'description 与 AutoML 上下文',
+    title: '结果与交付',
     status: deliveryStatus.value,
     detail: descriptionText.value
-      ? `description.md 已生成；AutoML Context ${automlContextText.value ? '已就绪' : '尚待生成'}。`
+      ? `任务说明已生成；搜索所需的任务信息${automlContextText.value ? '已齐备' : '尚待补齐'}。`
       : '等待固化任务书、输出格式与机器上下文。',
   },
 ])
 
 const overallStatus = computed(() => {
   if (deliveryStatus.value === 'completed' && evaluationPassed.value && riskItems.value.length === 0) {
-    return { label: '合同已就绪', tone: 'completed' as ContractStatus }
+    return { label: '任务定义已就绪', tone: 'completed' as ContractStatus }
   }
   if (riskItems.value.length > 0 || evaluationStatus.value === 'warning' || deliveryStatus.value === 'warning') {
     return { label: '存在待确认项', tone: 'warning' as ContractStatus }
   }
-  if (props.activeStepRunning) return { label: '合同编译中', tone: 'running' as ContractStatus }
+  if (props.activeStepRunning) return { label: '任务定义处理中', tone: 'running' as ContractStatus }
   return { label: '等待任务定义', tone: 'pending' as ContractStatus }
 })
 
 const contractSummary = computed(() => firstText(
   taskOverview.value,
   taskGoal.value,
-  '把原始需求、数据认知与 QDI 结论编译为可执行任务合同。',
+  '任务定义信息将在分析完成后显示。',
 ))
 
 const hasContent = computed(() => Boolean(
@@ -417,14 +444,13 @@ const hasContent = computed(() => Boolean(
   <section class="contract-workbench">
     <header class="contract-hero">
       <div class="hero-copy">
-        <p class="hero-eyebrow">Task Contract Compiler</p>
         <div class="hero-title-row">
-          <h2 class="hero-title">任务合同编译</h2>
+          <h2 class="hero-title">任务定义</h2>
           <span class="hero-state" :class="overallStatus.tone">{{ overallStatus.label }}</span>
         </div>
         <p class="hero-summary">{{ contractSummary }}</p>
         <div class="hero-tags">
-          <span>{{ paradigm }}</span>
+          <span>{{ paradigmLabel }}</span>
           <span v-if="primaryMetric !== '待定义'">指标 {{ primaryMetric }}</span>
           <span>{{ dataFiles.length }} 个数据文件</span>
           <span>{{ riskItems.length }} 个待确认项</span>
@@ -434,28 +460,27 @@ const hasContent = computed(() => Boolean(
       <div class="readiness-board">
         <div>
           <span>任务书</span>
-          <strong>{{ descriptionText ? 'READY' : 'WAIT' }}</strong>
+          <strong>{{ descriptionText ? '已生成' : '待生成' }}</strong>
         </div>
         <div>
-          <span>评估合同</span>
-          <strong>{{ evaluationPassed ? 'PASS' : Object.keys(evaluationFinal).length ? 'REVIEW' : 'WAIT' }}</strong>
+          <span>评价规则</span>
+          <strong>{{ evaluationPassed ? '已通过' : Object.keys(evaluationFinal).length ? '待确认' : '待生成' }}</strong>
         </div>
         <div>
-          <span>AutoML Context</span>
-          <strong>{{ automlContextText ? 'READY' : 'WAIT' }}</strong>
+          <span>搜索信息</span>
+          <strong>{{ automlContextText ? '已齐备' : '待补齐' }}</strong>
         </div>
       </div>
     </header>
 
     <template v-if="hasContent">
-      <section class="phase-rail" aria-label="任务合同编译阶段">
+      <section class="phase-rail" aria-label="任务定义进度">
         <article v-for="phase in phases" :key="phase.id" class="phase-card" :class="phase.status">
           <div class="phase-top">
             <span class="phase-index">{{ phase.index }}</span>
             <span class="phase-status" :class="phase.status">{{ statusLabel(phase.status) }}</span>
           </div>
           <h3>{{ phase.title }}</h3>
-          <p class="phase-subtitle">{{ phase.subtitle }}</p>
           <p class="phase-detail">{{ phase.detail }}</p>
         </article>
       </section>
@@ -464,10 +489,9 @@ const hasContent = computed(() => Boolean(
         <article class="contract-card modeling-card wide">
           <header class="card-header">
             <div>
-              <p class="card-kicker">Problem Contract</p>
-              <h3>任务目标与建模边界</h3>
+              <h3>任务目标与方法范围</h3>
             </div>
-            <span class="card-badge">{{ paradigm }}</span>
+            <span class="card-badge">{{ paradigmLabel }}</span>
           </header>
           <p class="goal-copy">{{ taskGoal }}</p>
           <p v-if="paradigmReason" class="reason-copy">{{ paradigmReason }}</p>
@@ -482,7 +506,7 @@ const hasContent = computed(() => Boolean(
           </div>
 
           <div v-if="methodNotes.length > 0" class="method-notes">
-            <strong>下游方法边界</strong>
+            <strong>方法说明</strong>
             <span v-for="note in methodNotes" :key="note">{{ note }}</span>
           </div>
         </article>
@@ -490,8 +514,7 @@ const hasContent = computed(() => Boolean(
         <article class="contract-card data-card">
           <header class="card-header">
             <div>
-              <p class="card-kicker">Data Access</p>
-              <h3>精确数据访问</h3>
+              <h3>使用的数据</h3>
             </div>
             <span class="card-count">{{ dataFiles.length }}</span>
           </header>
@@ -499,52 +522,50 @@ const hasContent = computed(() => Boolean(
             <article v-for="file in dataFiles.slice(0, 8)" :key="file.path" class="file-row">
               <div>
                 <strong>{{ file.path }}</strong>
-                <span>{{ file.role }} · {{ file.method }}</span>
+                <span>{{ fileRoleLabel(file.role) }}</span>
               </div>
               <p v-if="file.summary">{{ file.summary }}</p>
               <div class="file-meta">
-                <span v-if="file.sheets.length > 0">sheet {{ file.sheets.join(', ') }}</span>
-                <span v-if="file.fieldCount > 0">{{ file.fieldCount }} fields</span>
+                <span v-if="file.sheets.length > 0">工作表 {{ file.sheets.join(', ') }}</span>
+                <span v-if="file.fieldCount > 0">{{ file.fieldCount }} 个字段</span>
               </div>
             </article>
             <p v-if="dataFiles.length > 8" class="more-copy">其余 {{ dataFiles.length - 8 }} 个文件已写入最终数据访问协议。</p>
           </div>
-          <p v-else class="empty-copy">数据访问协议尚未生成。</p>
+          <p v-else class="empty-copy">数据清单尚未生成。</p>
         </article>
 
         <article class="contract-card constraint-card">
           <header class="card-header">
             <div>
-              <p class="card-kicker">Constraint Set</p>
-              <h3>约束与不可编造边界</h3>
+              <h3>业务约束</h3>
             </div>
             <span class="card-count">{{ constraints.length }}</span>
           </header>
           <ol v-if="constraints.length > 0" class="contract-list numbered">
             <li v-for="item in constraints" :key="item">{{ item }}</li>
           </ol>
-          <p v-else class="empty-copy">尚未提取结构化约束。</p>
+          <p v-else class="empty-copy">暂未整理业务约束。</p>
         </article>
 
         <article class="contract-card evaluation-card wide">
           <header class="card-header">
             <div>
-              <p class="card-kicker">Evaluation Contract</p>
-              <h3>统一评价合同</h3>
+              <h3>评价标准</h3>
             </div>
             <span class="contract-pass" :class="evaluationPassed ? 'passed' : 'review'">
-              {{ evaluationPassed ? 'PASSED' : Object.keys(evaluationFinal).length ? 'REVIEW' : 'WAITING' }}
+              {{ evaluationPassed ? '已通过' : Object.keys(evaluationFinal).length ? '待确认' : '待生成' }}
             </span>
           </header>
 
           <div class="metric-layout">
             <div class="metric-main">
-              <span>Primary Metric</span>
+              <span>评价指标</span>
               <strong>{{ primaryMetric }}</strong>
               <small v-if="metricDirection">{{ metricDirection }}</small>
             </div>
             <div class="formula-box">
-              <span>Deterministic Formula</span>
+              <span>评分公式</span>
               <code>{{ metricFormula }}</code>
             </div>
           </div>
@@ -572,10 +593,9 @@ const hasContent = computed(() => Boolean(
         <article class="contract-card output-card wide">
           <header class="card-header">
             <div>
-              <p class="card-kicker">Output Contract</p>
               <h3>输出与交付</h3>
             </div>
-            <span class="card-badge">{{ outputColumns.length }} columns</span>
+            <span class="card-badge">{{ outputColumns.length }} 个字段</span>
           </header>
           <p class="output-copy">{{ outputSummary }}</p>
 
@@ -586,15 +606,14 @@ const hasContent = computed(() => Boolean(
           <div v-if="outputColumns.length > 0" class="column-cloud">
             <span v-for="column in outputColumns" :key="column">{{ column }}</span>
           </div>
-          <p v-else class="empty-copy">未定义固定提交列，以下游输出合同与 description.md 为准。</p>
+          <p v-else class="empty-copy">尚未定义固定结果字段，具体要求见任务说明。</p>
         </article>
       </section>
 
       <section class="risk-panel" :class="{ clear: riskItems.length === 0 }">
         <header class="risk-header">
           <div>
-            <p class="card-kicker">Residual Risk</p>
-            <h3>{{ riskItems.length > 0 ? '仍需确认' : '合同检查通过' }}</h3>
+            <h3>{{ riskItems.length > 0 ? '待确认问题' : '暂无待确认问题' }}</h3>
           </div>
           <span>{{ riskItems.length }}</span>
         </header>
@@ -602,7 +621,7 @@ const hasContent = computed(() => Boolean(
         <ul v-if="riskItems.length > 0" class="risk-list">
           <li v-for="item in riskItems" :key="item">{{ item }}</li>
         </ul>
-        <p v-else class="clear-copy">质量门、评价合同与权威冲突检查未留下结构化问题。</p>
+        <p v-else class="clear-copy">当前没有需要人工确认的问题。</p>
 
         <div v-if="evaluationFixes.length > 0" class="fix-strip">
           <strong>建议修正</strong>
@@ -610,16 +629,16 @@ const hasContent = computed(() => Boolean(
         </div>
 
         <details v-if="revisionLog.length > 0 || reflectionLog.length > 0" class="history-details">
-          <summary>查看评价合同返修历史（{{ revisionLog.length + reflectionLog.length }} 条）</summary>
+          <summary>查看评价规则修订记录（{{ revisionLog.length + reflectionLog.length }} 条）</summary>
           <div class="history-grid">
             <article v-for="(row, index) in revisionLog" :key="`revision-${index}`">
-              <strong>Revision {{ row.round ?? index + 1 }}</strong>
-              <span>passed={{ row.passed ?? '-' }}</span>
+              <strong>第 {{ row.round ?? index + 1 }} 次修订</strong>
+              <span>{{ row.passed === true ? '已通过' : row.passed === false ? '未通过' : '结果未记录' }}</span>
               <p>{{ unique([...collectText(row.issues), ...collectText(row.defects)]).join('；') || '无详细问题。' }}</p>
             </article>
             <article v-for="(row, index) in reflectionLog" :key="`reflection-${index}`">
-              <strong>Reflection {{ row.round ?? index + 1 }}</strong>
-              <span>unambiguous={{ row.is_unambiguous ?? '-' }}</span>
+              <strong>第 {{ row.round ?? index + 1 }} 次复核</strong>
+              <span>{{ row.is_unambiguous === true ? '未发现歧义' : row.is_unambiguous === false ? '发现歧义' : '结果未记录' }}</span>
               <p>{{ unique(collectText(row.ambiguity_points)).join('；') || '无歧义点。' }}</p>
             </article>
           </div>
@@ -628,63 +647,34 @@ const hasContent = computed(() => Boolean(
     </template>
 
     <div v-else class="contract-empty">
-      <strong>任务定义尚未启动</strong>
-      <p>完成数据认知与 QDI 后，这里会把权威需求编译成任务、评价和交付合同。</p>
+      <strong>尚无任务定义结果</strong>
+      <p>完成数据分析后，这里会显示已整理的目标、数据、评价标准和交付要求。</p>
     </div>
   </section>
 </template>
 
 <style scoped>
 .contract-workbench {
-  --ink: #163e5a;
-  --muted: #607b90;
-  --line: #cfdee8;
-  --teal: #087a70;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #d2d2d7;
+  --teal: #0071e3;
   display: grid;
-  gap: 14px;
+  gap: 22px;
   min-width: 0;
 }
 
 .contract-hero {
-  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 28px;
-  overflow: hidden;
-  padding: 25px 26px;
-  border: 1px solid #bbd2dc;
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 93% 12%, rgba(21, 132, 139, 0.18), transparent 30%),
-    linear-gradient(135deg, #f5fbfb 0%, #eef6fa 58%, #f8fbfd 100%);
-  box-shadow: 0 18px 44px rgba(35, 76, 100, 0.08);
-}
-
-.contract-hero::after {
-  position: absolute;
-  right: -34px;
-  bottom: -76px;
-  width: 220px;
-  height: 220px;
-  border: 1px solid rgba(37, 112, 128, 0.12);
-  border-radius: 50%;
-  content: '';
+  gap: 24px;
+  padding: 4px 0 20px;
+  border-bottom: 1px solid var(--line);
 }
 
 .hero-copy,
 .readiness-board {
-  position: relative;
-  z-index: 1;
-}
-
-.hero-eyebrow,
-.card-kicker {
-  margin: 0 0 6px;
-  color: var(--teal);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
+  min-width: 0;
 }
 
 .hero-title-row,
@@ -700,8 +690,8 @@ const hasContent = computed(() => Boolean(
 .hero-title {
   margin: 0;
   color: var(--ink);
-  font-size: clamp(27px, 3.5vw, 40px);
-  letter-spacing: -0.045em;
+  font-size: 27px;
+  font-weight: 650;
 }
 
 .hero-state,
@@ -713,43 +703,44 @@ const hasContent = computed(() => Boolean(
 .column-cloud span,
 .method-notes span,
 .file-meta span {
-  border-radius: 999px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
 }
 
 .hero-state {
-  padding: 7px 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
 }
 
 .hero-state.completed,
 .phase-status.completed {
-  background: #dff4e9;
+  background: #e8f5ec;
   color: #1b6c4e;
 }
 
 .hero-state.running,
 .phase-status.running {
-  background: #deedff;
-  color: #245f91;
+  background: #e8f2ff;
+  color: #075db5;
 }
 
 .hero-state.warning,
 .phase-status.warning {
-  background: #fff0d4;
+  background: #fff4d6;
   color: #93611b;
 }
 
 .hero-state.pending,
 .phase-status.pending {
-  background: #e8eef2;
-  color: #647987;
+  background: #f5f5f7;
+  color: #6e6e73;
 }
 
 .hero-summary {
   max-width: 900px;
   margin: 11px 0 0;
-  color: #46677c;
+  color: #424245;
   font-size: 14px;
   line-height: 1.7;
 }
@@ -768,24 +759,23 @@ const hasContent = computed(() => Boolean(
 }
 
 .hero-tags span {
-  padding: 5px 9px;
-  border: 1px solid rgba(160, 194, 204, 0.76);
-  background: rgba(255, 255, 255, 0.7);
-  color: #4b7183;
+  padding: 4px 7px;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #fff;
+  color: #515154;
 }
 
 .readiness-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(94px, 1fr));
-  gap: 8px;
+  gap: 0;
   align-self: end;
 }
 
 .readiness-board div {
-  padding: 12px;
-  border: 1px solid rgba(174, 204, 213, 0.82);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.74);
+  padding: 4px 12px;
+  border-left: 1px solid var(--line);
 }
 
 .readiness-board span,
@@ -794,48 +784,38 @@ const hasContent = computed(() => Boolean(
 }
 
 .readiness-board span {
-  color: #6c8493;
+  color: var(--muted);
   font-size: 10px;
 }
 
 .readiness-board strong {
   margin-top: 5px;
-  color: #235a6e;
-  font-family: Consolas, monospace;
+  color: #1d1d1f;
   font-size: 15px;
 }
 
 .phase-rail {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 9px;
+  gap: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .phase-card {
   min-width: 0;
-  min-height: 156px;
-  padding: 15px;
-  border: 1px solid #d3e0e8;
-  border-top: 3px solid #aebdc7;
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.92);
+  min-height: 124px;
+  padding: 14px 12px;
+  border-right: 1px solid var(--line);
+  background: transparent;
 }
 
-.phase-card.completed {
-  border-top-color: #399675;
-}
-
-.phase-card.running {
-  border-top-color: #3b78b4;
-}
-
-.phase-card.warning {
-  border-top-color: #d6a348;
+.phase-card:last-child {
+  border-right: 0;
 }
 
 .phase-index {
-  color: #8aa0ae;
-  font-family: Consolas, monospace;
+  color: #86868b;
   font-size: 12px;
 }
 
@@ -848,18 +828,12 @@ const hasContent = computed(() => Boolean(
 .risk-panel h3 {
   margin: 11px 0 0;
   color: var(--ink);
-  font-size: 16px;
-}
-
-.phase-subtitle {
-  margin: 4px 0 0;
-  color: #6d8494;
-  font-size: 11px;
+  font-size: 15px;
 }
 
 .phase-detail {
-  margin: 10px 0 0;
-  color: #4e6d80;
+  margin: 8px 0 0;
+  color: #6e6e73;
   font-size: 12px;
   line-height: 1.55;
 }
@@ -867,18 +841,16 @@ const hasContent = computed(() => Boolean(
 .contract-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 20px 28px;
 }
 
 .contract-card,
 .risk-panel,
 .contract-empty {
   min-width: 0;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 17px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 10px 26px rgba(43, 77, 99, 0.045);
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .contract-card.wide {
@@ -892,9 +864,11 @@ const hasContent = computed(() => Boolean(
 
 .card-badge,
 .card-count {
-  padding: 5px 9px;
-  background: #e6f1f3;
-  color: #326b72;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: #424245;
 }
 
 .card-count {
@@ -902,14 +876,14 @@ const hasContent = computed(() => Boolean(
   place-items: center;
   min-width: 28px;
   height: 28px;
-  border-radius: 10px;
+  border-radius: 4px;
   font-size: 12px;
   font-weight: 800;
 }
 
 .goal-copy {
   margin: 14px 0 0;
-  color: #2c5268;
+  color: #1d1d1f;
   font-size: 16px;
   font-weight: 700;
   line-height: 1.65;
@@ -919,7 +893,7 @@ const hasContent = computed(() => Boolean(
 .output-copy,
 .scope-copy {
   margin: 10px 0 0;
-  color: #5c7688;
+  color: #515154;
   font-size: 12px;
   line-height: 1.62;
 }
@@ -934,15 +908,14 @@ const hasContent = computed(() => Boolean(
 
 .modeling-grid section,
 .evaluation-columns section {
-  padding: 12px;
-  border: 1px solid #d8e5eb;
-  border-radius: 12px;
-  background: #f7fafc;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
 }
 
 .modeling-grid strong,
 .evaluation-columns strong {
-  color: #345d72;
+  color: #1d1d1f;
   font-size: 12px;
 }
 
@@ -950,7 +923,7 @@ const hasContent = computed(() => Boolean(
 .contract-list {
   margin: 9px 0 0;
   padding-left: 19px;
-  color: #4b6879;
+  color: #424245;
   font-size: 12px;
   line-height: 1.58;
 }
@@ -967,18 +940,18 @@ const hasContent = computed(() => Boolean(
   align-items: center;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px dashed #d6e2e8;
+  border-top: 1px solid var(--line);
 }
 
 .method-notes strong {
-  color: #446679;
+  color: #1d1d1f;
   font-size: 11px;
 }
 
 .method-notes span {
   padding: 5px 8px;
-  background: #edf4f6;
-  color: #587482;
+  background: #f5f5f7;
+  color: #515154;
 }
 
 .file-list {
@@ -988,10 +961,9 @@ const hasContent = computed(() => Boolean(
 }
 
 .file-row {
-  padding: 11px;
-  border: 1px solid #dce7ec;
-  border-radius: 12px;
-  background: #f9fbfc;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .file-row > div:first-child {
@@ -1001,13 +973,13 @@ const hasContent = computed(() => Boolean(
 }
 
 .file-row strong {
-  color: #315a6f;
+  color: #1d1d1f;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 
 .file-row > div:first-child span {
-  color: #748b99;
+  color: #6e6e73;
   font-size: 10px;
   text-align: right;
 }
@@ -1016,7 +988,7 @@ const hasContent = computed(() => Boolean(
   display: -webkit-box;
   margin: 7px 0 0;
   overflow: hidden;
-  color: #5a7586;
+  color: #515154;
   font-size: 11px;
   line-height: 1.5;
   -webkit-box-orient: vertical;
@@ -1029,8 +1001,8 @@ const hasContent = computed(() => Boolean(
 
 .file-meta span {
   padding: 3px 7px;
-  background: #eaf1f4;
-  color: #607b89;
+  background: #f5f5f7;
+  color: #515154;
 }
 
 .more-copy,
@@ -1047,16 +1019,16 @@ const hasContent = computed(() => Boolean(
 
 .contract-pass {
   padding: 6px 10px;
-  font-family: Consolas, monospace;
+  border-radius: 4px;
 }
 
 .contract-pass.passed {
-  background: #dff4e8;
+  background: #e8f5ec;
   color: #1b6e4e;
 }
 
 .contract-pass.review {
-  background: #fff0d8;
+  background: #fff4d6;
   color: #92601c;
 }
 
@@ -1069,13 +1041,11 @@ const hasContent = computed(() => Boolean(
 
 .metric-main,
 .formula-box {
-  padding: 14px;
-  border-radius: 13px;
+  padding: 12px 0;
 }
 
 .metric-main {
-  background: #123f58;
-  color: #ffffff;
+  color: #1d1d1f;
 }
 
 .metric-main span,
@@ -1087,13 +1057,11 @@ const hasContent = computed(() => Boolean(
 .metric-main span,
 .formula-box span {
   font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 600;
 }
 
 .metric-main span {
-  color: #a9d3dc;
+  color: #6e6e73;
 }
 
 .metric-main strong {
@@ -1104,22 +1072,23 @@ const hasContent = computed(() => Boolean(
 
 .metric-main small {
   margin-top: 8px;
-  color: #c3dce2;
+  color: #6e6e73;
 }
 
 .formula-box {
-  border: 1px solid #c8dde3;
-  background: #eef7f7;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #f5f5f7;
 }
 
 .formula-box span {
-  color: #4e767b;
+  color: #6e6e73;
 }
 
 .formula-box code {
   display: block;
   margin-top: 9px;
-  color: #1e5c62;
+  color: #1d1d1f;
   font-family: Consolas, monospace;
   font-size: 13px;
   line-height: 1.62;
@@ -1132,36 +1101,35 @@ const hasContent = computed(() => Boolean(
 }
 
 .output-files span {
-  padding: 5px 9px;
-  background: #173f58;
-  color: #e9f5f7;
+  padding: 4px 7px;
+  background: #f5f5f7;
+  color: #424245;
   font-family: Consolas, monospace;
 }
 
 .column-cloud {
   margin-top: 12px;
-  padding: 12px;
-  border: 1px solid #d7e4e9;
-  border-radius: 12px;
-  background: #f6fafb;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .column-cloud span {
-  padding: 5px 8px;
-  border: 1px solid #cbdce3;
+  padding: 3px 0;
   background: #ffffff;
-  color: #41677a;
+  color: #515154;
   font-family: Consolas, monospace;
 }
 
 .risk-panel {
-  border-color: #e1c98f;
-  background: linear-gradient(135deg, #fffaf0, #ffffff);
+  border-color: var(--line);
+  background: transparent;
 }
 
 .risk-panel.clear {
-  border-color: #b8dccb;
-  background: linear-gradient(135deg, #f2fbf7, #ffffff);
+  border-color: var(--line);
+  background: transparent;
 }
 
 .risk-header > span {
@@ -1169,14 +1137,14 @@ const hasContent = computed(() => Boolean(
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 50%;
-  background: #f3dfb3;
+  border-radius: 4px;
+  background: #fff4d6;
   color: #8b5d1e;
   font-weight: 800;
 }
 
 .risk-panel.clear .risk-header > span {
-  background: #d9f0e5;
+  background: #e8f5ec;
   color: #237051;
 }
 
@@ -1190,11 +1158,10 @@ const hasContent = computed(() => Boolean(
 }
 
 .risk-list li {
-  padding: 10px 12px;
-  border: 1px solid #ecd9ae;
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #745c35;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: #424245;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1205,12 +1172,12 @@ const hasContent = computed(() => Boolean(
   gap: 7px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px dashed #dfc991;
+  border-top: 1px solid var(--line);
 }
 
 .fix-strip strong,
 .fix-strip span {
-  color: #6e5b38;
+  color: #515154;
   font-size: 11px;
 }
 
@@ -1227,7 +1194,7 @@ const hasContent = computed(() => Boolean(
 }
 
 .history-details summary {
-  color: #6e5b38;
+  color: #515154;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -1241,21 +1208,21 @@ const hasContent = computed(() => Boolean(
 }
 
 .history-grid article {
-  padding: 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.78);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .history-grid strong,
 .history-grid span {
   display: block;
-  color: #6d5a3a;
+  color: #424245;
   font-size: 11px;
 }
 
 .history-grid p {
   margin: 7px 0 0;
-  color: #7b6b50;
+  color: #6e6e73;
   font-size: 11px;
   line-height: 1.5;
 }
@@ -1305,7 +1272,7 @@ const hasContent = computed(() => Boolean(
   .contract-hero,
   .contract-card,
   .risk-panel {
-    padding: 15px;
+    padding: 12px 0;
   }
 
   .hero-title-row {

@@ -88,13 +88,24 @@ function samplingReview(item: Record<string, unknown>) {
   return asRecord(item.review)
 }
 
-function samplingReviewDecision(item: Record<string, unknown>) {
-  return String(samplingReview(item).decision ?? 'pending')
+function samplingReviewLabel(item: Record<string, unknown>) {
+  const decision = String(samplingReview(item).decision ?? '').toLowerCase()
+  if (decision === 'deterministic_accept' || decision === 'accept_sampling') return '抽样已确认'
+  if (decision === 'accept_sampling_with_extra_files') return '已补充样本'
+  if (decision.startsWith('force_full_read')) return '改为完整读取'
+  return '已完成复核'
 }
 
 function samplingReviewReason(item: Record<string, unknown>) {
   const review = samplingReview(item)
-  return String(review.reason ?? review.risk ?? '')
+  const reason = String(review.reason ?? review.risk ?? '').trim()
+  if (reason.includes('low-token mode accepts rule-verified same-pattern sampling')) {
+    return '轻量模式按文件规则确认抽样，未调用语言模型复核。'
+  }
+  if (reason.includes('LLM did not return a review item for this pattern_id')) {
+    return '未取得复核结果，因此改为完整读取。'
+  }
+  return /[\u3400-\u9fff]/.test(reason) ? reason : ''
 }
 
 const skippedByPattern = computed(() => {
@@ -243,14 +254,6 @@ const cognitionProgress = computed(() => deriveCognitionProgress(events.value, {
   failedFiles: stateCounts.value.failed,
   reportAvailable: Object.keys(report.value).length > 0,
 }))
-const traceCount = computed(() => {
-  let count = 0
-  for (const payload of Object.values(normalizedIndex.value)) {
-    const metadata = asRecord(payload.json?.source_metadata)
-    if (Object.keys(asRecord(metadata.cognition_trace)).length > 0) count += 1
-  }
-  return count
-})
 const selectedPayload = computed<FileCognitionPayload | null>(() => {
   if (selectedPath.value === '__root__') return { markdown: dataDescriptionText.value }
   return cognitionPayloadFor(selectedPath.value) ?? null
@@ -346,18 +349,17 @@ function onRootDblclick() {
       <p v-else class="empty">暂无目录树数据。</p>
 
       <section v-if="sampledPatterns.length > 0 || filenameSampleGroups.length > 0" class="sampling-panel">
-        <h5>抽样与文件名关联</h5>
+        <h5>重复文件抽样</h5>
         <div v-if="sampledPatterns.length > 0" class="sampling-list">
           <article v-for="item in sampledPatterns.slice(0, 6)" :key="`${String(item.directory)}-${String(item.pattern)}`">
-            <strong>{{ item.pattern }}</strong>
-            <span>{{ item.directory }}：共 {{ item.total }} 个，读取 {{ asArray(item.sampled).length }} 个，跳过 {{ asArray(item.skipped).length }} 个</span>
-            <span class="sampling-review">LLM review: {{ samplingReviewDecision(item) }}</span>
+            <strong>{{ item.directory || '同类文件' }}</strong>
+            <span>共 {{ item.total }} 个，读取 {{ asArray(item.sampled).length }} 个，跳过 {{ asArray(item.skipped).length }} 个</span>
+            <span class="sampling-review">{{ samplingReviewLabel(item) }}</span>
             <span v-if="samplingReviewReason(item)" class="sampling-review muted">{{ samplingReviewReason(item) }}</span>
-            <small v-if="asArray(item.planned_sampled).length > 0" class="sampling-review muted">planned read {{ asArray(item.planned_sampled).length }}, final read {{ asArray(item.sampled).length }}</small>
           </article>
         </div>
         <div v-if="filenameSampleGroups.length > 0" class="sample-group-note">
-          已识别 {{ filenameSampleGroups.length }} 组同一 sample_id 下的多文件组合，例如图片、水平井表、类型井表这类 `{id}+{data_kind}` 结构。
+          已识别 {{ filenameSampleGroups.length }} 组按编号关联的多文件数据。
         </div>
       </section>
 
@@ -370,7 +372,6 @@ function onRootDblclick() {
           :is-root="selectedIsRoot"
         />
         <p v-if="!selectedPayload" class="empty">暂无文件认知记录</p>
-        <p class="trace-footnote">本任务已有 {{ traceCount }} 个文件保存了结构化 agent 探查轨迹。</p>
       </main>
     </div>
 
@@ -391,13 +392,10 @@ function onRootDblclick() {
 
 .overall-progress {
   overflow: hidden;
-  border: 1px solid #c7dce4;
-  border-radius: 20px;
+  border: 1px solid #d2d2d7;
+  border-radius: 8px;
   padding: 20px 22px;
-  background:
-    radial-gradient(circle at 92% 0%, rgba(12, 128, 119, 0.14), transparent 27%),
-    linear-gradient(140deg, #f8fcfb 0%, #f0f7fa 58%, #edf5f4 100%);
-  box-shadow: 0 16px 38px rgba(27, 76, 96, 0.07);
+  background: #fff;
 }
 
 .overall-progress.completed {
@@ -433,21 +431,21 @@ function onRootDblclick() {
 }
 
 .overall-state {
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: #e8eef1;
-  color: #587181;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: #f5f5f7;
+  color: #6e6e73;
   font-size: 11px;
   font-weight: 800;
 }
 
 .overall-state.running {
-  background: #dff3ef;
-  color: #08766d;
+  background: #e8f2ff;
+  color: #075db5;
 }
 
 .overall-state.completed {
-  background: #dff2e7;
+  background: #e8f5ec;
   color: #267052;
 }
 
@@ -482,58 +480,59 @@ function onRootDblclick() {
 }
 
 .progress-number strong {
-  color: #164f62;
-  font-family: Georgia, serif;
+  color: #1d1d1f;
   font-size: 30px;
   line-height: 1;
 }
 
 .progress-track {
-  height: 7px;
+  height: 4px;
   margin-top: 17px;
   overflow: hidden;
   border-radius: 999px;
-  background: #dce8eb;
+  background: #e8e8ed;
 }
 
 .progress-track span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #197c86, #0d9b81);
+  background: #0071e3;
   transition: width 500ms ease;
 }
 
 .stage-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
+  gap: 0;
   margin-top: 14px;
+  border-top: 1px solid #d2d2d7;
+  border-bottom: 1px solid #d2d2d7;
 }
 
 .stage-strip article {
   position: relative;
   min-width: 0;
   gap: 9px;
-  border: 1px solid #d5e2e6;
-  border-radius: 12px;
-  padding: 10px 28px 10px 10px;
-  background: rgba(255, 255, 255, 0.68);
+  border-right: 1px solid #d2d2d7;
+  padding: 10px 24px 10px 10px;
+  background: #fff;
 }
 
 .stage-strip article.running {
-  border-color: #8fc9c2;
-  background: #ecf8f5;
+  background: #f5f9ff;
 }
 
 .stage-strip article.completed {
-  border-color: #c1dece;
-  background: #f2faf5;
+  background: #f5faf6;
 }
 
 .stage-strip article.failed {
-  border-color: #efc7c0;
-  background: #fff4f1;
+  background: #fff7f5;
+}
+
+.stage-strip article:last-child {
+  border-right: 0;
 }
 
 .stage-index {
@@ -601,10 +600,10 @@ function onRootDblclick() {
 
 .left,
 .right {
-  border: 1px solid #d0ddee;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
-  padding: 12px;
+  border-top: 1px solid #d2d2d7;
+  border-bottom: 1px solid #d2d2d7;
+  background: #fff;
+  padding: 12px 16px;
   min-height: 520px;
 }
 
@@ -628,10 +627,10 @@ h5 {
 }
 
 .root-button {
-  border: 1px solid #b9cbea;
-  border-radius: 999px;
-  background: #eef5ff;
-  color: #315b8a;
+  border: 1px solid #d2d2d7;
+  border-radius: 5px;
+  background: #fff;
+  color: #075db5;
   cursor: pointer;
   padding: 5px 10px;
 }
@@ -644,7 +643,7 @@ h5 {
 }
 
 .status-card {
-  border-radius: 12px;
+  border-radius: 5px;
   padding: 8px;
   background: #f2f6fc;
   border: 1px solid #d8e3f1;
@@ -730,9 +729,9 @@ h5 {
 
 .sampling-panel {
   margin-top: 14px;
-  border: 1px solid #d8e3f2;
-  border-radius: 12px;
-  background: #f8fbff;
+  border-top: 1px solid #d2d2d7;
+  border-bottom: 1px solid #d2d2d7;
+  background: #fff;
   padding: 10px;
 }
 
@@ -765,8 +764,7 @@ h5 {
   line-height: 1.5;
 }
 
-.tip,
-.trace-footnote {
+.tip {
   margin: 10px 0 0;
   color: #57739a;
   font-size: 12px;

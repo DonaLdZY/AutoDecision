@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { chromium } from '@playwright/test'
 
 const base = process.env.AUTODECISION_UI_URL || 'http://127.0.0.1:5173'
-const output = resolve('../../.codex-work/ui-verification')
+const output = resolve(process.env.AUTODECISION_UI_OUTPUT || '../../.codex-work/ui-verification')
 const source = [
   '# Formula regression',
   'Inline: \\(x^2+y^2=z^2\\), $\\alpha+\\beta$.',

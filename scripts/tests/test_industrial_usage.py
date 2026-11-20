@@ -53,3 +53,26 @@ def test_identical_untimestamped_probes_are_still_counted_as_separate_calls(tmp_
     row = {"usage": {"prompt_tokens": 50, "completion_tokens": 10}}
     (tmp_path / "calls.json").write_text(json.dumps([row, row]))
     assert audit.aggregate(tmp_path)["totals"]["provider_calls"] == 2
+
+
+def test_normalized_zero_does_not_claim_unknown_reasoning_is_zero(tmp_path):
+    row = {"request_id": "r", "stage_id": "draft", "stage_id_source": "explicit",
+           "prompt_tokens": 900, "completion_tokens": 100, "reasoning_tokens": 0,
+           "provider_cache_tokens_known": False, "raw_usage": {"prompt_tokens": 900, "completion_tokens": 100},
+           "seconds": 3.25}
+    (tmp_path / "llm_usage.jsonl").write_text(json.dumps(row) + "\n")
+    result = audit.aggregate(tmp_path)
+    assert result["totals"]["reasoning_tokens_all_calls"] is None
+    stage = result["by_stage"][0]
+    assert stage["stage_id"] == "draft"
+    assert stage["cache_hit_ratio"] is None
+    assert stage["seconds"] == 3.25
+    assert stage["stage_id_source_counts"] == {"explicit": 1}
+
+
+def test_live_partial_row_is_reported_without_losing_complete_usage(tmp_path):
+    row = {"response_id": "r", "stage_id": "report", "prompt_tokens": 100, "completion_tokens": 20}
+    (tmp_path / "llm_usage.jsonl").write_text(json.dumps(row) + '\n{"response_id":')
+    result = audit.aggregate(tmp_path)
+    assert result["totals"]["provider_calls"] == 1
+    assert result["reading_issues"][0]["line"] == 2

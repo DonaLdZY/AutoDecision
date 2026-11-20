@@ -4,6 +4,57 @@
   font-synthesis: none; --ink: #202824; --muted: #7b827c; --line: #e4e8e4;
   --accent: #19845b; --surface: #fff; --canvas: #f6f8f5; --soft: #edf4ee;
 }
+.product-workbench { display: grid; gap: 18px; }
+.stage-context-summary { display: flex; gap: 20px; flex-wrap: wrap; padding: 14px 18px; background: #fff; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; margin-bottom: 16px; color: #56645a; }
+.trial-form { display: grid; gap: 12px; margin: 12px 0; }
+.trial-form label { display: grid; gap: 5px; font-size: 12px; }
+.trial-form input, .trial-form select, .trial-form textarea { padding: 9px; border: 1px solid var(--line); border-radius: 4px; min-width: 0; width: 100%; background: #fff; color: var(--ink); }
+.product-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 22px; }
+.product-navigation button { padding: 12px 18px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #56645a; font-size: 13px; }
+.product-navigation button.active { color: #176340; border-bottom-color: #19845b; font-weight: 650; }
+.product-navigation > span { margin-left: auto; font-size: 12px; color: #56645a; padding: 8px; }
+.product-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px; min-width: 0; }
+.product-panel-heading { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.product-panel h3 { margin: 0; font-size: 17px; }
+.product-panel p { overflow-wrap: anywhere; }
+.product-panel-heading p, .product-note { color: #68756d; font-size: 12px; line-height: 1.8; margin: 6px 0; }
+.product-panel details { border-top: 1px solid var(--line); padding: 14px 0; font-size: 12px; overflow-wrap: anywhere; }
+.product-panel summary { cursor: pointer; font-weight: 600; color: #355641; }
+.product-panel details p { line-height: 1.8; }
+.product-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0; }
+.product-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.product-facts dt { font-size: 11px; color: #68756d; margin-bottom: 4px; }
+.product-facts dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.task-goal { border-left: 3px solid #19845b; padding-left: 14px; font-size: 15px; line-height: 1.8; }
+.product-error { border: 1px solid #e4b5a4; border-radius: 6px; background: #fff6f0; color: #843c27; padding: 16px; font-size: 13px; margin: 12px 0; overflow-wrap: anywhere; }
+ul.product-error { padding-left: 32px; }
+.product-status { border-left: 3px solid #19845b; background: #edf4ee; padding: 12px; font-size: 12px; }
+.product-status.blocked { background: #fff6f0; border-left-color: #b56238; }
+.readiness-list { list-style: none; padding: 0; margin: 0; }
+.readiness-list li { display: flex; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); align-items: flex-start; font-size: 12px; }
+.readiness-list li > div { flex: 1; min-width: 0; }
+.readiness-list p { margin: 4px 0 0; color: #68756d; }
+.check-state { border-radius: 4px; padding: 3px 6px; white-space: nowrap; background: #edf4ee; color: #176340; font-size: 10px; }
+.check-state.warn { background: #fff4dc; color: #88621f; }
+.check-state.fail { background: #ffe9e3; color: #98371f; }
+.system-check-container { padding: 24px 36px; display: grid; gap: 16px; }
+.system-check-container > button { justify-self: start; }
+.product-table-wrap { overflow-x: auto; }
+.product-table { border-collapse: collapse; width: 100%; text-align: left; font-size: 12px; }
+.product-table th { color: #68756d; font-weight: 500; background: #f6f8f5; }
+.product-table td, .product-table th { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 110px; max-width: 320px; overflow-wrap: anywhere; }
+.product-table small { display: block; color: #68756d; margin-top: 6px; overflow-wrap: anywhere; }
+.product-table .current { background: #f0f7f1; }
+.experiment-link { padding: 0; border: 0; background: none; color: #176340; text-align: left; }
+@media (max-width: 700px) {
+  .product-panel { padding: 16px; }
+  .product-facts { grid-template-columns: 1fr; }
+  .product-navigation > span { margin-left: 0; width: 100%; }
+  .product-navigation button { padding: 10px; }
+  .readiness-list li { flex-wrap: wrap; }
+  .readiness-list li > button { margin-left: 54px; }
+  .system-check-container { padding: 16px; }
+}
 * { box-sizing: border-box; letter-spacing: 0; }
 body { margin: 0; min-width: 320px; }
 button, input, textarea, select { font: inherit; }

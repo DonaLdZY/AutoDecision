@@ -1,0 +1,32 @@
+{
+  "name": "autodecision-decision-studio",
+  "private": true,
+  "version": "0.5.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5178 --strictPort",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
+    "preview": "vite preview --host 127.0.0.1 --port 5178 --strictPort",
+    "format": "prettier --write \"src/**/*.{ts,vue,css}\" \"*.{json,ts,html}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,vue,css}\" \"*.{json,ts,html}\""
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "lucide-vue-next": "1.0.0",
+    "marked": "18.0.7",
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.3",
+    "@vitejs/plugin-vue": "6.0.6",
+    "prettier": "3.6.2",
+    "typescript": "6.0.2",
+    "vite": "8.3.5",
+    "vitest": "4.1.12",
+    "vue-tsc": "3.2.8"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}

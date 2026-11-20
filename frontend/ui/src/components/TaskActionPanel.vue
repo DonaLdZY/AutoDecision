@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { BrainCircuit, FileText, FolderOpen, GitBranch, Play, RefreshCw, Save, Square, StepForward } from 'lucide-vue-next'
 const props = defineProps<{
+  expert?: boolean
   running: boolean
   canOpenDirectory: boolean
   canRunAutoRealize: boolean
@@ -36,7 +37,7 @@ const emit = defineEmits<{
       <button type="button" class="action-icon" title="打开任务目录" aria-label="打开任务目录" :disabled="!props.canOpenDirectory" @click="emit('openDirectory')"><FolderOpen :size="17" /></button>
     </div>
 
-    <div class="action-row stage-row" role="group" aria-label="阶段执行">
+    <div v-if="expert" class="action-row stage-row" role="group" aria-label="阶段执行">
       <button type="button" :disabled="!props.canRunAutoRealize" @click="emit('runAutoRealize')"><BrainCircuit :size="15" />执行 AutoRealize</button>
       <button type="button" :disabled="!props.canRunAutoML" @click="emit('runAutoML')"><GitBranch :size="15" />执行 AutoML</button>
       <button type="button" :disabled="!props.canContinueAutoML" @click="emit('continueAutoML')"><StepForward :size="15" />继续执行 AutoML</button>
@@ -45,7 +46,7 @@ const emit = defineEmits<{
     </div>
 
     <div class="action-row workflow-row" role="group" aria-label="整条任务执行">
-      <button type="button" class="run-task" :disabled="!props.canRunTask" @click="emit('runTask')"><Play :size="15" />执行任务</button>
+      <button type="button" class="run-task" :disabled="!props.canRunTask" @click="emit('runTask')"><Play :size="15" />检查并开始</button>
       <button type="button" class="resume-task" :disabled="!props.canResumeTask" @click="emit('resumeTask')"><StepForward :size="15" />从中断继续任务</button>
       <button type="button" class="stop-task" :disabled="!props.canStopTask" @click="emit('stopTask')"><Square :size="14" />中断当前任务</button>
     </div>

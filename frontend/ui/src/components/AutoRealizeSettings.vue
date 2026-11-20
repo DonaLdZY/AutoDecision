@@ -84,12 +84,6 @@ function commit() {
             <input v-model.number="model.table_profile_sample_rows" type="number" min="0" step="1000" :disabled="props.disabled" @input="commit" />
           </label>
         </div>
-        <div class="toggle-list">
-          <label class="toggle-row">
-            <input v-model="model.enable_vllm" type="checkbox" :disabled="props.disabled" @change="commit" />
-            启用视觉模型认知图片
-          </label>
-        </div>
       </section>
 
       <section v-else-if="activeSection === 'investigation'" class="settings-section">

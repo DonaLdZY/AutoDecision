@@ -1,7 +1,17 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, onUnmounted, shallowRef } from 'vue'
+import { computed, onMounted, onUnmounted, shallowRef, watch } from 'vue'
 import type { Task } from '../types'
 import { displayTaskName } from '../utils/taskName'
+import {
+  activeProcessStep,
+  componentLabel,
+  eventStatusLabel,
+  eventTone,
+  phaseLabel,
+  timelineEventSummary,
+  timelineEventTime,
+  timelineEventTitle,
+} from '../utils/timelinePresentation'
 import CognitionTreeNode from './CognitionTreeNode.vue'
 import type { CognitionTreeNode as TreeNode, ReadState } from './cognition-tree-types'
 import { readStateLabel } from './cognition-tree-types'
@@ -9,6 +19,7 @@ import { readStateLabel } from './cognition-tree-types'
 const props = defineProps<{
   task?: Task | null
   autoRealizeState?: Record<string, unknown>
+  webResearchMetrics?: Record<string, unknown>
   directoryTreeText?: string
   autoRealizeEvents: Record<string, unknown>[]
   autoMlEvents: Record<string, unknown>[]
@@ -16,14 +27,27 @@ const props = defineProps<{
 
 const nowTs = shallowRef(Date.now())
 let timer: number | null = null
+let mounted = false
+
+function syncElapsedTimer() {
+  if (timer !== null) window.clearInterval(timer)
+  timer = null
+  if (mounted && props.task?.status === 'running') {
+    timer = window.setInterval(() => {
+      nowTs.value = Date.now()
+    }, 1000)
+  }
+}
 
 onMounted(() => {
-  timer = window.setInterval(() => {
-    nowTs.value = Date.now()
-  }, 1000)
+  mounted = true
+  syncElapsedTimer()
 })
 
+watch(() => props.task?.status, syncElapsedTimer)
+
 onUnmounted(() => {
+  mounted = false
   if (timer !== null) {
     window.clearInterval(timer)
     timer = null
@@ -49,9 +73,9 @@ const runningElapsed = computed(() => {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const s = seconds % 60
-  if (h > 0) return `${h}h ${m}m ${s}s`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
+  if (h > 0) return `${h} 小时 ${m} 分 ${s} 秒`
+  if (m > 0) return `${m} 分 ${s} 秒`
+  return `${s} 秒`
 })
 
 const activeComponentText = computed(() => {
@@ -59,25 +83,63 @@ const activeComponentText = computed(() => {
   const active = state.active_components
   if (Array.isArray(active) && active.length > 0) {
     const first = active[0] as Record<string, unknown>
-    return `${String(first.component ?? '-')}.${String(first.event ?? '-')}`
+    return currentActivity(first.component, first.event)
   }
   if (props.task?.phase === 'automl') {
     const latest = [...props.autoMlEvents].reverse().find((x) => String(x.status ?? '') === 'running')
-    if (latest) return `${String(latest.component ?? '-')}.${String(latest.event ?? '-')}`
-    return 'AutoML.search'
+    if (latest) return currentActivity(latest.component, latest.event)
+    return '正在搜索方案'
   }
   const latest = [...props.autoRealizeEvents].reverse().find((x) => String(x.status ?? '') === 'running')
-  if (latest) return `${String(latest.component ?? '-')}.${String(latest.event ?? '-')}`
-  return props.task?.phase ?? '-'
+  if (latest) return currentActivity(latest.component, latest.event)
+  return phaseLabel(props.task?.phase)
 })
 
-function eventTitle(e: Record<string, unknown>) {
-  return `${String(e.component ?? '-')}.${String(e.event ?? '-')}`
-}
+const activeComponent = computed(() => {
+  const state = props.autoRealizeState ?? {}
+  const active = state.active_components
+  if (Array.isArray(active) && active.length > 0) {
+    return String((active[0] as Record<string, unknown>)?.component ?? '')
+  }
+  const latest = [...props.autoRealizeEvents].reverse().find((event) => {
+    return String(event.status ?? '').toLowerCase() === 'running'
+  })
+  return String(latest?.component ?? '')
+})
 
-function eventMeta(e: Record<string, unknown>) {
-  const status = e.status ?? (e.classification ? (e.classification as Record<string, unknown>).layer : '')
-  return String(status ?? '-')
+const webResearchSummary = computed(() => {
+  const metrics = props.webResearchMetrics ?? {}
+  const status = String(metrics.status ?? '').toLowerCase()
+  if (!status || ['disabled', 'skipped', 'not_started'].includes(status)) return null
+
+  const search = (metrics.search ?? {}) as Record<string, unknown>
+  const fetchAttempts = Array.isArray(metrics.fetch_attempts) ? metrics.fetch_attempts : []
+  const accepted = Number(search.accepted_count ?? 0)
+  const elapsed = Number(metrics.elapsed_ms ?? 0)
+  const labels: Record<string, string> = {
+    success: accepted > 0 ? `找到 ${accepted} 条可用网页资料` : '已完成网页检索',
+    cache_hit: '复用了已缓存的网页资料',
+    no_relevant_results: '没有找到可用的网页资料',
+    error: '网页检索暂不可用，方案搜索仍可继续',
+    cache_join_miss: '同一检索正在由其他任务处理',
+  }
+  return {
+    label: labels[status] ?? '网页检索状态已记录',
+    elapsed: elapsed > 0 ? `${(elapsed / 1000).toFixed(1)} 秒` : '',
+    hosts: Array.isArray(search.source_hosts)
+      ? search.source_hosts.filter((host): host is string => typeof host === 'string').slice(0, 5)
+      : [],
+    fetched: fetchAttempts.filter((attempt) => {
+      return String((attempt as Record<string, unknown>).status ?? '') === 'success'
+    }).length,
+  }
+})
+
+function currentActivity(component: unknown, event: unknown) {
+  const title = timelineEventTitle({ component, event, status: 'running' }, props.task?.phase)
+  return title === '运行状态已更新'
+    ? `正在${componentLabel(component, props.task?.phase)}`
+    : title
 }
 
 function normalizeRelPath(v: string) {
@@ -98,14 +160,12 @@ const readStateByFile = computed(() => {
     const event = String(e.event ?? '').toUpperCase()
     const fields = (e.fields ?? {}) as Record<string, unknown>
 
-    // 闃舵1: 鏂囦欢姝ｅ湪璇诲彇
     if (component.startsWith('stage.P1')) {
       const file = normalizeRelPath(String(fields.file ?? ''))
       if (!file) continue
       if (event === 'READING_FILE') {
         map[file] = 'reading'
       } else if (event === 'READ_COMPLETED') {
-        // File IO finished, but cognition is still pending until the artifact is generated.
         if (map[file] !== 'failed' && map[file] !== 'read') map[file] = 'reading'
       } else if (event === 'READ_FAILED') {
         map[file] = 'failed'
@@ -113,7 +173,6 @@ const readStateByFile = computed(() => {
       continue
     }
 
-    // Cognition artifact generation is the point where a file becomes fully read.
     if (component === 'module.data_cognition.file_artifact' && event === 'GENERATED_FILE') {
       const source = normalizeRelPath(String(fields.source ?? ''))
       if (!source) continue
@@ -192,20 +251,14 @@ type StepMeta = {
 }
 
 const steps: StepMeta[] = [
-  { key: 'data_cognition', label: '1. 鏁版嵁鐞嗚В' },
-  { key: 'task_definition', label: '2. 浠诲姟瀹氫箟' },
-  { key: 'automl', label: '3. 鑷姩鏈哄櫒瀛︿範' },
-  { key: 'report', label: '4. 鎶ュ憡鐢熸垚(鏈紑鍙?' },
+  { key: 'data_cognition', label: '1. 数据理解' },
+  { key: 'task_definition', label: '2. 任务定义' },
+  { key: 'automl', label: '3. 方案搜索' },
+  { key: 'report', label: '4. 报告与交付' },
 ]
 
 const activeStepKey = computed<StepMeta['key'] | null>(() => {
-  const c = activeComponentText.value.toLowerCase()
-  const phase = String(props.task?.phase ?? '').toLowerCase()
-  if (c.includes('data_cognition') || c.includes('stage.p1') || phase.includes('autorealize')) return 'data_cognition'
-  if (c.includes('task_definition') || c.includes('stage.p2')) return 'task_definition'
-  if (c.includes('mcts') || c.includes('automl') || phase.includes('automl')) return 'automl'
-  if (phase.includes('report')) return 'report'
-  return null
+  return activeProcessStep(props.task?.phase, activeComponent.value)
 })
 
 function stepClass(step: StepMeta) {
@@ -218,11 +271,11 @@ function stepClass(step: StepMeta) {
 
 <template>
   <section class="timeline-panel">
-    <h3>娴佺▼鏃堕棿绾?/h3>
+    <h3>运行记录</h3>
     <div class="runtime-bar" v-if="task">
-      <span>褰撳墠浠诲姟: {{ displayTaskName(task.task_name) }}</span>
-      <span>褰撳墠鎵ц: {{ activeComponentText }}</span>
-      <span>宸茶繍琛? {{ runningElapsed }}</span>
+      <span>任务：{{ displayTaskName(task.task_name) }}</span>
+      <span>当前活动：{{ activeComponentText }}</span>
+      <span>运行时长：{{ runningElapsed }}</span>
     </div>
 
     <div class="steps-hint">
@@ -230,13 +283,13 @@ function stepClass(step: StepMeta) {
     </div>
 
     <div class="cognition-tree" v-if="cognitionTree">
-      <h4>鏁版嵁鐞嗚В鐩綍鏍?/h4>
+      <h4>数据目录</h4>
       <div class="legend">
-        <span class="dot unread"></span><span>鏈</span>
-        <span class="dot reading"></span><span>璇诲彇涓?/span>
-        <span class="dot read"></span><span>璇诲畬(璁ょ煡宸蹭骇鍑?</span>
-        <span class="dot skipped"></span><span>涓嶈(鎶芥牱)</span>
-        <span class="dot partial"></span><span>閮ㄥ垎宸茶</span>
+        <span class="dot unread"></span><span>未读取</span>
+        <span class="dot reading"></span><span>正在读取</span>
+        <span class="dot read"></span><span>已整理</span>
+        <span class="dot skipped"></span><span>抽样未读取</span>
+        <span class="dot partial"></span><span>部分读取</span>
       </div>
       <ul class="tree-root">
         <li>
@@ -257,14 +310,34 @@ function stepClass(step: StepMeta) {
       </ul>
     </div>
 
-    <div class="timeline-list">
-      <article v-for="(evt, idx) in merged" :key="`${String(evt.ts)}-${idx}`" class="timeline-item">
+    <section v-if="webResearchSummary" class="web-research-summary" aria-label="网页检索结果">
+      <div class="web-research-main">
+        <strong>{{ webResearchSummary.label }}</strong>
+        <span v-if="webResearchSummary.elapsed">耗时 {{ webResearchSummary.elapsed }}</span>
+        <span v-if="webResearchSummary.fetched > 0">已读取 {{ webResearchSummary.fetched }} 个网页</span>
+      </div>
+      <details v-if="webResearchSummary.hosts.length > 0">
+        <summary>查看来源网站</summary>
+        <ul>
+          <li v-for="host in webResearchSummary.hosts" :key="host">{{ host }}</li>
+        </ul>
+      </details>
+    </section>
+
+    <div class="timeline-list" role="list" aria-label="任务运行事件">
+      <article v-for="(evt, idx) in merged" :key="`${String(evt.ts)}-${idx}`" class="timeline-item" role="listitem">
         <header>
-          <strong>{{ eventTitle(evt) }}</strong>
-          <small>{{ String(evt.ts ?? '-') }}</small>
+          <div class="event-heading">
+            <strong>{{ timelineEventTitle(evt, task?.phase) }}</strong>
+            <span class="event-status" :class="eventTone(evt)">{{ eventStatusLabel(evt) }}</span>
+          </div>
+          <time>{{ timelineEventTime(evt.ts) }}</time>
         </header>
-        <div class="meta">{{ eventMeta(evt) }}</div>
-        <pre class="fields">{{ JSON.stringify(evt.fields ?? {}, null, 2) }}</pre>
+        <p v-if="timelineEventSummary(evt)" class="event-summary">{{ timelineEventSummary(evt) }}</p>
+        <details>
+          <summary>技术详情</summary>
+          <pre>{{ JSON.stringify({ component: evt.component, event: evt.event, fields: evt.fields, classification: evt.classification }, null, 2) }}</pre>
+        </details>
       </article>
     </div>
   </section>
@@ -272,9 +345,9 @@ function stepClass(step: StepMeta) {
 
 <style scoped>
 .timeline-panel {
-  background: #fffef7;
-  border: 1px solid #eedfb1;
-  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
   padding: 14px;
 }
 
@@ -291,10 +364,10 @@ function stepClass(step: StepMeta) {
 
 .runtime-bar span {
   padding: 3px 8px;
-  border-radius: 999px;
-  background: #f2eac9;
+  border-radius: 3px;
+  background: #f5f5f7;
   font-size: 12px;
-  color: #5f4a0f;
+  color: #424247;
 }
 
 .steps-hint {
@@ -306,28 +379,28 @@ function stepClass(step: StepMeta) {
 
 .steps-hint span {
   padding: 3px 8px;
-  border-radius: 999px;
-  background: #f2eac9;
+  border-radius: 3px;
+  background: #f5f5f7;
   font-size: 12px;
-  color: #5f4a0f;
+  color: #626267;
 }
 
 .steps-hint .todo {
-  background: #ffe4d1;
-  color: #8b3f0b;
+  background: #f5f5f7;
+  color: #86868b;
 }
 
 .steps-hint .active {
-  background: #d6ffe9;
-  color: #15633f;
-  border: 1px solid #7fdbad;
+  background: #eaf3ff;
+  color: #0066cc;
+  border: 1px solid #9ac7ff;
 }
 
 .cognition-tree {
   margin-bottom: 12px;
-  border: 1px solid #e7d6a0;
-  border-radius: 10px;
-  background: #fffdf2;
+  border: 1px solid #d2d2d7;
+  border-radius: 4px;
+  background: #ffffff;
   padding: 10px;
 }
 
@@ -362,6 +435,45 @@ function stepClass(step: StepMeta) {
 
 .node-row small {
   color: #637ea6;
+}
+
+.web-research-summary {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d2d2d7;
+  border-left: 3px solid #0071e3;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-size: 12px;
+}
+
+.web-research-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+}
+
+.web-research-main span,
+.web-research-summary details {
+  color: #626267;
+}
+
+.web-research-summary details {
+  margin-top: 7px;
+}
+
+.web-research-summary summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.web-research-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 7px 0 0;
+  padding-left: 18px;
 }
 
 .dot {
@@ -405,38 +517,80 @@ function stepClass(step: StepMeta) {
 }
 
 .timeline-item {
-  border: 1px solid #eadbb0;
+  border: 1px solid #d2d2d7;
   background: #fff;
-  border-radius: 10px;
+  border-radius: 4px;
   padding: 8px;
 }
 
 .timeline-item header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   justify-content: space-between;
   gap: 12px;
 }
 
-.timeline-item strong {
+.event-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.event-heading strong {
   color: #213f6f;
 }
 
-.timeline-item small {
+.timeline-item time {
   color: #7083a8;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.meta {
-  margin: 4px 0;
+.event-status {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.event-status.running { color: #175a9a; background: #e8f3ff; }
+.event-status.success { color: #247047; background: #eaf5ec; }
+.event-status.warning { color: #885f16; background: #fff4d9; }
+.event-status.failed { color: #9a3e36; background: #fff0ed; }
+.event-status.info { color: #596879; background: #f0f2f5; }
+
+.event-summary {
+  margin: 5px 0;
   color: #526585;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
-.fields {
+.timeline-item details {
+  margin-top: 5px;
+  color: #68788b;
+  font-size: 12px;
+}
+
+.timeline-item details summary {
+  cursor: pointer;
+}
+
+.timeline-item pre {
   margin: 0;
   font-size: 12px;
-  background: #fbf9ee;
-  border-radius: 8px;
+  background: #f5f5f7;
+  border-radius: 4px;
   padding: 6px;
   overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .timeline-item header { grid-template-columns: minmax(0, 1fr); }
+  .timeline-item time { white-space: normal; }
 }
 </style>

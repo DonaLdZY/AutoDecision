@@ -98,10 +98,17 @@ export interface AutoMLConfig {
   optimization_experience_max_cards: number
   optimization_experience_min_score: number
   optimization_experience_max_chars: number
+  web_research_enabled?: boolean
+  web_research_query?: string
+  web_research_timeout_seconds?: number
+  web_research_fetch_timeout_seconds?: number
+  web_research_max_results?: number
+  web_research_max_context_chars?: number
 }
 
 export interface AutoReportConfig {
   enabled: boolean
+  request_timeout_secs: number
   audience: 'technical' | 'executive' | 'delivery'
   detail_level: 'concise' | 'standard' | 'detailed'
   comparison_candidate_limit: number
@@ -131,6 +138,10 @@ export interface TaskConfig {
 }
 
 export interface Task {
+  experiment_group_id?: string | null
+  parent_task_id?: string | null
+  execution_config?: TaskConfig | null
+  interrupted_from_phase?: string | null
   id: string
   task_name: string
   input_root: string
@@ -220,7 +231,6 @@ export interface ModelConfig {
 
 export interface ModelRoleSelection {
   autoRealize: string
-  autoRealizeVision: string
   autoMlCode: string
   autoMlFeedback: string
   embedding: string
@@ -266,6 +276,7 @@ export interface SnapshotPayload {
     best_node_kind?: 'delivery' | 'provisional' | null
     best_solution_code?: string
     best_metric_text?: string
+    web_research_metrics?: Record<string, unknown>
     ml_log?: string
     verbose_log?: string
     frontend_stdout?: string
@@ -340,6 +351,7 @@ export interface DependencyInstallationSummary {
 }
 
 export interface MctsNode {
+  evaluation_protocol?: Record<string, unknown> | null
   id: string
   fusion_sources?: string[]
   parent_ids?: string[]

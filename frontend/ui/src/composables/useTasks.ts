@@ -15,7 +15,7 @@ export function defaultAutoRealize(): AutoRealizeConfig {
     enable_vllm: true,
     task_hint: '',
     llm_timeout: 180,
-    llm_concurrency: 100,
+    llm_concurrency: 8,
     optimize_llm_cost: true,
     llm_file_cognition_mode: 'all',
     table_profile_sample_rows: 20000,
@@ -41,7 +41,7 @@ export function defaultAutoML(): AutoMLConfig {
     eval: '',
     steps: 50,
     time_limit_secs: 10800,
-    parallel_search_num: 4,
+    parallel_search_num: 2,
     generate_submission: true,
     search_num_drafts: 8,
     search_num_bugs: 1,
@@ -165,7 +165,13 @@ export function newTaskConfigFromHistory(tasks: Task[], index: number): TaskConf
   const previous = latestStartedTask(tasks)
   if (!previous) return defaultTaskConfig(index)
 
-  return normalizeTaskConfig(cloneDeep(previous.config))
+  const next = normalizeTaskConfig(cloneDeep(previous.config))
+  next.task_name = `task_${index}_${Date.now().toString(36)}`
+  next.input_root = ''
+  next.auto_realize.task_hint = ''
+  next.auto_ml.goal = ''
+  next.auto_ml.eval = ''
+  return next
 }
 
 function normalizeTask(task: Task): Task {

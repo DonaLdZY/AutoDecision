@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
 const props = withDefaults(defineProps<{
   open: boolean
   title: string
@@ -26,11 +27,29 @@ const emit = defineEmits<{
   confirm: []
   cancel: []
 }>()
+const panel = ref<HTMLElement | null>(null)
+let previousFocus: HTMLElement | null = null
+watch(() => props.open, async open => {
+  if (open) {
+    previousFocus = document.activeElement as HTMLElement
+    await nextTick()
+    panel.value?.querySelector<HTMLButtonElement>('button')?.focus()
+  } else previousFocus?.focus()
+})
+function keydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') { event.stopPropagation(); if (!props.busy) emit('cancel') }
+  if (event.key !== 'Tab') return
+  event.stopPropagation()
+  const controls = [...panel.value!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')]
+  const first = controls[0], last = controls.at(-1)
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+}
 </script>
 
 <template>
   <div v-if="props.open" class="dialog-overlay" @click.self="emit('cancel')">
-    <section class="dialog-panel" role="dialog" aria-modal="true" :aria-label="props.title">
+    <section ref="panel" class="dialog-panel" role="dialog" aria-modal="true" :aria-label="props.title" @keydown="keydown">
       <header class="dialog-header">
         <h2>{{ props.title }}</h2>
       </header>

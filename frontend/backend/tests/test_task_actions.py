@@ -135,6 +135,21 @@ def _task(
     )
 
 
+def test_stage_transition_handle_prevents_false_interruption_then_cleans_up(tmp_path, monkeypatch):
+    task = _task(tmp_path)
+    task.status, task.phase, task.run_started_at = "running", "automl", 1
+    store = object.__new__(app.TaskStore)
+    store._lock = threading.RLock()
+    store._tasks, store._handles = {task.id: task}, {}
+    monkeypatch.setattr(store, "_persist", lambda: None)
+    monkeypatch.setattr(app.replay_recorder, "observe_task", lambda *a: None)
+    store.attach_handle(task.id, app.RuntimeHandle(process=None, source="stage_transition", started_at=app.now_ts()))
+    assert store.get(task.id).status == "running"
+    store.set_status(task.id, status="completed", phase="automl_completed", last_error=None)
+    assert store.get_handle(task.id) is None
+    assert store.get(task.id).status == "completed"
+
+
 def test_automl_readiness_accepts_goal_eval_without_description(tmp_path: Path) -> None:
     task = _task(
         tmp_path,
@@ -195,6 +210,11 @@ def test_prediction_sample_requirement_agrees_with_readiness_and_launch(tmp_path
     ]}}),
     ("artifact_consistency_report.json", None),
     ("evaluation_contract_report.json", {"final": {"passed": True, "executable": False}}),
+    ("temporal_scan_requirement.json", {
+        "required": True,
+        "status": "blocked",
+        "blocking_issues": ["measurements.csv: 2 timestamp values could not be parsed."],
+    }),
     ("automl_context_pack.json", {"execution_contract": {"readiness": "blocked"}}),
     ("task_definition_report.json", {"defects_after_gate": ["Invalid split"]}),
     ("task_definition_report.json", {"downstream_context": {"artifact_consistency_review": {"passed": False}}}),
@@ -324,6 +344,57 @@ def test_review_repair_cache_keeps_cognition_and_invalidates_task_definition(tmp
     assert summary["invalidated_entries"] == 2
 
 
+def test_completed_autorealize_with_exhausted_review_can_be_repaired(tmp_path):
+    task = _task(tmp_path)
+    task.status, task.phase = "completed", "autorealize_completed"
+    root = Path(task.output_root) / task.task_name
+    task.run_dir = str(root)
+    report = root / "autorealize" / "realize_report"
+    report.mkdir(parents=True)
+    (root / "autorealize" / "description.md").write_text("Task definition", encoding="utf-8")
+    (report / "data_cognition_report.json").write_text(json.dumps({
+        "task_hint": task.config.auto_realize.task_hint,
+        "files": [{"path": "sample.csv"}],
+    }), encoding="utf-8")
+    (report / "artifact_consistency_report.json").write_text(json.dumps({
+        "final": {"passed": False, "issues": []},
+    }), encoding="utf-8")
+    (report / "automl_context_pack.json").write_text(json.dumps({
+        "execution_contract": {
+            "readiness": "blocked",
+            "blocking_issues": ["Final artifact consistency review has not passed."],
+        },
+    }), encoding="utf-8")
+
+    assert app._review_repair_eligible(task) is True
+    readiness = app._automl_input_readiness(task)
+    assert readiness["ready"] is False
+    assert readiness["can_repair_review"] is True
+
+
+def test_review_repair_accepts_composed_autorealize_checkpoint_hint(tmp_path):
+    task = _task(tmp_path, evaluation="WAPE on the fixed P_test population")
+    task.config.auto_realize.task_hint = "Forecast hourly traffic at t+1."
+    task.status, task.phase = "failed", "prepare_automl_input_failed"
+    root = Path(task.output_root) / task.task_name
+    task.run_dir = str(root)
+    report = root / "autorealize" / "realize_report"
+    report.mkdir(parents=True)
+    checkpoint_hint = (
+        "Forecast hourly traffic at t+1.\n\n"
+        "# Explicit evaluation contract supplied with this task\n"
+        "WAPE on the fixed P_test population"
+    )
+    (report / "data_cognition_report.json").write_text(json.dumps({
+        "task_hint": checkpoint_hint,
+        "files": [{"path": "sample.csv"}],
+    }), encoding="utf-8")
+
+    assert app._autorealize_checkpoint_task_hint(task) == checkpoint_hint
+    assert app._review_repair_eligible(task) is True
+    assert app._automl_input_readiness(task)["can_repair_review"] is True
+
+
 @pytest.mark.parametrize("outcome", ["success", "failed", "changed_cognition"])
 def test_review_repair_preserves_live_cognition_and_publishes_only_success(monkeypatch, tmp_path, outcome):
     task = _task(tmp_path)
@@ -349,6 +420,7 @@ def test_review_repair_preserves_live_cognition_and_publishes_only_success(monke
     monkeypatch.setattr(app, "_service_base_urls", lambda _: ("ar", "ml", "report", 30))
     def repair(**kwargs):
         assert kwargs["resume_definition"] is True
+        assert kwargs["task"].config.auto_realize.artifact_consistency_max_rounds >= 2
         assert kwargs["run_dir"] != root
         assert (source / "description.md").read_text() == "old"
         candidate = kwargs["run_dir"] / "autorealize"
@@ -540,6 +612,10 @@ def test_delete_task_files_is_opt_in(tmp_path: Path, monkeypatch) -> None:
         @staticmethod
         def delete(task_id: str):
             deleted_ids.append(task_id)
+
+        @staticmethod
+        def list_tasks(include_archived=False):
+            return [task]
 
     monkeypatch.setattr(app, "store", FakeStore())
 

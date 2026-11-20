@@ -32,8 +32,7 @@ const pages = [
 ] as const
 
 const roleLabels: Array<{ key: keyof GlobalSettings['llm']['roleModels']; label: string }> = [
-  { key: 'autoRealize', label: '数据认知与任务定义' },
-  { key: 'autoRealizeVision', label: '图片与视觉认知' },
+  { key: 'autoRealize', label: '数据分析（要求多模态模型）' },
   { key: 'autoMlCode', label: 'AutoML 代码生成' },
   { key: 'autoMlFeedback', label: '结果评审与报告' },
   { key: 'embedding', label: '全局记忆向量模型' },
@@ -64,7 +63,6 @@ function ensureModelSettings(target: GlobalSettings) {
   target.llm.modelLibrary = Array.isArray(target.llm.modelLibrary) ? target.llm.modelLibrary : []
   target.llm.roleModels = target.llm.roleModels || {
     autoRealize: '',
-    autoRealizeVision: '',
     autoMlCode: '',
     autoMlFeedback: '',
     embedding: '',
@@ -79,7 +77,7 @@ function ensureModelSettings(target: GlobalSettings) {
   const firstId = target.llm.modelLibrary[0]?.id || ''
   for (const role of roleLabels) {
     if (!target.llm.roleModels[role.key] || !target.llm.modelLibrary.some((item) => item.id === target.llm.roleModels[role.key])) {
-      target.llm.roleModels[role.key] = firstId
+      target.llm.roleModels[role.key] = role.key === 'embedding' ? '' : firstId
     }
   }
 }
@@ -169,7 +167,7 @@ function removeModel(modelId: string) {
   const fallback = local.llm.modelLibrary[0]?.id || ''
   for (const role of roleLabels) {
     if (local.llm.roleModels[role.key] === modelId) {
-      local.llm.roleModels[role.key] = fallback
+      local.llm.roleModels[role.key] = role.key === 'embedding' ? '' : fallback
     }
   }
 }
@@ -197,7 +195,7 @@ function saveCurrent() {
           <section v-if="activePage === 'models'" class="page">
             <div class="section-head">
               <div>
-                <h4>角色模型</h4>
+                <h4>角色模型分配</h4>
               </div>
             </div>
 
@@ -205,6 +203,7 @@ function saveCurrent() {
               <label v-for="role in roleLabels" :key="role.key" class="role-field">
                 <span>{{ role.label }}</span>
                 <select v-model="local.llm.roleModels[role.key]">
+                  <option v-if="role.key === 'embedding'" value="">未启用（按需配置）</option>
                   <option v-for="model in local.llm.modelLibrary" :key="model.id" :value="model.id">{{ modelLabel(model.id) }}</option>
                 </select>
               </label>
@@ -212,7 +211,7 @@ function saveCurrent() {
 
             <div class="section-head models-head">
               <div>
-                <h4>模型库 <span class="section-count">{{ local.llm.modelLibrary.length }}</span></h4>
+                <h4>模型配置 <span class="section-count">{{ local.llm.modelLibrary.length }}</span></h4>
               </div>
               <button type="button" class="settings-command" @click="addModel"><Plus :size="15" />添加模型</button>
             </div>

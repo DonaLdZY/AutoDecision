@@ -143,6 +143,42 @@ export function isResolvedQdiStatus(status: string) {
   return ['resolved', 'answered', 'completed', 'complete', 'done'].includes(status.toLowerCase())
 }
 
+export function isTerminalQdiStatus(status: string) {
+  return !['pending', 'investigating', 'in_progress', 'refined'].includes(status.toLowerCase())
+}
+
+export function qdiCategoryLabel(value: string) {
+  const normalized = value.trim().toLowerCase().replaceAll('_', ' ')
+  const labels: Record<string, string> = {
+    data: '数据问题',
+    'data quality': '数据质量',
+    'data scope': '数据范围',
+    'business rule': '业务规则',
+    'business logic': '业务规则',
+    modeling: '建模要求',
+    metric: '评价标准',
+    evaluation: '评价标准',
+    output: '结果形式',
+    temporal: '时间边界',
+    leakage: '数据泄漏',
+    relation: '数据关联',
+    other: '其他问题',
+  }
+  return labels[normalized] ?? '其他问题'
+}
+
+export function qdiPriorityLabel(value: string) {
+  const normalized = value.trim().toLowerCase()
+  if (['critical', 'urgent', 'p0', 'high', '1'].includes(normalized)) return '高优先级'
+  if (['medium', 'normal', 'p1', '2'].includes(normalized)) return '中优先级'
+  if (['low', 'p2', '3'].includes(normalized)) return '低优先级'
+  return '普通'
+}
+
+export function qdiFileName(value: string) {
+  return value.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? value
+}
+
 function eventLocalTime(value: unknown) {
   const date = new Date(String(value ?? ''))
   if (Number.isNaN(date.getTime())) return ''
@@ -226,7 +262,7 @@ export function deriveQdiLiveProgress(eventsValue: unknown, reportValue: unknown
   for (const question of normalizedQuestions) questionMap.set(question.id, question)
   if (normalizedQuestions.length > 0) started = true
   if (!progress.phase && normalizedQuestions.length > 0 && normalizedQuestions.every((question) => {
-    return !['pending', 'investigating', 'in_progress', 'refined'].includes(question.status)
+    return isTerminalQdiStatus(question.status)
   })) completed = true
   const stepResults = asArray(report.step_results).map(asRecord)
   if (stepResults.length > 0) {

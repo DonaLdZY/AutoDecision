@@ -19,7 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`无法连接工智寻优网关（${API_BASE}）：${detail}。请确认已运行项目根目录的统一启动脚本。`)
+    throw new Error(`无法连接本地服务（${API_BASE}）：${detail}。请确认已运行项目根目录的统一启动脚本。`)
   }
   if (!res.ok) {
     const text = await res.text()
@@ -37,6 +37,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getReadiness: (taskId?: string) => request<Readiness>(`/system/readiness${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ''}`),
+  probeModel: (role: string) => request('/system/probe-model', { method: 'POST', body: JSON.stringify({ role }) }),
+  getDiagnostics: () => request<Record<string, unknown>>('/system/diagnostics'),
+  newExperiment: (taskId: string) => request<Task>(`/tasks/${taskId}/experiments`, { method: 'POST' }),
+  getExperiments: (taskId: string) => request<Task[]>(`/tasks/${taskId}/experiments`),
+  getSolution: (taskId: string) => request<Solution>(`/tasks/${taskId}/solution`),
+  trialSolution: (taskId: string, payload: { input_mode: string; data_json: string; csv_path: string; timeout_seconds: number }) => request<Record<string, unknown>>(`/tasks/${taskId}/solution/trial`, { method: 'POST', body: JSON.stringify(payload) }),
+  getTrials: (taskId: string) => request<{ trial_id: string; created_at: number; node_id: string }[]>(`/tasks/${taskId}/solution/trials`),
+  getTrial: (taskId: string, trialId: string) => request<Record<string, unknown>>(`/tasks/${taskId}/solution/trials/${trialId}`),
+  downloadSolution: async (taskId: string) => {
+    const response = await fetch(`${API_BASE}/tasks/${taskId}/solution/bundle`, { headers: API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {} })
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: '方案导出失败' }))
+      throw new Error(detail.detail || '方案导出失败')
+    }
+    saveBlob(await response.blob(), `solution-${taskId.slice(0, 12)}.zip`)
+  },
   listTasks: () => request<Task[]>('/tasks'),
   createTask: (payload: TaskConfig) => request<Task>('/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   updateTask: (taskId: string, payload: TaskConfig) => request<Task>(`/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(payload) }),
@@ -116,4 +133,25 @@ export const api = {
     }),
   listPythonEnvs: (current: string) =>
     request<PythonEnvironment[]>(`/python/environments?current=${encodeURIComponent(current || '')}`),
+}
+
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url; link.download = filename; link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000)
+}
+
+export interface Readiness {
+  version: string; checked_at: number; ready: boolean; output_root: string
+  lifecycle: string; data_policy: string
+  checks: { key: string; label: string; status: 'pass' | 'warn' | 'fail'; detail: string }[]
+  providers: { role: string; model: string; host: string; local: boolean }[]
+}
+export interface Solution {
+  trial_ready?: boolean
+  available: boolean; exportable: boolean; issues: string[]; node_id?: string
+  manifest?: Record<string, unknown>; model_path?: string; directory?: string
+  files: { path: string; size: number }[]; size_bytes?: number; usage?: string
+  verification?: Record<string, unknown>; portability?: string; notice?: string
 }

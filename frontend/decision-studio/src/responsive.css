@@ -1,0 +1,769 @@
+/* Loaded before base tokens; media overrides below use explicit specificity. */
+@media (min-width: 1700px) {
+  .studio-shell .chat-layout {
+    grid-template-columns: minmax(0, 1fr) 310px;
+  }
+  .studio-shell .chat-column {
+    padding-left: max(0px, calc((100vw - 1800px) / 2));
+    padding-right: max(0px, calc((100vw - 1800px) / 2));
+  }
+  .studio-shell .context-rail {
+    padding-left: 26px;
+    padding-right: 26px;
+  }
+  .studio-shell .conversation-heading {
+    padding-top: 34px;
+  }
+  .studio-shell .message {
+    margin-bottom: 28px;
+  }
+  .studio-shell .load-chart svg {
+    height: 172px;
+  }
+}
+@media (max-width: 1250px) {
+  .studio-shell .sidebar {
+    width: 207px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .studio-shell .brand {
+    gap: 8px;
+  }
+  .studio-shell .brand > span {
+    font-size: 17px;
+  }
+  .studio-shell .brand small {
+    font-size: 9px;
+  }
+  .studio-shell .workspace-picker select {
+    width: 120px;
+  }
+  .studio-shell .chat-layout {
+    grid-template-columns: minmax(0, 1fr) 230px;
+  }
+  .studio-shell .context-rail {
+    padding: 25px 17px;
+  }
+  .studio-shell .conversation-heading {
+    padding-left: 25px;
+    padding-right: 25px;
+  }
+  .studio-shell .message-scroll {
+    padding-left: 25px;
+    padding-right: 25px;
+  }
+  .studio-shell .composer-area {
+    padding-left: 25px;
+    padding-right: 25px;
+  }
+  .studio-shell .standard-page {
+    padding: 30px 28px;
+  }
+  .studio-shell .package-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .studio-shell .task-created {
+    display: none;
+  }
+  .studio-shell .task-progress {
+    width: 145px;
+  }
+  .studio-shell .project-summary {
+    grid-template-columns: 1fr;
+  }
+  .studio-shell .data-workbench {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+  .studio-shell .execution-ribbon {
+    gap: 5px;
+  }
+  .studio-shell .execution-ribbon > button {
+    font-size: 11px;
+    padding: 6px;
+  }
+  .studio-shell .execution-ribbon small {
+    display: none;
+  }
+  .studio-shell .receipt-heading {
+    padding: 15px;
+  }
+  .studio-shell .receipt-footer {
+    padding: 11px 15px;
+  }
+  .studio-shell .result-metrics {
+    padding: 16px 15px 12px;
+  }
+  .studio-shell .result-metrics strong {
+    font-size: 23px;
+  }
+  .studio-shell .composer-caption {
+    font-size: 9px;
+  }
+  .studio-shell .rail-project h3 {
+    font-size: 12px;
+  }
+}
+@media (max-width: 1050px) {
+  .studio-shell .chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .studio-shell .context-rail {
+    display: none;
+  }
+  .studio-shell .chat-column {
+    max-width: 900px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .studio-shell .standard-page {
+    padding: 28px 24px;
+  }
+  .studio-shell .stat-strip > div {
+    padding: 0 18px;
+  }
+  .studio-shell .data-workbench {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+  .studio-shell .table-list {
+    padding: 15px 7px;
+  }
+  .studio-shell .package-card {
+    padding: 19px;
+  }
+  .studio-shell .capability-banner {
+    padding: 22px;
+  }
+  .studio-shell .banner-stat {
+    display: none;
+  }
+  .detail-dialog.wide .candidate-details {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .studio-shell {
+    min-height: 0;
+  }
+  .studio-shell .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 236px;
+    transform: translateX(-100%);
+    transition: transform 0.2s;
+    z-index: 40;
+    box-shadow: 10px 0 30px #21432c15;
+  }
+  .studio-shell .sidebar.open {
+    transform: translateX(0);
+  }
+  .studio-shell .nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: #24403750;
+    backdrop-filter: blur(2px);
+    z-index: 35;
+  }
+  .studio-shell .mobile-toggle {
+    display: inline-flex;
+  }
+  .studio-shell .topbar {
+    height: 56px;
+    min-height: 56px;
+    padding: 0 16px;
+  }
+  .studio-shell .topbar-actions {
+    gap: 8px;
+  }
+  .studio-shell .topbar-actions > .icon-btn {
+    display: none;
+  }
+  .studio-shell .top-avatar {
+    display: none;
+  }
+  .studio-shell .breadcrumb {
+    gap: 8px;
+    font-size: 12px;
+  }
+  .studio-shell .breadcrumb > span:first-of-type {
+    display: none;
+  }
+  .studio-shell .breadcrumb > .slash {
+    display: none;
+  }
+  .studio-shell .demo-badge {
+    font-size: 10px;
+    padding: 4px 6px;
+    gap: 5px;
+  }
+  .studio-shell .conversation-heading {
+    padding: 20px 20px 13px;
+  }
+  .studio-shell .conversation-title h1 {
+    font-size: 20px;
+  }
+  .studio-shell .conversation-heading > p {
+    font-size: 12px;
+  }
+  .studio-shell .message-scroll {
+    padding: 8px 18px 15px;
+  }
+  .studio-shell .message {
+    gap: 8px;
+  }
+  .studio-shell .message.user {
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .studio-shell .user-bubble {
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+  .studio-shell .message-text {
+    font-size: 12px;
+  }
+  .studio-shell .assistant-avatar {
+    width: 24px;
+  }
+  .studio-shell .assistant-avatar img {
+    width: 23px;
+    height: 23px;
+  }
+  .studio-shell .composer-area {
+    padding: 8px 18px 12px;
+  }
+  .studio-shell .suggestion-row {
+    gap: 5px;
+  }
+  .studio-shell .suggestion-row > span {
+    display: none;
+  }
+  .studio-shell .suggestion-row button {
+    font-size: 10px;
+    padding: 5px 6px;
+  }
+  .studio-shell .composer textarea {
+    font-size: 12px;
+    padding: 12px;
+    height: 55px;
+  }
+  .studio-shell .composer-caption {
+    font-size: 9px;
+    justify-content: center;
+  }
+  .studio-shell .composer-caption > span {
+    display: none;
+  }
+  .studio-shell .context-pill {
+    font-size: 11px;
+    padding: 5px;
+  }
+  .studio-shell .context-pill > span {
+    display: none;
+  }
+  .studio-shell .composer-mode {
+    font-size: 10px;
+    margin: 0;
+  }
+  .studio-shell .composer-toolbar {
+    gap: 5px;
+  }
+  .studio-shell .composer-toolbar > div {
+    gap: 3px;
+  }
+  .studio-shell .receipt-heading {
+    gap: 8px;
+    padding: 13px 12px;
+  }
+  .studio-shell .receipt-heading h3 {
+    font-size: 13px;
+  }
+  .studio-shell .receipt-icon {
+    width: 30px;
+    height: 30px;
+  }
+  .studio-shell .receipt-heading p {
+    font-size: 10px;
+  }
+  .studio-shell .receipt-heading > .tag {
+    font-size: 10px;
+    padding: 3px 5px;
+  }
+  .studio-shell .execution-ribbon {
+    margin: 0 12px;
+    gap: 6px;
+  }
+  .studio-shell .execution-ribbon > span {
+    font-size: 10px;
+  }
+  .studio-shell .execution-ribbon > button {
+    font-size: 10px;
+    padding: 5px;
+  }
+  .studio-shell .execution-ribbon > svg {
+    width: 10px;
+  }
+  .studio-shell .result-metrics {
+    gap: 8px;
+    padding: 15px 12px 10px;
+  }
+  .studio-shell .result-metrics strong {
+    font-size: 21px;
+  }
+  .studio-shell .result-metrics small {
+    font-size: 10px;
+  }
+  .studio-shell .result-metrics > div > span {
+    font-size: 10px;
+  }
+  .studio-shell .result-metrics em {
+    font-size: 10px;
+  }
+  .studio-shell .load-chart {
+    margin: 5px 12px 10px;
+  }
+  .studio-shell .load-chart svg {
+    height: 125px;
+  }
+  .studio-shell .legend {
+    gap: 8px;
+  }
+  .studio-shell .decision-note {
+    margin: 0 12px 12px;
+    font-size: 10px;
+    padding: 8px;
+  }
+  .studio-shell .decision-note .tiny-tag {
+    display: none;
+  }
+  .studio-shell .receipt-footer {
+    padding: 11px 12px;
+  }
+  .studio-shell .receipt-footer > span {
+    font-size: 10px;
+    gap: 4px;
+  }
+  .studio-shell .receipt-footer .text-btn {
+    font-size: 11px;
+  }
+  .studio-shell .receipt-footer > span i {
+    margin: 0;
+  }
+  .studio-shell .standard-page {
+    padding: 25px 20px;
+  }
+  .studio-shell .page-heading {
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 23px;
+  }
+  .studio-shell .page-heading h1 {
+    font-size: 23px;
+  }
+  .studio-shell .page-heading p {
+    font-size: 12px;
+  }
+  .studio-shell .page-heading > .btn {
+    padding: 8px 10px;
+    font-size: 12px;
+    min-height: 34px;
+  }
+  .studio-shell .eyebrow {
+    font-size: 10px;
+  }
+  .studio-shell .project-grid {
+    grid-template-columns: 1fr;
+  }
+  .studio-shell .project-card {
+    padding: 19px;
+  }
+  .studio-shell .data-workbench {
+    display: flex;
+    flex-direction: column;
+  }
+  .studio-shell .table-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 12px;
+    gap: 5px;
+  }
+  .studio-shell .table-list .nav-label,
+  .studio-shell .data-connection {
+    display: none;
+  }
+  .studio-shell .table-list > button {
+    width: auto;
+    flex: 1;
+    padding: 10px;
+    gap: 7px;
+    margin: 0;
+  }
+  .studio-shell .table-list small,
+  .studio-shell .table-list > button > span {
+    display: none;
+  }
+  .studio-shell .table-list strong {
+    font-size: 12px;
+  }
+  .studio-shell .table-panel-heading {
+    padding: 18px 16px 5px;
+  }
+  .studio-shell .project-summary > div {
+    padding: 17px;
+    gap: 10px;
+  }
+  .studio-shell .project-summary p {
+    font-size: 11px;
+  }
+  .studio-shell .project-summary .text-btn {
+    font-size: 11px;
+  }
+  .studio-shell .package-grid {
+    grid-template-columns: 1fr;
+  }
+  .studio-shell .package-create {
+    min-height: 220px;
+  }
+  .studio-shell .capability-banner {
+    padding: 20px;
+    gap: 16px;
+  }
+  .studio-shell .capability-art {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+  }
+  .studio-shell .capability-banner h2 {
+    font-size: 18px;
+  }
+  .studio-shell .capability-banner p {
+    font-size: 12px;
+  }
+  .studio-shell .filter-toolbar {
+    gap: 12px;
+  }
+  .studio-shell .pill-tabs {
+    gap: 2px;
+  }
+  .studio-shell .pill-tabs button {
+    font-size: 12px;
+    padding: 7px 10px;
+  }
+  .studio-shell .search-box {
+    width: 100%;
+  }
+  .studio-shell .stat-strip {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px 0;
+    padding: 20px 0;
+  }
+  .studio-shell .stat-strip > div:nth-child(2) {
+    border: 0;
+  }
+  .studio-shell .stat-strip strong {
+    font-size: 27px;
+    margin-top: 10px;
+  }
+  .studio-shell .task-row {
+    gap: 12px;
+    padding: 16px;
+    flex-wrap: wrap;
+  }
+  .studio-shell .task-row .square-icon {
+    width: 35px;
+    height: 35px;
+  }
+  .studio-shell .task-info h3 {
+    font-size: 13px;
+  }
+  .studio-shell .task-info .tiny-tag {
+    display: none;
+  }
+  .studio-shell .task-progress {
+    width: 100%;
+    padding-left: 47px;
+    padding-right: 27px;
+  }
+  .studio-shell .task-row > svg {
+    display: none;
+  }
+  .studio-shell .task-info > div {
+    gap: 6px;
+  }
+  .studio-shell .task-info code {
+    font-size: 10px;
+  }
+  .studio-shell .task-info p {
+    font-size: 11px;
+  }
+  .studio-shell .explanation-grid {
+    grid-template-columns: 1fr;
+    gap: 25px;
+  }
+  .studio-shell .bottom-hint {
+    font-size: 11px;
+    align-items: flex-start;
+    justify-content: flex-start;
+  }
+  .studio-shell .settings-card {
+    padding: 20px;
+  }
+  .studio-shell .settings-section-heading {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .studio-shell .settings-section-heading h2 {
+    font-size: 14px;
+  }
+  .studio-shell .form-grid {
+    gap: 18px;
+  }
+  .studio-shell .setting-toggle {
+    gap: 15px;
+    flex-wrap: wrap;
+  }
+  .studio-shell .settings-save > .hint {
+    font-size: 11px;
+  }
+  .studio-shell .chat-empty {
+    padding: 32px 4px;
+  }
+  .studio-shell .chat-empty h2 {
+    font-size: 21px;
+  }
+  .studio-shell .starter-grid {
+    grid-template-columns: 1fr;
+    margin-top: 25px;
+    gap: 8px;
+  }
+  .studio-shell .starter-grid > button {
+    padding: 13px;
+    display: grid;
+    grid-template-columns: 25px 1fr 20px;
+    gap: 8px;
+    align-items: center;
+  }
+  .studio-shell .starter-grid > button > span {
+    display: none;
+  }
+  .studio-shell .chat-empty > p {
+    font-size: 12px;
+  }
+  .studio-shell .action-card {
+    padding: 15px;
+  }
+  .studio-shell .research-plan {
+    gap: 6px;
+    font-size: 11px;
+  }
+  .studio-shell .action-card footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .studio-shell .budget-line {
+    font-size: 11px;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .detail-dialog {
+    width: calc(100vw - 20px) !important;
+    max-height: calc(100dvh - 26px);
+    border-radius: 12px;
+  }
+  .detail-dialog .dialog-shell {
+    max-height: calc(100dvh - 30px);
+  }
+  .detail-dialog .dialog-header {
+    padding: 11px 16px;
+  }
+  .detail-dialog .detail-hero {
+    padding: 24px 20px 18px;
+    gap: 13px;
+    align-items: flex-start;
+  }
+  .detail-dialog .hero-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 11px;
+  }
+  .detail-dialog .detail-hero h2 {
+    font-size: 19px;
+  }
+  .detail-dialog .detail-hero p {
+    font-size: 12px;
+  }
+  .detail-dialog .detail-actions {
+    padding: 0 20px 18px;
+  }
+  .detail-dialog .detail-actions > .hint {
+    width: 100%;
+    margin: 5px 0 0;
+  }
+  .detail-dialog .tabs {
+    padding: 0 20px;
+    gap: 20px;
+  }
+  .detail-dialog .tabs > button {
+    font-size: 12px;
+  }
+  .detail-dialog .detail-tab-content {
+    padding: 22px 20px;
+  }
+  .detail-dialog .detail-two-col {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .detail-dialog .execution-context {
+    grid-template-columns: 1fr 1fr;
+    padding: 15px;
+    gap: 18px;
+  }
+  .detail-dialog .execution-context > div:first-child {
+    grid-column: 1/-1;
+  }
+  .detail-dialog .task-stages {
+    padding: 0 15px;
+    overflow: auto;
+  }
+  .detail-dialog .task-stages > button {
+    font-size: 11px;
+    padding: 15px 10px;
+    gap: 6px;
+  }
+  .detail-dialog .task-stages > button > span {
+    height: 20px;
+    width: 20px;
+    font-size: 10px;
+  }
+  .detail-dialog .task-budget {
+    font-size: 11px;
+    width: 100%;
+    margin-bottom: 4px;
+  }
+  .detail-dialog .search-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 20px 0;
+  }
+  .detail-dialog .search-stats > div:nth-child(2) {
+    border: 0;
+  }
+  .detail-dialog .search-stats strong {
+    font-size: 21px;
+  }
+  .detail-dialog .search-stats .text-value {
+    font-size: 13px;
+  }
+  .detail-dialog .graph-heading {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .detail-dialog .candidate-details {
+    grid-template-columns: 1fr;
+  }
+  .detail-dialog .report-hero {
+    flex-wrap: wrap;
+  }
+  .detail-dialog .report-hero h2 {
+    font-size: 17px;
+  }
+  .detail-dialog .artifact-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .detail-dialog .publish-panel {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 18px;
+  }
+  .detail-dialog .simple-dialog {
+    padding: 22px;
+  }
+  .detail-dialog .simple-dialog h2 {
+    font-size: 20px;
+  }
+  .detail-dialog .simple-dialog p {
+    font-size: 12px;
+  }
+  .detail-dialog .simple-dialog label {
+    margin: 18px 0;
+  }
+  .detail-dialog .info-banner {
+    padding: 12px;
+    gap: 8px;
+  }
+  .detail-dialog .info-banner p {
+    font-size: 12px;
+  }
+  .detail-dialog .data-dialog {
+    padding: 0 20px 25px;
+  }
+  .detail-dialog .data-dialog .detail-hero {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .detail-dialog .code-toolbar {
+    font-size: 11px;
+  }
+  .detail-dialog .dark-code {
+    font-size: 12px;
+  }
+  .detail-dialog .detail-result {
+    padding: 5px 0 20px;
+    gap: 9px;
+  }
+  .detail-dialog .detail-result strong {
+    font-size: 24px;
+  }
+  .detail-dialog .detail-result small {
+    font-size: 11px;
+  }
+  .detail-dialog .detail-result > div > span {
+    font-size: 11px;
+  }
+  .studio-shell .toast-message {
+    bottom: 18px;
+    font-size: 12px;
+    padding: 12px 16px;
+    width: max-content;
+    max-width: calc(100vw - 30px);
+  }
+}
+@media (max-width: 400px) {
+  .studio-shell .receipt-heading > .tag {
+    display: none;
+  }
+  .studio-shell .result-metrics strong {
+    font-size: 18px;
+  }
+  .studio-shell .result-metrics small {
+    font-size: 9px;
+  }
+  .studio-shell .execution-ribbon > .ribbon-output,
+  .studio-shell .execution-ribbon > svg:last-of-type {
+    display: none;
+  }
+  .studio-shell .composer-mode {
+    display: none;
+  }
+  .studio-shell .suggestion-row button {
+    font-size: 9px;
+  }
+  .studio-shell .receipt-footer > span {
+    font-size: 9px;
+  }
+  .studio-shell .receipt-footer > span > svg {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

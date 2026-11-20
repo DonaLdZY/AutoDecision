@@ -124,6 +124,12 @@ function update<K extends keyof AutoReportConfig>(key: K, value: AutoReportConfi
 
       <section v-else class="settings-section">
         <h3 class="section-title">生成与检查</h3>
+        <label class="setting-field">
+          <span>单次模型请求时限（秒）</span>
+          <input type="number" min="30" max="3600" step="30" :value="model.request_timeout_secs"
+            :disabled="props.disabled || !model.enabled"
+            @input="update('request_timeout_secs', Number(($event.target as HTMLInputElement).value))" />
+        </label>
         <div class="toggle-list">
           <label class="toggle-row">
             <input

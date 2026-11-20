@@ -3,7 +3,7 @@ import type { MctsNode } from '../types'
 
 export type GraphAction = 'draft' | 'improve' | 'debug' | 'evolution' | 'fusion'
 export type GraphNodeState = 'success' | 'pending' | 'bug' | 'unreviewed'
-export type GraphInputNode = MctsNode & { fusion_sources?: string[]; parent_ids?: string[]; evaluation_protocol?: Record<string, unknown> }
+export type GraphInputNode = MctsNode
 export interface GraphPosition { id: string; x: number; y: number }
 export interface GraphEdge { id: string; from: string; to: string; fusion: boolean; action: GraphAction; points: Array<{ x: number; y: number }> }
 export interface SearchGraph { nodes: GraphPosition[]; edges: GraphEdge[]; width: number; height: number }

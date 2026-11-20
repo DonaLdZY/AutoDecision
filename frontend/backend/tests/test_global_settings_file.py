@@ -27,11 +27,58 @@ def test_missing_global_settings_file_is_created(tmp_path: Path, monkeypatch) ->
     assert settings_path.is_file()
     saved = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
     assert saved["python"]["executable"] == sys.executable
-    assert saved["llm"]["roleModels"]["autoMlCode"] == "default-code"
-    code_model = next(item for item in saved["llm"]["modelLibrary"] if item["id"] == "default-code")
-    assert code_model["contextWindowTokens"] == 131072
+    assert saved["llm"]["roleModels"] == {"autoRealize": "default-deepseek", "autoMlCode": "default-deepseek", "autoMlFeedback": "default-deepseek", "promptOptimizer": "default-deepseek", "embedding": ""}
+    assert len(saved["llm"]["modelLibrary"]) == 1
+    code_model = saved["llm"]["modelLibrary"][0]
+    assert code_model["name"] == "deepseek"
+    assert code_model["model"] == "deepseek-flash"
+    assert code_model["contextWindowTokens"] == 1_000_000
     assert code_model["maxTokens"] == 32768
     assert settings["coreServices"]["algoEvolveBaseUrl"] == "http://127.0.0.1:18103"
+
+
+def test_unused_factory_preset_migrates_but_custom_models_and_keys_survive(tmp_path, monkeypatch):
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    old = {"modelLibrary": [], "roleModels": {
+        "autoRealize":"default-autorealize", "autoMlCode":"default-code",
+        "autoMlFeedback":"default-feedback", "autoRealizeVision":"default-vllm", "embedding":"default-embedding"}}
+    for id, name, model, url, tokens, window in [
+        ("default-code", "默认编码模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        ("default-autorealize", "默认 AutoRealize 模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        ("default-feedback", "默认反馈模型", "deepseek-v4-pro", "https://api.deepseek.com", 32768, 131072),
+        ("default-vllm", "默认视觉模型", "glm-4.6v-flashx", "https://open.bigmodel.cn/api/paas/v4/", 0, 0),
+        ("default-embedding", "默认向量化模型", "text-embedding-v4", "", 0, 0),
+    ]:
+        old['modelLibrary'].append(dict(id=id, name=name, model=model, baseUrl=url, apiKey='', maxTokens=tokens, contextWindowTokens=window))
+    app.write_yaml(settings_path, {'llm':old}, sensitive=True)
+    saved = app.ensure_global_settings()
+    assert len(saved['llm']['modelLibrary']) == 1
+    assert saved['llm']['modelLibrary'][0]['name'] == 'deepseek'
+    assert saved['llm']['vllm']['model'] == 'deepseek-flash'
+    old['modelLibrary'][3]['apiKey'] = 'preserve-legacy-provider-secret'
+    app.write_yaml(settings_path, {'llm':old}, sensitive=True)
+    saved = app.ensure_global_settings()
+    assert len(saved['llm']['modelLibrary']) == 5
+    assert saved['llm']['modelLibrary'][3]['apiKey'] == 'preserve-legacy-provider-secret'
+    assert 'autoRealizeVision' not in saved['llm']['roleModels']
+    assert saved['llm']['vllm']['model'] == saved['llm']['autoRealizeModel']['model']
+    old['modelLibrary'][3]['apiKey'] = ''
+    old['modelLibrary'][0]['name'] = 'My custom provider'
+    app.write_yaml(settings_path, {'llm':old}, sensitive=True)
+    assert len(app.ensure_global_settings()['llm']['modelLibrary']) == 5
+
+
+
+def test_pre_library_credentials_keep_their_text_roles(tmp_path, monkeypatch):
+    path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    app.write_yaml(path, {'llm': {'autoRealizeModel': {'model':'my-analysis', 'baseUrl':'https://analysis.invalid', 'apiKey':'analysis-key'},
+        'codeModel': {'model':'my-code', 'apiKey':'code-key'},
+        'vllm': {'model':'old-vision', 'apiKey':'old-key'}}}, sensitive=True)
+    llm = app.ensure_global_settings()['llm']
+    assert app._selected_model(llm, 'autoRealize')['model'] == 'my-analysis'
+    assert app._selected_model(llm, 'autoMlCode')['apiKey'] == 'code-key'
+    assert app._selected_model(llm, 'autoRealizeVision')['apiKey'] == 'analysis-key'
+    assert any(m['model'] == 'old-vision' and m['apiKey'] == 'old-key' for m in llm['modelLibrary'])
 
 
 def test_legacy_json_is_migrated_once_with_api_key(tmp_path: Path, monkeypatch) -> None:
@@ -124,6 +171,56 @@ def test_unchanged_settings_reads_do_not_write(tmp_path: Path, monkeypatch) -> N
     assert app.ensure_global_settings() == expected
 
 
+def test_test_model_override_is_process_only_and_prefers_deepseek(tmp_path: Path, monkeypatch) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    app.ensure_global_settings()
+    before = settings_path.read_bytes()
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_OVERRIDE", "true")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_BASE_URL", "https://www.heilovehei.com/v1")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_API_KEY", "deepseek-test-secret")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_BASE_URL", "https://www.heilovehei.com/v1")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_API_KEY", "glm-test-secret")
+
+    settings = app.get_global_settings()
+    selected = settings.llm["modelLibrary"][0]
+    redacted = app._redact_global_settings_for_client(settings.model_dump())
+
+    assert selected["model"] == "deepseek-v4.1-flash"
+    assert selected["apiKey"] == "deepseek-test-secret"
+    assert selected["thinkingMode"] == "enabled"
+    assert settings.llm["autoRealizeModel"]["structuredDisableThinking"] is False
+    assert settings.llm["roleModels"]["autoRealize"] == "autodecision-test-model"
+    assert settings.llm["roleModels"]["autoMlCode"] == "autodecision-test-model"
+    assert redacted["llm"]["modelLibrary"][0]["apiKey"] == ""
+    assert redacted["llm"]["modelLibrary"][0]["apiKeyConfigured"] is True
+    assert settings_path.read_bytes() == before
+
+
+def test_test_model_override_falls_back_without_persisting_or_saving(tmp_path: Path, monkeypatch) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    app.ensure_global_settings()
+    before = settings_path.read_bytes()
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_OVERRIDE", "true")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_BASE_URL", "https://www.heilovehei.com/v1")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.delenv("AUTODECISION_TEST_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_BASE_URL", "https://www.heilovehei.com/v1")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("AUTODECISION_TEST_LLM_FALLBACK_API_KEY", "glm-test-secret")
+
+    settings = app.get_global_settings()
+
+    assert settings.llm["modelLibrary"][0]["model"] == "glm-5.3-flash"
+    assert settings.llm["modelLibrary"][0]["thinkingMode"] == "enabled"
+    assert app._model_thinking_cli(settings.llm["modelLibrary"][0]) == "true"
+    with pytest.raises(app.HTTPException) as caught:
+        app.save_global_settings(settings)
+    assert caught.value.status_code == 409
+    assert settings_path.read_bytes() == before
+
+
 def test_concurrent_reads_and_redacted_saves_preserve_provider(tmp_path: Path, monkeypatch) -> None:
     settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
     settings = app.ensure_global_settings()
@@ -140,3 +237,17 @@ def test_concurrent_reads_and_redacted_saves_preserve_provider(tmp_path: Path, m
         rows = list(pool.map(read_or_save, range(40)))
     assert all(row["apiKey"] == "private-key" and row["model"] == "chosen-model" for row in rows)
     assert not list(settings_path.parent.glob("*.tmp"))
+
+
+def test_prompt_optimizer_role_can_be_assigned_independently(tmp_path: Path, monkeypatch) -> None:
+    settings_path, _ = _use_temp_settings(tmp_path, monkeypatch)
+    original = app.ensure_global_settings()
+    model = dict(original['llm']['modelLibrary'][0], id='optimizer', name='Optimizer', model='custom-optimizer')
+    original['llm']['modelLibrary'].append(model)
+    original['llm']['roleModels']['promptOptimizer'] = 'optimizer'
+    app.save_global_settings(app.GlobalSettingsModel.model_validate(original))
+    loaded = app.ensure_global_settings()['llm']
+    assert loaded['roleModels']['autoRealize'] == 'default-deepseek'
+    assert loaded['roleModels']['promptOptimizer'] == 'optimizer'
+    assert app._selected_model(loaded, 'promptOptimizer')['model'] == 'custom-optimizer'
+    assert yaml.safe_load(settings_path.read_text(encoding='utf-8'))['llm']['roleModels']['promptOptimizer'] == 'optimizer'

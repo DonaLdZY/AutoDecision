@@ -13,12 +13,17 @@ import TaskDefinitionView from './components/TaskDefinitionView.vue'
 import TaskTabs from './components/TaskSidebar.vue'
 import ReplayControls from './components/ReplayControls.vue'
 import WorkflowStepper, { type StepKey } from './components/WorkflowStepper.vue'
+import ProcessTimeline from './components/ProcessTimeline.vue'
 import { defaultTaskConfig, useTasks } from './composables/useTasks'
 import type { GlobalSettings, SnapshotPayload, Task, TaskConfig } from './types'
 import { cloneDeep } from './utils/clone'
 import { displayTaskName } from './utils/taskName'
 import { useReplay } from './composables/useReplay'
 import { demoRecording, demoSnapshot, demoTask } from './utils/demoRecording'
+import ProductWorkbench from './components/ProductWorkbench.vue'
+import LocalReadiness from './components/LocalReadiness.vue'
+import { primaryAction, executionStage } from './utils/localProduct'
+import release from '../package.json'
 
 const {
   tasks,
@@ -35,13 +40,17 @@ const {
   startAutoML,
   continueAutoML,
   rerunAutoReport,
-  rerunFull,
+  startTask,
   resumeTask,
   stopTask,
   refreshSnapshot,
 } = useTasks()
 
 const settingsVisible = shallowRef(false)
+const systemVisible = shallowRef(false)
+const workspaceView = shallowRef('overview')
+const actionBusy = shallowRef(false)
+const actionError = shallowRef('')
 const configVisible = shallowRef(false)
 const sidebarVisible = shallowRef(false)
 const demoSelected = shallowRef(new URLSearchParams(window.location.search).has('demo'))
@@ -54,6 +63,10 @@ const { recording, playing, position, duration, index: replayIndex, mode: replay
 const globalSettings = shallowRef<GlobalSettings | null>(null)
 const message = shallowRef('')
 const pollingTimer = shallowRef<number | null>(null)
+const ACTIVE_POLL_INTERVAL_MS = 2000
+const IDLE_TASK_CHECK_INTERVAL_MS = 15000
+let pollHandler: (() => Promise<void>) | null = null
+let pollInFlight = false
 const autoStepTimer = shallowRef<number | null>(null)
 const autoStepPendingTarget = shallowRef<StepKey | null>(null)
 const notificationAudioContext = shallowRef<AudioContext | null>(null)
@@ -133,7 +146,7 @@ async function confirmActionDialog() {
   try {
     await action(checked)
   } catch (e) {
-    message.value = formatActionError('操作', e)
+    actionError.value = formatActionError('操作', e)
   }
 }
 
@@ -150,6 +163,7 @@ const activeSnapshot = computed(() => {
   if (!activeTaskId.value) return undefined
   return snapshots[activeTaskId.value]
 })
+const processEventCount = computed(() => (activeSnapshot.value?.auto_realize?.events?.length ?? 0) + (activeSnapshot.value?.auto_ml?.events?.length ?? 0))
 
 const activeWorkingTask = computed(() => {
   if (demoSelected.value) return demoTask
@@ -159,7 +173,9 @@ const activeWorkingTask = computed(() => {
   return workingCopies[task.id]
 })
 
-const viewedTask = computed(() => activeSnapshot.value?.task ?? activeWorkingTask.value)
+const viewedTask = computed(() => recording.value ? activeSnapshot.value?.task ?? activeWorkingTask.value : activeWorkingTask.value)
+const primary = computed(() => activeWorkingTask.value ? primaryAction(activeWorkingTask.value) : 'start')
+const actualStage = computed(() => executionStage(viewedTask.value, stepFromAutoRealizeState(activeSnapshot.value)))
 const completedNodes = computed(() => activeSnapshot.value?.auto_ml?.nodes ?? [])
 const allNodeCount = computed(() => new Set([
   ...completedNodes.value, ...(activeSnapshot.value?.auto_ml?.pending_nodes ?? []),
@@ -185,7 +201,7 @@ async function openReplay() {
 }
 
 function closeReplay() { replay.close(); activeStep.value = 'automl' }
-function selectDemo() { replay.close(); demoSelected.value = true; activeStep.value = 'automl'; sidebarVisible.value = false }
+function selectDemo() { replay.close(); demoSelected.value = true; activeStep.value = 'automl'; sidebarVisible.value = false; systemVisible.value = false }
 async function togglePresentation() {
   try {
     if (document.fullscreenElement) await document.exitFullscreen()
@@ -369,6 +385,10 @@ function syncWorkingCopies() {
     target.auto_ml_workspace_dir = task.auto_ml_workspace_dir
     target.report_dir = task.report_dir
     target.last_error = task.last_error
+    target.execution_config = task.execution_config
+    target.experiment_group_id = task.experiment_group_id
+    target.parent_task_id = task.parent_task_id
+    target.interrupted_from_phase = task.interrupted_from_phase
     if (!dirtyTaskIds[task.id]) target.config = cloneDeep(task.config)
   }
 
@@ -397,10 +417,15 @@ async function openSettings() {
 }
 
 async function saveSettings(payload: GlobalSettings) {
-  await api.saveGlobalSettings(payload)
-  await loadGlobalSettings()
-  settingsVisible.value = false
-  message.value = '全局设置已保存'
+  try {
+    await api.saveGlobalSettings(payload)
+    await loadGlobalSettings()
+    settingsVisible.value = false
+    systemVisible.value = false
+    await nextTick()
+    systemVisible.value = true
+    message.value = '全局设置已保存，正在重新检查环境'
+  } catch (e) { error.value = formatActionError('保存系统设置', e) }
 }
 
 function onUpdateConfig(taskId: string, config: TaskConfig) {
@@ -433,7 +458,7 @@ function requestStopTask(taskId: string) {
   openActionDialog(
     {
       title: '中断当前任务',
-      message: '系统会先保存搜索树、在途动作和 Top-K 方案。检查点保存完成后，可以继续任务或直接生成报告。',
+      message: '向当前阶段发送停止请求并保留已有文件。搜索阶段会尝试保存搜索树、在途动作和 Top-K；是否可以恢复以检查点检查结果为准。停止中仍可能占用资源。',
       confirmLabel: '确认中断',
       confirmTone: 'danger',
     },
@@ -442,7 +467,10 @@ function requestStopTask(taskId: string) {
 }
 
 async function onStopTask(taskId: string) {
-  message.value = '正在保存 AutoML 检查点...'
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+  message.value = '正在请求停止并检查已保存进度…'
   const result = await stopTask(taskId)
   await refreshSnapshot(taskId)
   if (result.status === 'interrupted_resumable') {
@@ -452,6 +480,7 @@ async function onStopTask(taskId: string) {
   } else {
     message.value = '任务已停止'
   }
+  } finally { actionBusy.value = false }
 }
 
 async function onRunAutoRealize(taskId: string, confirmed = false) {
@@ -598,25 +627,34 @@ async function onRunReport(taskId: string, confirmed = false) {
   }
 }
 
-function requestRunTask(taskId: string) {
-  openActionDialog(
-    {
-      title: '执行完整任务',
-      message: '这会删除该任务原有的执行过程和阶段产物，然后按当前配置从 AutoRealize 开始完整执行。此操作不可撤销。',
-      confirmLabel: '确认执行',
-      cancelLabel: '取消任务',
-      confirmTone: 'positive',
-      cancelTone: 'danger',
-    },
-    () => onRunTask(taskId),
-  )
+async function requestRunTask(taskId: string) {
+  const task = workingCopies[taskId]
+  if (!task || actionBusy.value) return
+  if (primaryAction(task) === 'solution') { workspaceView.value = 'solution'; return }
+  if (primaryAction(task) === 'resume') { await requestResume(taskId); return }
+  actionBusy.value = true; actionError.value = ''
+  try {
+    await onSaveTask(taskId)
+    const readiness = await api.getReadiness(taskId)
+    if (!readiness.ready) {
+      systemVisible.value = true
+      actionError.value = '运行检查未通过：' + readiness.checks.filter(c => c.status === 'fail').map(c => c.label).join('、')
+      return
+    }
+    openActionDialog({ title: '开始新实验',
+      message: `将使用当前数据、目标和预算自动执行分析、搜索及报告，创建独立输出目录。搜索预算 ${Math.round(task.config.auto_ml.time_limit_secs / 60)} 分钟，不包含分析、最终评估和报告。模型 API 可能产生费用。\n\n${readiness.checks.some(c => c.status === 'warn') ? '部分模型仅已配置，尚未验证。可先到本地运行检查中测试文本请求。' : ''}`,
+      confirmLabel: '开始实验', cancelLabel: '返回检查', confirmTone: 'primary' }, () => onRunTask(taskId))
+  } catch (e) { actionError.value = formatActionError('运行检查', e) }
+  finally { actionBusy.value = false }
 }
 
 async function onRunTask(taskId: string) {
   const task = workingCopies[taskId]
   if (!task) return
-  await onSaveTask(taskId)
-  await rerunFull(taskId)
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+  await startTask(taskId)
   await refreshTasks()
   syncWorkingCopies()
   try {
@@ -624,13 +662,34 @@ async function onRunTask(taskId: string) {
   } catch {
     // cleanup + restart interval
   }
-  message.value = '已按当前配置执行完整任务'
+  workspaceView.value = 'process'; configVisible.value = false; systemVisible.value = false
+  message.value = '实验已启动，关闭浏览器后后台仍会继续运行'
+  } finally { actionBusy.value = false }
+}
+
+async function onNewExperiment() {
+  if (!activeWorkingTask.value || actionBusy.value) return
+  actionBusy.value = true; actionError.value = ''
+  try {
+    const child = await api.newExperiment(activeWorkingTask.value.id)
+    await refreshTasks(); syncWorkingCopies(); activeTaskId.value = child.id
+    workspaceView.value = 'overview'; configVisible.value = true
+    message.value = '新实验已创建，原实验配置和文件保留'
+  } catch (e) { actionError.value = formatActionError('创建新实验', e) }
+  finally { actionBusy.value = false }
+}
+
+async function requestResume(taskId: string) {
+  openActionDialog({ title: '恢复原实验', message: '继续使用原配置和已有产物。系统检查中断位置后恢复；报告阶段失败时优先补报告。检查点不完整时会提示失败，不清空旧目录。', confirmLabel: '检查并恢复', cancelLabel: '取消' }, () => onResumeTask(taskId))
 }
 
 async function onResumeTask(taskId: string) {
   const task = workingCopies[taskId]
   if (!task) return
-  await onSaveTask(taskId)
+  if (actionBusy.value) return
+  if (dirtyTaskIds[taskId]) throw new Error('恢复使用原配置，请先放弃修改或新建实验')
+  actionBusy.value = true
+  try {
   await resumeTask(taskId)
   await refreshTasks()
   syncWorkingCopies()
@@ -640,13 +699,15 @@ async function onResumeTask(taskId: string) {
     // poll will retry
   }
   message.value = '已从中断处继续任务'
+  workspaceView.value = 'process'; configVisible.value = false
+  } finally { actionBusy.value = false }
 }
 
 function requestDeleteTask(taskId: string) {
   openActionDialog(
     {
       title: '删除任务',
-      message: '确认删除当前任务标签吗？默认只删除任务记录，已有运行文件会保留。',
+      message: '确认删除当前实验记录吗？默认只删除记录，已有运行文件会保留。其他实验不受影响。',
       confirmLabel: '确认删除',
       cancelLabel: '取消删除',
       confirmTone: 'danger',
@@ -689,7 +750,8 @@ async function onCreateTask() {
     await createTask()
     await refreshTasks()
     syncWorkingCopies()
-    message.value = '已新建任务标签页'
+    workspaceView.value = 'overview'
+    message.value = '已新建任务，请选择数据、填写目标与预算'
     configVisible.value = true
     sidebarVisible.value = false
   } catch (e) {
@@ -702,14 +764,15 @@ function onSelectTask(id: string) {
   demoSelected.value = false
   sidebarVisible.value = false
   activeTaskId.value = id
+  workspaceView.value = 'overview'; actionError.value = ''; systemVisible.value = false
   activeStep.value = tasks.value.find(t => t.id === id)?.status === 'completed' ? 'automl' : 'data_cognition'
   void refreshActiveSnapshot()
 }
 
-async function refreshActiveSnapshot() {
-  if (!activeTaskId.value || recording.value || demoSelected.value) return
+async function refreshActiveSnapshot(taskId = activeTaskId.value) {
+  if (!taskId || recording.value || demoSelected.value) return
   try {
-    await refreshSnapshot(activeTaskId.value)
+    await refreshSnapshot(taskId)
   } catch {
     // transient poll errors are expected when services restart
   }
@@ -717,16 +780,34 @@ async function refreshActiveSnapshot() {
 
 function startPolling() {
   stopPolling()
-  const poll = async () => {
-    if (!recording.value) {
-      await refreshTasks({ silent: true })
-      syncWorkingCopies()
-      syncTaskCompletionNotifications()
-      await refreshActiveSnapshot()
+  pollHandler = async () => {
+    pollingTimer.value = null
+    if (pollInFlight) return
+    pollInFlight = true
+    try {
+      if (!recording.value) {
+        const previousStatuses = new Map(tasks.value.map(task => [task.id, task.status]))
+        await refreshTasks({ silent: true })
+        syncWorkingCopies()
+        syncTaskCompletionNotifications()
+        const selected = activeTask.value
+        const wasRunning = selected?.status === 'running' || previousStatuses.get(selected?.id ?? '') === 'running'
+        if (selected && wasRunning) await refreshActiveSnapshot(selected.id)
+      }
+    } finally {
+      pollInFlight = false
+      schedulePolling()
     }
-    pollingTimer.value = window.setTimeout(poll, 2000)
   }
-  pollingTimer.value = window.setTimeout(poll, 2000)
+  schedulePolling()
+}
+
+function schedulePolling() {
+  if (!pollHandler) return
+  if (pollingTimer.value !== null) window.clearTimeout(pollingTimer.value)
+  const running = !recording.value && tasks.value.some(task => task.status === 'running')
+  const interval = running ? ACTIVE_POLL_INTERVAL_MS : IDLE_TASK_CHECK_INTERVAL_MS
+  pollingTimer.value = window.setTimeout(() => void pollHandler?.(), interval)
 }
 
 function stopPolling() {
@@ -734,7 +815,13 @@ function stopPolling() {
     window.clearTimeout(pollingTimer.value)
     pollingTimer.value = null
   }
+  pollHandler = null
 }
+
+watch(
+  [() => tasks.value.some(task => task.status === 'running'), recording],
+  schedulePolling,
+)
 
 watch(
   () => [activeTaskId.value, autoStepTarget.value] as const,
@@ -776,8 +863,9 @@ onUnmounted(() => {
       <TaskTabs :tasks="tasks" :active-task-id="demoSelected ? '' : activeTaskId" :dirty-task-ids="dirtyTaskIds" @select="onSelectTask" @create="onCreateTask" @remove="requestDeleteTask" @remove-blocked="explainDeleteBlocked" />
       <div class="sidebar-bottom">
         <button class="sidebar-link" :class="{ selected: demoSelected }" @click="selectDemo"><Presentation :size="17" /><span>演示任务</span><ArrowUpRight :size="13" /></button>
+        <button class="sidebar-link" @click="systemVisible = !systemVisible"><Activity :size="17" /><span>本地运行检查</span></button>
         <button class="sidebar-link" @click="openSettings"><Settings2 :size="17" /><span>全局设置</span></button>
-        <div class="sidebar-footnote"><span class="status-dot" />本地工作空间<span class="mono">v2.0</span></div>
+        <div class="sidebar-footnote"><span class="status-dot" />本地工作空间<span class="mono">{{ release.version }}</span></div>
       </div>
     </aside>
 
@@ -789,41 +877,61 @@ onUnmounted(() => {
         <div class="topbar-end"><span v-if="recording" class="mode-chip">重放模式</span><button class="icon-button" title="全局设置" aria-label="全局设置" @click="openSettings"><Settings2 :size="17" /></button><span class="user-avatar" aria-label="工智寻优">工智</span></div>
       </header>
 
-      <main v-if="activeWorkingTask" class="workspace-content">
+      <section v-if="systemVisible" class="system-check-container"><button class="command" @click="systemVisible = false">返回工作台</button><LocalReadiness :task-id="demoSelected ? undefined : activeTaskId || undefined" @settings="openSettings" /></section>
+      <main v-if="activeWorkingTask" class="workspace-content" v-show="!systemVisible">
         <div class="workspace-heading">
           <div><div class="eyebrow">工智寻优 · 决策工作台</div><h2>{{ displayTaskName(activeWorkingTask.config.task_name) }}</h2><div class="task-subtitle"><span class="status-dot" :class="viewedTask?.status" /><span>{{ statusName }}</span><span class="subtle-divider">/</span><span>{{ demoSelected ? '门店经营与销售规划' : activeWorkingTask.config.auto_realize.task_hint || '工业大数据决策任务' }}</span></div></div>
           <div class="workspace-commands">
             <button v-if="!recording" class="command" :disabled="replayLoading || (!demoSelected && activeWorkingTask.status === 'idle')" @click="openReplay"><Presentation :size="16" />{{ replayLoading ? '加载中' : '任务重放' }}</button>
             <button v-if="!demoSelected && !recording" class="command" @click="configVisible = true"><SlidersHorizontal :size="16" />任务配置<span v-if="dirtyTaskIds[activeWorkingTask.id]" class="unsaved-dot" /></button>
-            <button v-if="!demoSelected && !recording && activeWorkingTask.status === 'running'" class="command danger" @click="requestStopTask(activeWorkingTask.id)"><Square :size="14" />中断</button>
-            <button v-else-if="!demoSelected && !recording" class="command primary" :disabled="!activeWorkingTask.config.input_root" @click="requestRunTask(activeWorkingTask.id)"><Play :size="15" />执行任务</button>
+            <button v-if="!demoSelected && !recording && (activeWorkingTask.run_dir || activeWorkingTask.execution_config)" class="command" :disabled="actionBusy" @click="onNewExperiment"><Plus :size="15" />新建实验</button>
+            <button v-if="!demoSelected && !recording && activeWorkingTask.status === 'running'" class="command danger" :disabled="actionBusy || primary === 'stopping'" @click="requestStopTask(activeWorkingTask.id)"><Square :size="14" />{{ primary === 'stopping' ? '正在停止…' : '停止并保留进度' }}</button>
+            <button v-else-if="!demoSelected && !recording" class="command primary" :disabled="actionBusy || (!activeWorkingTask.config.input_root && primary === 'start')" @click="requestRunTask(activeWorkingTask.id)"><Play :size="15" />{{ actionBusy ? '检查中…' : primary === 'resume' ? '恢复实验' : primary === 'solution' ? '查看成果' : '检查并开始' }}</button>
             <button v-if="recording" class="command" @click="togglePresentation"><Presentation :size="16" />{{ presentation ? '退出全屏' : '全屏演示' }}</button>
           </div>
         </div>
 
-        <div class="metrics-band">
+        <div v-if="!demoSelected && !recording" class="product-navigation" role="navigation" aria-label="任务工作区"><button v-for="item in [{ key: 'overview', label: '任务概览' }, { key: 'process', label: '运行过程' }, { key: 'experiments', label: '实验历史' }, { key: 'solution', label: '方案交付' }]" :key="item.key" :aria-current="workspaceView === item.key ? 'page' : undefined" :class="{ active: workspaceView === item.key }" @click="workspaceView = item.key">{{ item.label }}</button><span>实际阶段：{{ actualStage }}</span></div>
+        <div v-if="!demoSelected && !recording && (actionError || activeWorkingTask.last_error)" class="product-error" role="alert"><strong>实验需要处理</strong><p>{{ actionError || activeWorkingTask.last_error }}</p><p>已有文件保留。先检查环境和配置；可恢复实验使用原配置继续。搜索已有成果时可查看方案或补报告。</p><div class="product-actions"><button class="command" @click="systemVisible = true">检查环境</button><button class="command" @click="workspaceView = 'solution'">检查已有成果</button><button v-if="actionError" class="command" @click="actionError = ''">关闭本次提示</button></div></div>
+        <ProductWorkbench v-if="!demoSelected && !recording && workspaceView !== 'process'" :task="activeWorkingTask" :snapshot="activeSnapshot" :view="workspaceView" @settings="openSettings" @configure="configVisible = true" @new-experiment="onNewExperiment" @select="onSelectTask" @report="onRunReport(activeWorkingTask.id)" />
+        <div v-if="(demoSelected || recording || workspaceView === 'process') && activeStep === 'automl'" class="metrics-band">
           <div class="metric-item"><span class="metric-label">搜索候选 <Activity :size="13" /></span><strong>{{ allNodeCount.toString().padStart(2, '0') }}<small v-if="!recording">/ {{ activeWorkingTask.config.auto_ml.steps }}</small></strong><span class="metric-note">蒙特卡洛树搜索</span></div>
           <div class="metric-item"><span class="metric-label">有效方案 <Check :size="13" /></span><strong>{{ validCount.toString().padStart(2, '0') }}<small>个</small></strong><span class="metric-note">通过候选评估</span></div>
-          <div class="metric-item"><span class="metric-label">当前最优指标</span><strong class="accent-value">{{ bestNode?.metric != null ? Number(bestNode.metric).toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—' }}<small v-if="bestNode">{{ bestNode.maximize ? '↑' : '↓' }}</small></strong><span class="metric-note">{{ bestNode?.label || bestNode?.method_mode || (bestNode ? bestNode.id.slice(0, 18) : '等待评估结果') }}</span></div>
-          <div class="metric-item"><span class="metric-label">任务阶段</span><strong class="stage-metric">{{ stepLabels[activeStep] }}</strong><span class="metric-note">{{ recording ? '历史运行回放' : 'AutoRealize → AlgoEvolve → AutoReport' }}</span></div>
+          <div class="metric-item"><span class="metric-label">{{ bestNode?.evaluation_protocol?.metric_name || '搜索记录指标' }}</span><strong class="accent-value">{{ bestNode?.metric != null ? Number(bestNode.metric).toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—' }}<small v-if="bestNode">{{ bestNode.maximize ? '↑' : '↓' }}</small></strong><span class="metric-note">{{ bestNode?.label || bestNode?.method_mode || (bestNode ? bestNode.id.slice(0, 18) : '等待评估结果') }}</span></div>
+          <div class="metric-item"><span class="metric-label">实际执行阶段</span><strong class="stage-metric">{{ actualStage }}</strong><span class="metric-note">{{ recording ? '历史运行回放' : '页面切换不会改变运行阶段' }}</span></div>
         </div>
 
-        <div class="workflow-bar">
+        <div v-if="(demoSelected || recording || workspaceView === 'process') && activeStep !== 'automl'" class="stage-context-summary"><span>正在查看：{{ stepLabels[activeStep] }}</span><span>实际阶段：<strong class="stage-metric">{{ actualStage }}</strong></span><span>{{ activeStep === 'data_cognition' ? '检查材料覆盖、数据质量与待澄清问题' : activeStep === 'task_definition' ? '核对目标、约束、评价口径与输入输出合同' : '检查结果解释、验证范围与方案使用说明' }}</span></div>
+
+        <div v-if="demoSelected || recording || workspaceView === 'process'" class="workflow-bar">
           <WorkflowStepper :task="viewedTask" :active-step="activeStep" :auto-realize-state="activeSnapshot?.auto_realize?.current_state || {}" :auto-realize-events="activeSnapshot?.auto_realize?.events || []" :auto-ml-events="activeSnapshot?.auto_ml?.events || []" @select="onSelectWorkflowStep" />
           <label v-if="!recording" class="follow-live"><input v-model="followLive" type="checkbox" @change="scheduleAutoStep(autoStepTarget)" />跟随运行</label>
         </div>
 
-        <section class="stage-content" :key="activeWorkingTask.id" :class="{ 'legacy-stage': activeStep !== 'automl' }">
+        <section v-if="demoSelected || recording || workspaceView === 'process'" class="stage-content" :key="activeWorkingTask.id" :class="{ 'legacy-stage': activeStep !== 'automl' }">
           <DataCognitionView v-if="activeStep === 'data_cognition'" :snapshot="activeSnapshot" />
           <TaskDefinitionView v-else-if="activeStep === 'task_definition'" :snapshot="activeSnapshot" :active-step-running="viewedTask?.status === 'running' && viewedTask?.phase === 'autorealize'" :replay-artifact="recording && followStage ? replay.currentFocus.value?.artifact : undefined" />
           <AutoMLView v-else-if="activeStep === 'automl'" :snapshot="activeSnapshot" :replay="!!recording" />
           <ReportView v-else :snapshot="activeSnapshot" />
         </section>
+        <details v-if="!demoSelected && !recording && workspaceView === 'process'" class="process-log-details">
+          <summary>运行事件（{{ processEventCount }}）</summary>
+          <ProcessTimeline
+            :task="viewedTask"
+            :auto-realize-state="activeSnapshot?.auto_realize?.current_state || {}"
+            :web-research-metrics="activeSnapshot?.auto_ml?.web_research_metrics || {}"
+            :directory-tree-text="activeSnapshot?.auto_realize?.directory_tree_text || ''"
+            :auto-realize-events="activeSnapshot?.auto_realize?.events || []"
+            :auto-ml-events="activeSnapshot?.auto_ml?.events || []"
+          />
+        </details>
       </main>
 
-      <main v-else class="workspace-empty">
+      <main v-else class="workspace-empty" v-show="!systemVisible">
         <span class="empty-brand"><Layers3 :size="42" /></span><span class="eyebrow">工智寻优</span><h2>决策工作台</h2>
         <div class="empty-state-title">暂无任务</div>
+        <p class="product-note">先检查本地运行环境，再选择数据、填写目标并开始实验。</p>
+        <button class="command" @click="systemVisible = true">检查模型与运行环境</button>
         <div class="workspace-commands"><button class="command primary" @click="onCreateTask"><Plus :size="16" />新建任务</button><button class="command" @click="selectDemo"><Presentation :size="16" />打开演示任务</button></div>
       </main>
 
@@ -838,7 +946,7 @@ onUnmounted(() => {
         <div v-if="configVisible && activeWorkingTask && !demoSelected && !recording" class="config-overlay" @click.self="configVisible = false">
           <section class="config-drawer" role="dialog" aria-modal="true" aria-label="任务配置">
             <header class="config-drawer-header"><span><SlidersHorizontal :size="18" />任务配置</span><div><button v-if="activeWorkingTask.run_dir" class="icon-button" title="打开任务目录" aria-label="打开任务目录" @click="api.openDirectory(activeWorkingTask.run_dir)"><FolderOpen :size="17" /></button><button class="icon-button" title="关闭任务配置" aria-label="关闭任务配置" @click="configVisible = false"><X :size="19" /></button></div></header>
-            <TaskConfigPanel :task="activeWorkingTask" :snapshot="activeSnapshot" :is-dirty="!!dirtyTaskIds[activeWorkingTask.id]" @update-config="onUpdateConfig" @restore-defaults="onRestoreDefaultConfig" @save="onSaveTask" @run-auto-realize="onRunAutoRealize" @run-auto-m-l="requestRunAutoML" @continue-auto-m-l="onContinueAutoML" @repair-review="onRepairReview" @run-report="onRunReport" @run-task="requestRunTask" @resume-task="onResumeTask" @stop="requestStopTask" @refresh="onRefreshTask" />
+            <TaskConfigPanel :task="activeWorkingTask" :snapshot="activeSnapshot" :is-dirty="!!dirtyTaskIds[activeWorkingTask.id]" @update-config="onUpdateConfig" @restore-defaults="onRestoreDefaultConfig" @save="onSaveTask" @run-auto-realize="onRunAutoRealize" @run-auto-m-l="requestRunAutoML" @continue-auto-m-l="onContinueAutoML" @repair-review="onRepairReview" @run-report="onRunReport" @run-task="requestRunTask" @resume-task="requestResume" @stop="requestStopTask" @refresh="onRefreshTask" />
           </section>
         </div>
       </Transition>

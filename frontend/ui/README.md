@@ -1,4 +1,8 @@
-# 工智寻优前端
+# 旧版研究工作台（兼容维护）
+
+AutoDecision 的默认产品前端和后续产品开发入口为 [Decision Studio](../decision-studio/README.md)，地址为 `http://127.0.0.1:5178/`。本目录 `frontend/ui` 保留旧研究界面及部分共享配置、任务和搜索图组件，不是默认启动目标。请勿将这里的 `App.vue` 作为新版产品页面入口。
+
+需要旧界面时，使用 `python scripts/studio.py up --legacy-ui --dev`（在仓库根目录），或在本目录执行下方命令；统一启动脚本默认打开新版。
 
 工智寻优的浏览器界面，使用 Vue 3、TypeScript 和 Vite 构建。界面只访问工智寻优网关，由网关编排 AutoRealize、AlgoEvolve 和 AutoReport。
 

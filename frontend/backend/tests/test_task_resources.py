@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 import app
@@ -20,11 +21,36 @@ def test_task_resource_defaults_and_global_resource_removal() -> None:
 
     assert task.resources.cpu_cores == 4
     assert task.resources.memory_limit_gb == 8.0
-    assert task.resources.accelerator_mode == "all"
+    assert task.resources.accelerator_mode == "none"
     assert task.output_language == "zh"
-    assert task.auto_ml.stepwise_context_max_tokens == 90000
-    assert task.auto_ml.stepwise_context_headroom_ratio == 0.15
+    assert task.auto_ml.stepwise_context_max_tokens == 0
+    assert task.auto_ml.stepwise_context_headroom_ratio == 0.01
+    assert task.auto_ml.web_research_enabled is False
+    assert task.auto_ml.web_research_fetch_timeout_seconds == 8.0
     assert "resource" not in settings.model_dump()
+
+
+def test_public_research_requires_an_explicit_query() -> None:
+    config = app.TaskConfigPayload(
+        task_name="public-research",
+        auto_ml=app.AutoMLConfigPayload(web_research_enabled=True),
+    )
+
+    with pytest.raises(app.HTTPException, match="公开检索词"):
+        app.validate_web_research_payload(config)
+
+
+def test_deepseek_default_thinking_is_explicit_but_user_disable_is_preserved() -> None:
+    assert app._model_thinking_cli({
+        "model": "deepseek-flash",
+        "baseUrl": "https://api.deepseek.com",
+        "thinkingMode": "default",
+    }) == "true"
+    assert app._model_thinking_cli({
+        "model": "deepseek-flash",
+        "baseUrl": "https://api.deepseek.com",
+        "thinkingMode": "disabled",
+    }) == "false"
 
 
 def test_algoevolve_command_and_yaml_use_task_resources(tmp_path: Path, monkeypatch) -> None:
@@ -101,6 +127,11 @@ def test_automl_effect_and_time_controls_compile_to_task_yaml(
         optimization_experience_max_cards=4,
         dependency_install_timeout_secs=420,
         dependency_install_max_packages=5,
+        web_research_enabled=True,
+        web_research_query="vehicle routing time windows heterogeneous fleet optimization",
+        web_research_timeout_seconds=15,
+        web_research_max_results=4,
+        web_research_max_context_chars=3700,
     )
     config = app.TaskConfigPayload(
         task_name="effect-controls",
@@ -148,9 +179,9 @@ def test_automl_effect_and_time_controls_compile_to_task_yaml(
     assert raw["agent"]["output_language"] == "chinese"
     assert raw["agent"]["code"]["context_window_tokens"] == 65536
     assert raw["agent"]["feedback"]["context_window_tokens"] == 32768
-    assert raw["agent"]["code"]["minimum_output_tokens"] == 32768
+    assert raw["agent"]["code"]["minimum_output_tokens"] == 0
     assert raw["agent"]["code"]["max_tokens"] == 32768
-    assert raw["agent"]["feedback"]["minimum_output_tokens"] == 32768
+    assert raw["agent"]["feedback"]["minimum_output_tokens"] == 0
     assert raw["agent"]["feedback"]["max_tokens"] == 32768
     assert raw["agent"]["draft"]["stepwise_context_max_tokens"] == 42000
     assert raw["agent"]["draft"]["stepwise_compaction_keep_recent_steps"] == 3
@@ -172,6 +203,14 @@ def test_automl_effect_and_time_controls_compile_to_task_yaml(
     assert raw["agent"]["optimization_experience_max_cards"] == 4
     assert raw["exec"]["dependency_install_timeout_seconds"] == 420
     assert raw["exec"]["dependency_install_max_packages_per_execution"] == 5
+    assert raw["agent"]["web_research"] == {
+        "enabled": True,
+        "query": "vehicle routing time windows heterogeneous fleet optimization",
+        "timeout_seconds": 15,
+        "fetch_timeout_seconds": 8.0,
+        "max_results": 4,
+        "max_context_chars": 3700,
+    }
 
 
 def test_task_language_is_normalized_and_legacy_no_effect_fields_are_dropped() -> None:
@@ -250,6 +289,16 @@ def test_local_automl_snapshot_includes_resource_usage(tmp_path: Path, monkeypat
     }
     (log_dir / "resource_usage.json").write_text(json.dumps(expected), encoding="utf-8")
     dependency_summary = {"installed_requirements": ["ortools>=9.9.0,<10"]}
+    web_research = {
+        "schema_version": "algoevolve.web_research_metrics.v1",
+        "stage_id": "public_web_research",
+        "status": "success",
+        "search": {"accepted_count": 2, "source_hosts": ["example.org"]},
+    }
+    (log_dir / "web_research_metrics.json").write_text(
+        json.dumps(web_research),
+        encoding="utf-8",
+    )
     (log_dir / "dependency_installations.jsonl").write_text(
         json.dumps({"requirement": "ortools>=9.9.0,<10"}) + "\n",
         encoding="utf-8",
@@ -264,5 +313,6 @@ def test_local_automl_snapshot_includes_resource_usage(tmp_path: Path, monkeypat
     snapshot = app._build_local_automl_snapshot(SimpleNamespace())
 
     assert snapshot["resource_usage"] == expected
+    assert snapshot["web_research_metrics"] == web_research
     assert "ortools" in snapshot["dependency_installations"]
     assert snapshot["dependency_installation_summary"] == dependency_summary
