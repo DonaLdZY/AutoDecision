@@ -183,7 +183,7 @@ watch([mode, input, csv, frames, timeout], () => {
         <span class="tag" :class="finalEvaluationPresentation.tone">{{ finalEvaluationPresentation.label }}</span>
       </div>
       <p v-if="finalEvaluation.status === 'failed'" class="live-error">
-        最终评估未完成，研发搜索结果不能作为最终评估结论。
+        最终评估未完成，研究搜索结果不能作为最终评估结论。
       </p>
       <p v-else-if="finalEvaluation.status === 'invalid_result_fields'" class="live-error">
         运行返回了结果，但结果字段未通过系统校验；这些数值不计为有效的最终评估。
@@ -327,7 +327,7 @@ watch([mode, input, csv, frames, timeout], () => {
         }}</span
       >
       <div v-if="data.report_ready && data.verification?.status === 'passed'" class="form-actions">
-        <p>试算已通过，下一步核对并发布，才能在决策对话中使用。</p>
+        <p>试算已通过，下一步核对并发布，才能在对话中使用。</p>
         <button class="btn primary small" @click="emit('publish')">前往核对发布信息</button>
       </div>
       <DecisionResult v-if="data.verification?.trial" :result="data.verification.trial.result" />

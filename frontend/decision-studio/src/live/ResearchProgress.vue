@@ -29,7 +29,7 @@ const best = computed(() => props.nodes.find(n => n.id === props.bestId))
 const comparable = computed(() => props.nodes.filter(n => n.search_eligible && !n.is_buggy).length)
 </script>
 <template>
-  <section class="research-progress" aria-label="研发进度">
+  <section class="research-progress" aria-label="研究进度">
     <ol class="research-stages">
       <li v-for="(stage, i) in stages" :key="stage.name" :class="{ current: i === active && !stageDone(i), done: stageDone(i) }" :aria-current="i === active && !stageDone(i) ? 'step' : undefined">
         <Icon :name="stageDone(i) ? 'checkCircle' : i === active && task.status === 'running' ? 'loader' : 'circle'" :size="16" /><div>{{ stage.name }}<small>{{ i === 3 ? delivery.label : (i === 2 && !task.config.auto_report.enabled) || (i === 1 && !task.config.auto_ml.enabled) ? '未启用' : stage.engine }}</small></div>

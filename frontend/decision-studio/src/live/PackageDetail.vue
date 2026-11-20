@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Modal from './Modal.vue'
 import InvokeForm from './InvokeForm.vue'
@@ -7,6 +7,8 @@ import SchemaFields from './SchemaFields.vue'
 import OutputFields from './OutputFields.vue'
 import ResultValue from './ResultValue.vue'
 import ResourceStorage from './ResourceStorage.vue'
+import BriefHeader from './BriefHeader.vue'
+import CheckRules from './CheckRules.vue'
 import { ui, request, run, bundle, date } from './store'
 import type { Package } from './store'
 const props = defineProps<{ id: string }>()
@@ -15,9 +17,27 @@ const data = ref<Package>(),
   full = ref<Package>(),
   error = ref(''),
   technicalError = ref('')
+const briefFacts = ref<Record<string, unknown>>({}),
+  briefText = ref<Record<string, unknown>>({})
+const hasBrief = computed(() => Object.keys(briefFacts.value).length > 0)
+let sequence = 0
+async function loadBrief(taskId: string, token: number) {
+  try {
+    const snapshot = await request(
+      `/tasks/${taskId}/snapshot?view=summary&section=report`,
+      undefined,
+      'GET',
+      { timeoutMs: 25000 },
+    )
+    if (token !== sequence) return
+    briefFacts.value = snapshot?.auto_report?.producer_report_facts || {}
+    briefText.value = snapshot?.auto_report?.producer_report_text || {}
+  } catch {
+    // 来源任务没有生产者版数据时，不显示结论条与检查规则。
+  }
+}
 const invoke = ref(false),
   technicalLoading = ref(false)
-let sequence = 0
 watch(
   () => props.id,
   async (id) => {
@@ -27,9 +47,13 @@ watch(
     error.value = ''
     technicalError.value = ''
     technicalLoading.value = false
+    briefFacts.value = {}
+    briefText.value = {}
     try {
       const result = await request<Package>(`/studio/packages/${id}?view=summary`)
-      if (n === sequence) data.value = result
+      if (n !== sequence) return
+      data.value = result
+      if (result.task_id) void loadBrief(result.task_id, n)
     } catch (e) {
       if (n === sequence) error.value = String(e)
     }
@@ -64,7 +88,7 @@ function windowLabel(seconds: number) {
     <div class="detail-hero">
       <span class="hero-icon"><Icon name="package" :size="30" /></span>
       <div>
-        <div class="eyebrow">算法模型包 · v{{ data.version }}</div>
+        <div class="eyebrow">算法包 · v{{ data.version }}</div>
         <h2>{{ data.name }}</h2>
         <p>{{ data.description }}</p>
       </div>
@@ -76,11 +100,19 @@ function windowLabel(seconds: number) {
         :disabled="!!ui.busy"
         @click="run('download', () => bundle(data!.id))"
       >
-        <Icon name="download" />导出模型包
+        <Icon name="download" />导出算法包
       </button>
       <button class="btn secondary small" @click="emit('open', 'task', data.task_id)">查看来源任务</button>
-      <button class="btn primary small" @click="invoke = true">使用模型包</button>
+      <button class="btn primary small" @click="invoke = true">使用算法包</button>
     </div>
+    <template v-if="hasBrief">
+      <div class="brief-source">
+        <span class="hint">结论来自来源任务的「结论与建议」页</span>
+        <button class="btn secondary small" @click="emit('open', 'task', data.task_id)">查看完整结论</button>
+      </div>
+      <BriefHeader :facts="briefFacts" :text="briefText" />
+      <CheckRules :facts="briefFacts" :text="briefText" />
+    </template>
     <section class="live-panel">
       <h3>质量与可用性</h3>
       <div class="quality-grid">
@@ -193,5 +225,15 @@ function windowLabel(seconds: number) {
     /></Modal>
   </div>
   <p v-else-if="error" class="live-error">{{ error }}</p>
-  <p v-else class="hint" role="status">正在读取模型包…</p>
+  <p v-else class="hint" role="status">正在读取算法包…</p>
 </template>
+<style scoped>
+.brief-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+</style>

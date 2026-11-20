@@ -13,7 +13,7 @@ const roles = [
   ['autoRealize', '数据分析（要求多模态模型）'],
   ['autoMlCode', '算法编码'],
   ['autoMlFeedback', '评审与报告'],
-  ['promptOptimizer', '研发提示词优化'],
+  ['promptOptimizer', '研究提示词优化'],
   ['embedding', '搜索经验检索（向量模型，可选）'],
 ]
 const resourceItems = computed(() => resourceSummary(inventory.value))

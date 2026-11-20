@@ -1,6 +1,6 @@
 export function summarizeGoal(value: unknown, maxLength = 180): string {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
-  if (!text) return '未填写研发目标'
+  if (!text) return '未填写研究目标'
   if (text.length <= maxLength) return text
   const sentence = text.slice(0, maxLength).match(/^.*?[。！？!?；;]/)?.[0]?.trim()
   if (sentence && sentence.length >= Math.min(24, maxLength * 0.45)) return sentence
@@ -43,7 +43,7 @@ export function humanApiError(detail: unknown, status: number): string {
     const names: Record<string, string> = {
       name: '名称', title: '标题', task_name: '任务名称', description: '用途说明',
       input_root: '数据目录', output_root: '结果目录', text: '需求', question: '问题',
-      goal: '研发目标', time_limit_secs: '搜索时间', timeout_seconds: '执行时间',
+      goal: '研究目标', time_limit_secs: '搜索时间', timeout_seconds: '执行时间',
       cpu_cores: '处理器数量', memory_limit_gb: '内存', csv_path: '数据文件',
       data_json: '输入数据', input_schema: '输入要求', steps: '调用顺序',
       confirm: '确认选项', apiKey: '访问密钥', baseUrl: '服务地址',

@@ -1,7 +1,7 @@
 .live-studio {
   --ink: #17243b;
-  --primary: #386bfa;
-  --primary-soft: #edf2ff;
+  --primary: #2b4d8c;
+  --primary-soft: #e8edf6;
   --line: #e0e7f1;
   --secondary: #63748c;
   --muted: #7d8ba0;
@@ -149,7 +149,7 @@
 }
 .live-studio .btn.primary:hover,
 .live-studio .send-button:hover {
-  background: #285ae3;
+  background: #213d72;
 }
 .live-studio .btn.secondary {
   background: #fff;
@@ -157,7 +157,7 @@
   color: var(--ink);
 }
 .live-studio .text-btn {
-  color: #0066cc;
+  color: var(--primary);
 }
 .live-studio .live-panel {
   border-color: var(--line);
@@ -286,13 +286,13 @@
 .live-studio textarea:focus,
 .live-studio select:focus {
   border-color: var(--primary);
-  outline: 2px solid #0071e324;
+  outline: 2px solid #2b4d8c24;
   outline-offset: 1px;
 }
 .live-studio button:focus-visible,
 .live-studio a:focus-visible,
 .live-studio summary:focus-visible {
-  outline: 3px solid #0071e380;
+  outline: 3px solid #2b4d8c80;
   outline-offset: 3px;
 }
 .research-progress {
@@ -330,7 +330,7 @@
 }
 .research-stages li.current {
   border-color: var(--primary);
-  color: #0066cc;
+  color: var(--primary);
   font-weight: 600;
 }
 .research-stats {
@@ -626,7 +626,7 @@
   border: 1px solid #c5d6f0;
   border-radius: 20px;
   background: #e7effd;
-  color: #386bfa;
+  color: var(--primary);
 }
 .live-studio .starter-grid {
   gap: 12px;
@@ -930,6 +930,104 @@
 .live-studio .sidebar-project-context > svg {
   color: #90a8ca;
 }
+.live-studio .sidebar-notices + .new-chat {
+  margin-top: -14px;
+}
+.live-studio .new-chat:disabled {
+  opacity: 0.55;
+}
+.live-studio .suggestion-row > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.live-studio .suggestion-row button {
+  padding: 6px 10px;
+  border-color: var(--line);
+  border-radius: 999px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.live-studio .suggestion-row button:hover,
+.live-studio .suggestion-row button:focus-visible {
+  border-color: #c9d6f5;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.live-studio .chat-folders {
+  padding-top: 22px;
+}
+.live-studio .chat-folders-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.live-studio .chat-folders-label .icon-btn,
+.live-studio .chat-folder-head .icon-btn {
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #8da2c2;
+}
+.live-studio .chat-folders-label .icon-btn:hover,
+.live-studio .chat-folder-head .icon-btn:hover {
+  color: #fff;
+}
+.live-studio .chat-folders-empty {
+  margin: 6px 13px;
+  color: #8da2c2;
+  font-size: 12px;
+}
+.live-studio .chat-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+}
+.live-studio .chat-folder-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 6px;
+  border: 0;
+  background: none;
+  color: #c9d6ea;
+  font-size: 12.5px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+}
+.live-studio .chat-folder-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-studio .chat-folder-toggle svg.folded {
+  transform: rotate(-90deg);
+}
+.live-studio .chat-folder-item {
+  padding-left: 30px;
+}
+.live-studio .chat-folder-more {
+  color: #8da2c2;
+}
+.live-studio .sidebar-notices {
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+}
+.live-studio .sidebar-notices.active {
+  border-color: #4d6a92;
+  background: #243a59;
+}
+.live-studio .sidebar-notices strong {
+  font-size: 13px;
+}
+.live-studio .sidebar-notices .nav-count {
+  margin: 0;
+}
 .live-studio .sidebar-project-swatch {
   width: 8px;
   height: 34px;
@@ -997,7 +1095,7 @@
 }
 
 /* The next action stays visible wherever a finished task is encountered. */
-.task-next-step { display: flex; align-items: center; gap: 14px; padding: 18px; border: 1px solid var(--line); border-left: 3px solid var(--accent, #386bfa); border-radius: 10px; background: var(--surface, #fff); margin: 14px 0; }
+.task-next-step { display: flex; align-items: center; gap: 14px; padding: 18px; border: 1px solid var(--line); border-left: 3px solid var(--accent, var(--primary)); border-radius: 10px; background: var(--surface, #fff); margin: 14px 0; }
 .task-next-copy { flex: 1; min-width: 0; }
 .task-next-copy strong { display: block; }
 .task-next-copy p { margin: 5px 0 0; color: var(--muted); overflow-wrap: anywhere; }

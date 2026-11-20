@@ -6,6 +6,8 @@ import TaskNextStep from './TaskNextStep.vue'
 import { taskWorkflow } from './taskWorkflow'
 import ResearchProgress from './ResearchProgress.vue'
 import MarkdownView from './MarkdownView.vue'
+import ProducerReport from './ProducerReport.vue'
+import DecisionBrief from './DecisionBrief.vue'
 import EvaluationCriteria from './EvaluationCriteria.vue'
 import {
   summarizeGoal,
@@ -83,9 +85,56 @@ async function acceptDelivery(data: any) {
     deliveryFrames.value = data.draft.dataframes || []
   }
 }
-const tabs = ['任务', '数据与指标', '搜索树', '交付与发布', '报告']
+const producerReportMarkdown = ref('')
+const producerReportFacts = ref<Record<string, unknown>>({})
+const producerReportText = ref<Record<string, unknown>>({})
+const briefAvailable = ref(false)
+function applyReport(report: any) {
+  if (!report || typeof report !== 'object') return
+  if (typeof report.producer_report_markdown === 'string' && report.producer_report_markdown)
+    producerReportMarkdown.value = report.producer_report_markdown
+  const facts = report.producer_report_facts
+  if (facts && typeof facts === 'object' && Object.keys(facts).length) {
+    producerReportFacts.value = facts
+    briefAvailable.value = true
+  }
+  const text = report.producer_report_text
+  if (text && typeof text === 'object' && Object.keys(text).length) producerReportText.value = text
+}
+const hasDecisionBrief = computed(() => briefAvailable.value && task.value?.status === 'completed')
+const reuseDecision = computed<Record<string, any>>(() => snapshot.value?.reuse_decision || {})
+const reuseLabel = computed(
+  () =>
+    ({
+      direct_reuse: '直接复用算法包',
+      hot_start: '热启动（复用参考方案）',
+      normal: '正常搜索',
+    })[reuseDecision.value.action as string] || '正常搜索',
+)
+const tabs = computed(() =>
+  hasDecisionBrief.value
+    ? ['任务', '数据与指标', '搜索树', '交付与发布', '结论与建议', '工作汇报']
+    : ['任务', '数据与指标', '搜索树', '交付与发布', '报告'],
+)
+const briefTab = computed(() => (hasDecisionBrief.value ? 4 : -1))
+const reportTab = computed(() => (hasDecisionBrief.value ? 5 : 4))
+const reportView = ref<'producer' | 'technical' | null>(null)
+const showingProducer = computed(
+  () => Boolean(producerReportMarkdown.value) && (reportView.value ?? 'producer') === 'producer',
+)
+function openBriefReport() {
+  reportView.value = 'producer'
+  tab.value = reportTab.value
+}
+function openDeliveredPackage() {
+  if (workflow.value?.stage === 'published' && workflow.value.packageId) emit('open', 'package', workflow.value.packageId)
+  else tab.value = 3
+}
 function downloadReport() {
-  saveBlob(new Blob([snapshot.value?.auto_report?.report_markdown || ''], {
+  const markdown = showingProducer.value
+    ? producerReportMarkdown.value
+    : snapshot.value?.auto_report?.report_markdown || ''
+  saveBlob(new Blob([markdown], {
     type: 'text/markdown;charset=utf-8',
   }), `report-${props.id}.md`)
 }
@@ -138,10 +187,10 @@ const solutionPresentation = computed(() => {
     }
   }
   if (solution.value.trial_ready && reportReady.value) {
-    return { label: '可试算并发布', tone: 'success', detail: '结构检查和报告交付均已就绪，确认信息后即可发布模型包。' }
+    return { label: '可试算并发布', tone: 'success', detail: '结构检查和报告交付均已就绪，确认信息后即可发布算法包。' }
   }
   if (solution.value.trial_ready) {
-    return { label: '可本地试算', tone: 'success', detail: '方案结构检查通过；报告交付完成后才能发布模型包。' }
+    return { label: '可本地试算', tone: 'success', detail: '方案结构检查通过；报告交付完成后才能发布算法包。' }
   }
   return {
     label: '需要处理',
@@ -205,7 +254,7 @@ function clearPoll() {
 async function load() {
   if (activeSnapshot || disposed) return
   const id = props.id
-  const section = tab.value === 1 ? 'data' : tab.value === 4 ? 'report' : 'overview'
+  const section = tab.value === 1 ? 'data' : tab.value === reportTab.value || tab.value === briefTab.value ? 'report' : 'overview'
   const sequence = ++loadSequence
   activeSnapshot = sequence
   try {
@@ -214,6 +263,7 @@ async function load() {
     const wasRunning = snapshot.value?.task?.status === 'running'
     snapshot.value = s
     error.value = ''
+    applyReport(s.auto_report)
     if (s.task.status === 'failed') {
       const key = `${id}:${s.task.updated_at}:${s.task.phase}`
       if (key !== recoveryKey) {
@@ -244,8 +294,22 @@ async function load() {
       error.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (activeSnapshot === sequence) activeSnapshot = 0
-    const currentSection = tab.value === 1 ? 'data' : tab.value === 4 ? 'report' : 'overview'
+    const currentSection = tab.value === 1 ? 'data' : tab.value === reportTab.value || tab.value === briefTab.value ? 'report' : 'overview'
     if (!disposed && id === props.id && currentSection !== section) void load()
+  }
+}
+async function loadBriefData() {
+  if (props.initialTab || disposed) return
+  const id = props.id
+  try {
+    const s = await request(`/tasks/${id}/snapshot?view=summary&section=report`, undefined, 'GET', {
+      timeoutMs: 25000,
+    })
+    if (disposed || id !== props.id) return
+    applyReport(s.auto_report)
+    if (task.value?.status === 'completed' && briefAvailable.value && tab.value === 0) tab.value = 4
+  } catch {
+    // 任务没有生产者版结论时不显示「结论与建议」。
   }
 }
 async function recheckRecovery() {
@@ -318,6 +382,7 @@ function onVisibilityChange() {
 onMounted(async () => {
   document.addEventListener('visibilitychange', onVisibilityChange)
   await load()
+  await loadBriefData()
   if (props.initialTab === 3) void inspectSolution()
   poll()
 })
@@ -355,11 +420,16 @@ watch(
     deliveryFrames.value = []
     pending.value = ''
     selected.value = ''
-    void load().then(poll)
+    reportView.value = null
+    producerReportMarkdown.value = ''
+    producerReportFacts.value = {}
+    producerReportText.value = {}
+    briefAvailable.value = false
+    void load().then(loadBriefData).then(poll)
   },
 )
 const actionNames: Record<string, string> = {
-  start: '启动研发任务',
+  start: '启动研究计划',
   resume: '恢复原实验',
   stop: '停止并保留进度',
   'start-automl': '从已有合同启动搜索',
@@ -456,13 +526,27 @@ async function publish() {
       output_description: output.value,
     })
     await refresh()
-    toast('模型包已发布，可以在决策对话中复用')
+    toast('算法包已发布，可以在对话中复用')
     emit('open', 'package', p.id)
   })
 }
 </script>
 <template>
   <div class="live-detail" v-if="task">
+    <div v-if="tab === briefTab" class="brief-bar">
+      <h2>{{ task.task_name }}</h2>
+      <span class="tag" :class="workflow?.tone">{{ workflow?.label }}</span>
+      <span class="brief-bar-gap"></span>
+      <button class="btn secondary small" @click="tab = 0">任务信息</button>
+      <button
+        v-if="workflow"
+        class="btn primary small"
+        @click="workflow.kind === 'delivery' ? (tab = 3) : emit('open', workflow.kind, workflow.packageId || task.id)"
+      >
+        {{ workflow.action }}
+      </button>
+    </div>
+    <template v-else>
     <ResourceStorage kind="tasks" :id="id" />
     <div class="detail-hero">
       <span class="hero-icon blue"><Icon name="branch" :size="28" /></span>
@@ -516,7 +600,7 @@ async function publish() {
     <section v-if="task.status === 'failed'" class="live-panel" aria-label="任务恢复">
       <h3>本次运行需要处理</h3>
       <p>{{ summarizeGoal(task.last_error || '运行未完成，请检查当前阶段后恢复。', 240) }}</p>
-      <p v-if="recoveryGate?.can_repair_review">已有任务材料可以就地修复。系统会保留历史记录，重新审查通过后继续研发。</p>
+      <p v-if="recoveryGate?.can_repair_review">已有任务材料可以就地修复。系统会保留历史记录，重新审查通过后继续研究。</p>
       <p v-else-if="recoveryGate && !recoveryGate.ready">{{ summarizeGoal(recoveryGate.detail, 320) }}</p>
       <p v-if="recoveryError" class="live-error" role="alert">恢复条件读取失败：{{ recoveryError }}</p>
       <div class="form-actions">
@@ -555,7 +639,7 @@ async function publish() {
           pending === 'stop'
             ? '尝试保留检查点；可恢复性以停止后后端返回为准。'
             : pending === 'rerun-autoreport'
-              ? '使用已有研发结果生成报告、交付说明与调用合同，产生模型 API 费用。'
+              ? '使用已有研究结果生成报告、交付说明与调用合同，产生模型 API 费用。'
               : '本操作会启动本地计算与已配置模型请求，可能产生 API 费用。恢复使用冻结的原配置。'
         }}
       </p>
@@ -639,18 +723,41 @@ async function publish() {
       </div>
     </section>
     <ResearchProgress :task="task" :nodes="nodes" :best-id="snapshot?.auto_ml?.best_node_id" />
+    </template>
     <nav class="live-tabs task-detail-tabs">
       <button v-for="(t, i) in tabs" :key="t" :class="{ active: tab === i }" @click="tab = i">
         {{ t }}
       </button>
     </nav>
     <template v-if="tab === 0"
-      ><EvaluationCriteria :evaluation="ar.evaluation" :requested="task.config.auto_ml.eval" />
+      ><section v-if="reuseDecision.action" class="live-panel">
+        <div class="panel-heading">
+          <h3>算法包复用</h3>
+          <span class="tag" :class="reuseDecision.action === 'normal' ? 'neutral' : 'success'">{{ reuseLabel }}</span>
+        </div>
+        <dl class="live-dl">
+          <template v-if="reuseDecision.package_id">
+            <dt>匹配包</dt>
+            <dd>{{ reuseDecision.package_id }}</dd>
+          </template>
+          <template v-if="reuseDecision.score !== null && reuseDecision.score !== undefined">
+            <dt>相似度</dt>
+            <dd>{{ reuseDecision.score }}</dd>
+          </template>
+          <dt>决策依据</dt>
+          <dd>{{ reuseDecision.reason || '—' }}</dd>
+          <template v-if="reuseDecision.estimated_saved_calls">
+            <dt>预计节省</dt>
+            <dd>{{ reuseDecision.estimated_saved_calls }} 次搜索动作</dd>
+          </template>
+        </dl>
+      </section>
+      <EvaluationCriteria :evaluation="ar.evaluation" :requested="task.config.auto_ml.eval" />
       <div class="live-grid two">
         <section class="live-panel">
           <h3>任务目标与资源</h3>
           <details class="task-requirements">
-            <summary>查看完整研发需求</summary>
+            <summary>查看完整研究需求</summary>
             <p>{{ task.config.auto_realize.task_hint || task.config.auto_ml.goal || '未填写额外目标' }}</p>
           </details>
           <dl class="live-dl">
@@ -717,7 +824,7 @@ async function publish() {
         <p v-else>数据概况将在分析完成后生成。</p>
       </section>
       <details class="live-panel developer-details" @toggle="loadDetails">
-        <summary>研发记录</summary>
+        <summary>研究记录</summary>
         <p v-if="detailsLoading" role="status">正在读取详情…</p>
         <p v-if="detailsError" class="live-error" role="alert">{{ detailsError }}</p>
         <details
@@ -902,7 +1009,7 @@ async function publish() {
           </div>
         </div>
         <p v-if="solutionLoading" role="status">{{ solutionChecked ? '正在复核；下方保留上次结果。' : '正在检查成果…' }}</p>
-        <p v-else-if="task.status === 'running'">研发完成后可以检查和试算成果。</p>
+        <p v-else-if="task.status === 'running'">研究完成后可以检查和试算成果。</p>
         <p v-else-if="solutionError" class="live-error" role="alert">{{ solutionChecked ? `重新检查失败，仍显示上次检查结果：${solutionError}` : solutionError }}</p>
         <p v-else-if="!solutionChecked">尚未检查成果。</p>
         <p v-for="issue in solution?.issues" :key="issue" class="hint">{{ issue }}</p>
@@ -937,7 +1044,7 @@ async function publish() {
         class="live-form live-panel"
         @submit.prevent="publish"
       >
-        <h3>发布算法模型包</h3>
+        <h3>发布算法包</h3>
         <label>能力名称<input v-model="publishName" required maxlength="120" /></label
         ><label
           >用途与适用范围<textarea
@@ -971,22 +1078,57 @@ async function publish() {
             v-model="reviewed"
             type="checkbox"
           />已核对方案、输入要求和验证结果，同意发布</label
-        ><button class="btn primary" :disabled="!reviewed || !!ui.busy">发布模型包</button>
+        ><button class="btn primary" :disabled="!reviewed || !!ui.busy">发布算法包</button>
       </form></template
     >
+    <template v-else-if="tab === briefTab">
+      <DecisionBrief
+        :facts="producerReportFacts"
+        :text="producerReportText"
+        :reuse="reuseDecision"
+        @open-report="openBriefReport"
+        @open-package="openDeliveredPackage"
+      />
+    </template>
     <template v-else
       ><section class="live-panel">
         <div class="panel-heading">
-          <h3>AutoReport 报告</h3>
+          <h3>{{ producerReportMarkdown ? '工作汇报' : 'AutoReport 报告' }}</h3>
           <button
-            v-if="snapshot?.auto_report?.report_markdown"
+            v-if="showingProducer || snapshot?.auto_report?.report_markdown"
             class="btn secondary small"
             @click="downloadReport"
           >
             下载报告
           </button>
         </div>
-        <MarkdownView v-if="snapshot?.auto_report?.report_markdown" :text="snapshot.auto_report.report_markdown" />
+        <div
+          v-if="producerReportMarkdown"
+          class="pill-tabs report-version-switch"
+          role="tablist"
+          aria-label="报告版本"
+        >
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="showingProducer"
+            :class="{ active: showingProducer }"
+            @click="reportView = 'producer'"
+          >
+            生产者版
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="!showingProducer"
+            :class="{ active: !showingProducer }"
+            @click="reportView = 'technical'"
+          >
+            技术版
+          </button>
+        </div>
+        <ProducerReport v-if="showingProducer" :markdown="producerReportMarkdown" :facts="producerReportFacts" />
+        <MarkdownView v-else-if="snapshot?.auto_report?.report_markdown" :text="snapshot.auto_report.report_markdown" />
         <p v-else>尚无报告正文。搜索完成后可生成或恢复报告。</p>
       </section>
       <details class="live-panel developer-details" @toggle="loadDetails">
@@ -1045,6 +1187,23 @@ async function publish() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.report-version-switch {
+  margin: 0 0 14px;
+}
+.brief-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 4px;
+}
+.brief-bar h2 {
+  margin: 0;
+  font-size: 19px;
+}
+.brief-bar-gap {
+  flex: 1;
 }
 .panel-subtitle {
   margin: 4px 0 0;

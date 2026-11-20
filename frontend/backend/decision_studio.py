@@ -56,6 +56,7 @@ latest 表示数据源最新观测时刻，不是现实现在。历史数据的�
 reply、reason、missing_inputs 是给使用者看的文字。reply 用一到三句直接说明建议和必要限制，reason 用一句话说明用途；使用模型包名称，不展示内部 ID、JSON、packages/catalog_total 等内部字段、函数接口、研发协议或程序类型。
 数据目录提供完整列名时直接核对；columns_limited=true 仅表示预览不完整，不代表数据缺列，不让用户重新罗列所有字段。缺少的技术细节留给 AutoRealize 检查；自动研发无需用户预先选定算法类型。
 只询问会改变任务含义的缺失业务条件；调用表单可以选择已有数据文件，不把“尚未选择文件”描述为项目缺数据。
+research_plans 是本对话所基于的研究计划及其已核对的结论、依据和建议。用户询问研究结论、原因、依据或下一步怎么做时，用 clarify，在 reply 中直接依据 research_plans 作答，并说明出自哪个研究计划；research_plans 没有的内容如实说明，不编造数字。
 不要输出隐藏推理过程；reply 和 reason 只给简明的业务依据与可核对证据。'''
 
 
@@ -349,6 +350,7 @@ class ImportTasks(BaseModel):
 
 class ConversationInput(BaseModel):
     project_id: str
+    task_ids: list[str] = Field(default_factory=list, max_length=8)
 
 
 class ChatInput(BaseModel):
@@ -1228,6 +1230,48 @@ def _unpublished_deliveries(g, linked_ids: set[str], published_task_ids: set[str
     return candidates
 
 
+def _research_text(task) -> dict[str, Any]:
+    """Producer-facing conclusions published next to a task's report, if any."""
+    if not getattr(task, "run_dir", None):
+        return {}
+    path = Path(task.run_dir) / "report" / "producer_text.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _research_headline(text: dict[str, Any]) -> str:
+    brief = text.get("brief") if isinstance(text.get("brief"), dict) else {}
+    return str(brief.get("headline") or text.get("headline") or "")[:120]
+
+
+def _research_plans_context(g, task_ids: list[str]) -> list[dict[str, Any]]:
+    """Conclusions of the research plans a conversation is based on."""
+    tasks = {task.id: task for task in g.store.list_tasks()}
+    plans = []
+    for task_id in task_ids:
+        task = tasks.get(task_id)
+        if task is None:
+            continue
+        text = _research_text(task)
+        findings = text.get("findings") if isinstance(text.get("findings"), list) else []
+        plans.append({
+            "task_name": str(task.task_name or "")[:160],
+            "goal": str(task.config.auto_ml.goal or task.config.auto_realize.task_hint or "")[:400],
+            "status": str(task.status or ""),
+            "headline": _research_headline(text),
+            "findings": [{k: str(f.get(k) or "")[:400] for k in ("title", "conclusion", "advice")}
+                         for f in findings[:6] if isinstance(f, dict)],
+            "early_warning": str(text.get("early_warning") or "")[:500],
+            "rules_summary": str(text.get("rules_summary") or "")[:500],
+            "reliability": str(text.get("reliability") or "")[:500],
+            "next_steps": [str(x)[:300] for x in (text.get("next_steps") or [])[:4]],
+        })
+    return plans
+
+
 def _project_cognition_context(g, project: dict[str, Any], linked_ids: set[str]) -> dict[str, Any]:
     """Read a small, local-only project memory view for planning new research."""
     tasks = []
@@ -1367,6 +1411,13 @@ def install(g):
         active_links = {row['id'] for row in result['links'] if row['project_id'] in active_ids}
         result['task_deliveries'] = {t['id']: task_delivery_overview(g, t, result['packages'])
                                      for t in result['tasks'] if t['id'] in active_links}
+        task_by_id = {t.id: t for t in all_tasks}
+        result['research_briefs'] = {}
+        for t in result['tasks']:
+            if t['id'] in active_links and t['id'] in task_by_id:
+                headline = _research_headline(_research_text(task_by_id[t['id']]))
+                if headline:
+                    result['research_briefs'][t['id']] = {'headline': headline}
         result['version'] = VERSION
         result['capabilities'] = ['decision_program']
         return result
@@ -1538,7 +1589,12 @@ def install(g):
     def create_conversation(payload: ConversationInput):
         with database(g) as db:
             db.get('projects', payload.project_id)
-            return db.put('conversations', dict(id=uid(), project_id=payload.project_id, title='新的决策对话', messages=[], created_at=stamp()))
+            linked = {l['id'] for l in db.rows('links') if l['project_id'] == payload.project_id}
+            task_ids = list(dict.fromkeys(payload.task_ids))
+            if any(task_id not in linked for task_id in task_ids):
+                raise HTTPException(400, '所选研究计划不属于这份项目数据')
+            return db.put('conversations', dict(id=uid(), project_id=payload.project_id, task_ids=task_ids,
+                                                title='新的对话', messages=[], created_at=stamp()))
 
     @app.post('/api/studio/conversations/{conversation_id}/messages')
     def chat(conversation_id: str, payload: ChatInput):
@@ -1621,7 +1677,8 @@ def install(g):
                     'catalog_total': len(cards), 'catalog_included': len(compact_cards),
                     'unpublished_deliveries': unpublished, 'input_snapshot_evidence': input_evidence,
                     'data_catalog': directory, 'history': history, 'selected_package_id': payload.package_id,
-                    'project_cognition': _project_cognition_context(g, project, linked_ids)}
+                    'project_cognition': _project_cognition_context(g, project, linked_ids),
+                    'research_plans': _research_plans_context(g, conv.get('task_ids') or [])}
                 model = g._selected_model(g.get_global_settings().llm, 'autoRealize')
                 _fit_planning_context(context, model)
                 plan, usage, model = request_plan(g, context, model)

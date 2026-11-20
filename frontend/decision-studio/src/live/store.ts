@@ -39,6 +39,7 @@ export interface Message {
 export interface Conversation {
   id: string
   project_id: string
+  task_ids?: string[]
   title: string
   messages: Message[]
   created_at?: number
@@ -149,6 +150,7 @@ export interface Workspace {
   tasks: Task[]
   links: { id: string; project_id: string }[]
   task_deliveries?: Record<string, DeliveryOverview>
+  research_briefs?: Record<string, { headline: string }>
 }
 export const state = reactive<Workspace>({
   version: '0.2.6',
@@ -160,7 +162,7 @@ export const state = reactive<Workspace>({
   tasks: [],
   links: [],
 })
-const pages = ['chat', 'projects', 'packages', 'tasks', 'invocations', 'storage', 'settings']
+const pages = ['notices', 'chat', 'projects', 'packages', 'tasks', 'invocations', 'storage', 'settings']
 export const ui = reactive({
   page: pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'projects',
   projectId: localStorage.getItem('studio.project') || '',
@@ -172,22 +174,23 @@ export const ui = reactive({
   loaded: false,
   mobile: false,
   packageId: '',
+  newChat: false,
+  newChatProjectId: '',
   chatMode: 'llm' as 'llm' | 'catalog',
   token: sessionStorage.getItem('studio.token') || '',
 })
 export const chatDrafts = reactive<Record<string, string>>({})
+// 项目数据只是数据库；当前对话所属的项目记在 ui.projectId，供对话和调用使用，不作为全局筛选。
 export const project = computed(() => state.projects.find((p) => p.id === ui.projectId))
-export const tasks = computed(() =>
-  state.tasks.filter((t) => state.links.some((l) => l.id === t.id && l.project_id === ui.projectId)),
-)
+export const taskProjectId = (taskId: string) =>
+  state.links.find((l) => l.id === taskId && state.projects.some((p) => p.id === l.project_id))?.project_id || ''
+export const tasks = computed(() => state.tasks.filter((t) => taskProjectId(t.id)))
 export const packages = computed(() => state.packages.filter((p) => p.project_id === ui.projectId))
 export const conversations = computed(() =>
-  state.conversations
-    .filter((c) => c.project_id === ui.projectId)
-    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0) || a.id.localeCompare(b.id)),
+  [...state.conversations].sort((a, b) => (a.created_at || 0) - (b.created_at || 0) || a.id.localeCompare(b.id)),
 )
 export const conversation = computed(() => conversations.value.find((c) => c.id === ui.conversationId))
-export const invocations = computed(() => state.invocations.filter((i) => i.project_id === ui.projectId))
+export const invocations = computed(() => state.invocations)
 export const unassigned = computed(() => state.tasks.filter((t) => !state.links.some((l) => l.id === t.id)))
 export const apiBase = (import.meta.env.VITE_AUTODECISION_API_BASE || '/api').replace(/\/$/, '')
 export function headers() {
@@ -280,33 +283,42 @@ window.addEventListener('hashchange', () => {
   if (pages.includes(page)) ui.page = page
 })
 function rememberedConversation() {
-  const remembered = localStorage.getItem(`studio.conversation.${ui.projectId}`)
-  return conversations.value.find((item) => item.id === remembered)?.id || conversations.value[0]?.id || ''
+  const remembered = localStorage.getItem('studio.conversation')
+  const id = conversations.value.find((item) => item.id === remembered)?.id || conversations.value.at(-1)?.id || ''
+  const owner = conversations.value.find((item) => item.id === id)?.project_id
+  if (owner) ui.projectId = owner
+  return id
 }
 export function selectConversation(id: string) {
-  if (!conversations.value.some((item) => item.id === id)) return
+  const item = conversations.value.find((row) => row.id === id)
+  if (!item) return
   ui.conversationId = id
+  ui.projectId = item.project_id
   ui.packageId = ''
-  localStorage.setItem(`studio.conversation.${ui.projectId}`, id)
+  localStorage.setItem('studio.conversation', id)
 }
 export function selectProject(id: string) {
   ui.projectId = id
   localStorage.setItem('studio.project', id)
-  ui.conversationId = rememberedConversation()
+  if (conversation.value?.project_id !== id)
+    ui.conversationId = conversations.value.filter((c) => c.project_id === id).at(-1)?.id || ''
   ui.packageId = ''
 }
-export async function newConversation() {
-  if (!project.value) return
+export function openNewConversation(projectId = '') {
+  ui.newChatProjectId = projectId
+  ui.newChat = true
+}
+export async function newConversation(projectId = ui.projectId, taskIds: string[] = []) {
+  if (!state.projects.some((p) => p.id === projectId)) return
   navigate('chat')
   await run('conversation', async () => {
-    const c = await request<Conversation>('/studio/conversations', { project_id: ui.projectId })
-    state.conversations.unshift(c)
+    const c = await request<Conversation>('/studio/conversations', { project_id: projectId, task_ids: taskIds })
+    state.conversations.push(c)
     selectConversation(c.id)
   })
 }
 export async function usePackage(p: Package) {
-  selectProject(p.project_id)
-  await newConversation()
+  await newConversation(p.project_id, taskProjectId(p.task_id) === p.project_id ? [p.task_id] : [])
   ui.packageId = p.id
 }
 export function date(value: unknown) {

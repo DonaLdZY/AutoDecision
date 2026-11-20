@@ -67,8 +67,8 @@ describe('workspace refresh after conversation changes', () => {
   })
 })
 
-describe('project scoped conversation tabs', () => {
-  it('keeps tab order fixed as messages update and remembers the selected tab per project', async () => {
+describe('conversations across project data', () => {
+  it('keeps tab order fixed and follows the project of the selected conversation', async () => {
     const saved = new Map<string, string>()
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => saved.get(key) || '',
@@ -80,18 +80,19 @@ describe('project scoped conversation tabs', () => {
       { id: 'a', project_id: 'one', title: 'A', messages: [], created_at: 1, updated_at: 10 },
       { id: 'c', project_id: 'two', title: 'C', messages: [], created_at: 3 },
     ]
-    selectProject('one')
-    expect(conversations.value.map((item) => item.id)).toEqual(['a', 'b'])
+    expect(conversations.value.map((item) => item.id)).toEqual(['a', 'b', 'c'])
     selectConversation('b')
     state.conversations[1]!.updated_at = 500
-    expect(conversations.value.map((item) => item.id)).toEqual(['a', 'b'])
-    selectProject('two')
-    expect(conversations.value.map((item) => item.id)).toEqual(['c'])
-    expect(ui.conversationId).toBe('c')
-    selectConversation('a')
-    expect(ui.conversationId).toBe('c')
+    expect(conversations.value.map((item) => item.id)).toEqual(['a', 'b', 'c'])
+    expect(ui.projectId).toBe('one')
+    selectConversation('c')
+    expect(ui.projectId).toBe('two')
+    expect(saved.get('studio.conversation')).toBe('c')
     selectProject('one')
     expect(ui.conversationId).toBe('b')
+    selectConversation('a')
+    selectProject('one')
+    expect(ui.conversationId).toBe('a')
     expect(saved.get('studio.project')).toBe('one')
   })
   it('opens project data when no page was requested', async () => {

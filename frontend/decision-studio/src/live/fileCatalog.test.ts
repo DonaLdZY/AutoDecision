@@ -21,7 +21,7 @@ describe('project file catalog labels', () => {
   it('reports only the file information the catalog actually reads', () => {
     expect(catalogReadState(entry('sales.csv', { columns: ['date', 'sales'] }))).toEqual({
       label: '2 个字段',
-      detail: '可用于研发数据预览',
+      detail: '可用于研究数据预览',
       tone: 'read',
     })
     expect(catalogReadState(entry('sales.csv'))).toEqual({

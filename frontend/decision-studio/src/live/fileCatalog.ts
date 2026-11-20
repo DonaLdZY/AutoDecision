@@ -56,7 +56,7 @@ export function catalogReadState(entry: CatalogEntry): {
     return { label: '字段名读取失败', detail: entry.header_error, tone: 'warning' }
   }
   if (entry.columns.length) {
-    return { label: `${entry.columns.length} 个字段`, detail: '可用于研发数据预览', tone: 'read' }
+    return { label: `${entry.columns.length} 个字段`, detail: '可用于研究数据预览', tone: 'read' }
   }
   return { label: '未发现字段名', detail: '', tone: 'quiet' }
 }

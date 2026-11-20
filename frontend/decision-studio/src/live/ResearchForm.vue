@@ -22,6 +22,7 @@ const goal = ref(props.goal || ''),
   memory = ref(8),
   report = ref(true),
   reportMinutes = ref(20),
+  reuseMode = ref<'auto' | 'hot_start_only' | 'off'>('auto'),
   webResearch = ref(false),
   webResearchQuery = ref('')
 const projectId = ref(ui.projectId),
@@ -125,7 +126,7 @@ async function pickData() {
   await run('research-data-directory', async () => {
     const result = await request('/fs/pick-directory', {
       initial_path: inputRoot.value,
-      title: '选择一个研发数据包目录',
+      title: '选择一个研究数据包目录',
     })
     if (result.ok) inputRoot.value = result.path
   })
@@ -147,6 +148,7 @@ async function create() {
         steps: steps.value,
         time_limit_secs: minutes.value * 60,
         parallel_search_num: 1,
+        reuse_package_mode: reuseMode.value,
         memory_embedding_device: 'cpu',
         web_research_enabled: webResearch.value,
         web_research_query: webResearch.value ? webResearchQuery.value.trim() : '',
@@ -168,7 +170,7 @@ async function create() {
       </select></label
     >
     <section class="live-panel research-data-panel">
-      <h3>本次研发数据包 · 单目录</h3>
+      <h3>本次研究数据包 · 单目录</h3>
       <label>数据包目录<input v-model="inputRoot" required placeholder="所选项目内的一个数据目录" /></label>
       <div class="form-actions">
         <button type="button" class="btn secondary small" :disabled="!!ui.busy" @click="pickData">
@@ -183,11 +185,11 @@ async function create() {
         </button>
       </div>
       <p class="hint">
-        仅将所选目录及其子目录作为本次研发输入。其他数据包不会合并；所需说明和辅助文件请一并放入该目录。
+        仅将所选目录及其子目录作为本次研究输入。其他数据包不会合并；所需说明和辅助文件请一并放入该目录。
       </p>
       <p v-if="loading" role="status">正在读取数据包…</p>
       <p v-if="dataError" class="live-error" role="alert">{{ dataError }}</p>
-      <div v-if="preview" class="research-data-preview" aria-label="研发数据包文件预览">
+      <div v-if="preview" class="research-data-preview" aria-label="研究数据包文件预览">
         <span v-for="f in preview.files" :key="f.name" class="tag neutral"
           >{{ f.is_dir ? '目录 / ' : '' }}{{ f.name }}</span
         >
@@ -196,19 +198,19 @@ async function create() {
       </div>
     </section>
     <div class="form-heading-row">
-      <span class="eyebrow">研发简报</span>
+      <span class="eyebrow">研究简报</span>
       <button
         type="button"
         class="btn secondary small"
         :disabled="polishing || !goal.trim() || !preview || !!dataError || loading"
         @click="polish"
       >
-        {{ polishing ? '正在优化…' : 'AI 优化研发需求' }}
+        {{ polishing ? '正在优化…' : 'AI 优化研究需求' }}
       </button>
     </div>
     <label
       >任务名称<input v-model="name" required maxlength="80" placeholder="例如：逐门架车流预测改进" /></label
-    ><label>研发目标<textarea v-model="goal" required rows="5" /></label
+    ><label>研究目标<textarea v-model="goal" required rows="5" /></label
     ><label
       >评价标准<textarea v-model="metric" rows="2" placeholder="指标、时间切分、基线及验收阈值" />
     </label>
@@ -217,7 +219,7 @@ async function create() {
     <section v-if="suggestion" class="optimization-review" aria-label="AI 优化建议">
       <div class="optimization-heading"><div><span class="eyebrow">候选稿 · {{ suggestion.model }}</span><h3>核对优化建议</h3></div><button type="button" class="text-btn" @click="suggestion = null">放弃</button></div>
       <p class="hint">选择要应用的内容。原有硬约束会保留；请核对新增内容和待确认事项。</p>
-      <div v-for="field in ([['title', '任务名称', name], ['goal', '研发目标', goal], ['evaluation', '评价标准', metric], ['constraints', '硬约束', constraints]] as const)" :key="field[0]" class="optimization-field">
+      <div v-for="field in ([['title', '任务名称', name], ['goal', '研究目标', goal], ['evaluation', '评价标准', metric], ['constraints', '硬约束', constraints]] as const)" :key="field[0]" class="optimization-field">
         <label class="optimization-field-title"><input v-model="useSuggestion[field[0]]" type="checkbox" />{{ field[1] }}</label>
         <div class="optimization-compare"><div><span>当前</span><p>{{ field[2] || '未填写' }}</p></div><div><span>建议</span><p>{{ field[0] === 'constraints' ? suggestion.constraints.join('\n') || '无新增建议' : suggestion[field[0]] || '未提供' }}</p></div></div>
       </div>
@@ -238,11 +240,16 @@ async function create() {
         <label>搜索动作上限<input v-model.number="steps" type="number" min="1" max="500" required /></label>
         <label>CPU 核数<input v-model.number="cpu" type="number" min="1" required /></label>
         <label>内存（GiB）<input v-model.number="memory" type="number" min="1" required /></label>
+        <label>复用算法包<select v-model="reuseMode" aria-label="复用算法包">
+          <option value="auto">自动（直接复用或热启动）</option>
+          <option value="hot_start_only">只允许热启动</option>
+          <option value="off">关闭</option>
+        </select></label>
         <label v-if="report">报告单次请求时限（分钟）<input v-model.number="reportMinutes" type="number" min="1" max="60" required /></label>
       </div>
     </details>
     <label class="check-line"><input v-model="report" type="checkbox" />搜索后生成报告与交付包</label>
-    <p class="hint">研发结束后，任务页会提示交付与发布的下一步；成果发布后才能由决策对话直接调用。</p>
+    <p class="hint">研究结束后，任务页会提示交付与发布的下一步；成果发布后才能由对话直接调用。</p>
     <label class="check-line"><input v-model="webResearch" type="checkbox" />检索公开方法资料</label>
     <div v-if="webResearch" class="web-research-fields">
       <label
@@ -273,7 +280,7 @@ async function create() {
       class="btn primary"
       :disabled="!!ui.busy || !selectedProject || !preview || !!dataError || loading || polishing || !!webResearchQueryError"
     >
-      保存研发草稿
+      保存研究草稿
     </button>
   </form>
 </template>

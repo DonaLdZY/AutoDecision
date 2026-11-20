@@ -41,7 +41,7 @@ describe('invocation blocking guidance', () => {
     expect(invocationBlockers([input], ['other'])).toHaveLength(1)
   })
   it('explains unavailable packages, empty CSV input and broken JSON', () => {
-    expect(invocationBlockers([{ ...step(), input_mode: 'csv' }], [])[0]).toContain('模型包已不可用')
+    expect(invocationBlockers([{ ...step(), input_mode: 'csv' }], [])[0]).toContain('算法包已不可用')
     expect(invocationBlockers([{ ...step(), input_mode: 'csv' }], ['pkg'])[0]).toContain('CSV')
     expect(invocationBlockers([{ ...step(), input_mode: 'json', data_json: '{broken' }], ['pkg'])[0]).toContain('有效 JSON')
   })

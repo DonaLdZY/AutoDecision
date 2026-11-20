@@ -293,10 +293,14 @@ export interface SnapshotPayload {
     events?: Record<string, unknown>[]
     report?: Record<string, unknown>
     report_markdown?: string
+    producer_report_markdown?: string
+    producer_report_facts?: Record<string, unknown>
+    producer_report_text?: Record<string, unknown>
     resolved_config?: Record<string, unknown>
     stdout?: string
     stderr?: string
   }
+  reuse_decision?: Record<string, unknown>
 }
 
 export interface AutoMLReadiness {

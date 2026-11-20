@@ -54,7 +54,7 @@ async function showTechnical(event: Event) {
 }
 function packageName(id: unknown) {
   const pkg = state.packages.find(p => p.id === id)
-  return pkg?.name || '模型包'
+  return pkg?.name || '算法包'
 }
 function resultCount(value: unknown): string {
   if (Array.isArray(value)) return `${value.length} 项结果`
@@ -71,10 +71,10 @@ function resultCount(value: unknown): string {
       <p>本次失败记录会保留。重新选择输入并确认后，将创建新的调用记录。</p>
       <div class="form-actions">
         <button v-if="canRetry && !retrying" class="btn primary small" @click="retry">重新核对输入并调用</button>
-        <button class="btn secondary small" @click="emit('navigate', 'packages')">查看模型包与使用要求</button>
+        <button class="btn secondary small" @click="emit('navigate', 'packages')">查看算法包与使用要求</button>
         <button class="btn secondary small" @click="emit('navigate', 'settings')">检查运行设置</button>
       </div>
-      <p v-if="!canRetry" class="hint">原调用中的模型包已不可用，请在模型包目录选择可用版本。</p>
+      <p v-if="!canRetry" class="hint">原调用中的算法包已不可用，请在算法包目录选择可用版本。</p>
       <InvokeForm v-if="retrying && canRetry" :package-ids="data.package_ids" @done="id => emit('open', 'invocation', id)" />
     </section>
     <section class="live-panel">

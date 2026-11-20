@@ -10,7 +10,7 @@ const rows = ref<ConversationSummary[]>([]),
   loading = ref(true),
   error = ref(''),
   query = ref('')
-const projectId = ref(ui.projectId),
+const projectId = ref(''),
   selected = ref(new Set<string>())
 let sequence = 0
 const projects = computed(() => [...state.projects, ...state.archived_projects])

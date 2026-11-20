@@ -35,6 +35,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from replay import ReplayRecorder, bundle as build_replay_bundle, project as project_replay, read_events
 from report_recovery import validate_report_recovery
 from snapshot_reads import json_artifact, text_artifact
+import algorithm_library
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -427,6 +428,16 @@ class AutoMLConfigPayload(BaseModel):
     web_research_fetch_timeout_seconds: float = Field(default=8.0, ge=1, le=10)
     web_research_max_results: int = Field(default=3, ge=1, le=5)
     web_research_max_context_chars: int = Field(default=2800, ge=400, le=6000)
+    # Reuse a distilled algorithm package when a new task's signature matches.
+    reuse_package_mode: Literal["auto", "hot_start_only", "off"] = "auto"
+    reuse_direct_threshold: float = Field(default=0.85, ge=0, le=1)
+    reuse_hot_start_threshold: float = Field(default=0.6, ge=0, le=1)
+    reuse_score_tolerance: float = Field(default=0.10, ge=0, le=1)
+    reuse_hot_start_step_ratio: float = Field(default=0.30, ge=0.05, le=1)
+    reuse_field_weight: float = Field(default=0.5, ge=0, le=1)
+    reuse_range_weight: float = Field(default=0.25, ge=0, le=1)
+    reuse_row_weight: float = Field(default=0.15, ge=0, le=1)
+    reuse_positive_weight: float = Field(default=0.10, ge=0, le=1)
 
 
 class AutoReportConfigPayload(BaseModel):
@@ -3016,6 +3027,16 @@ def _build_algoevolve_command(
     feedback_max_tokens = _model_max_tokens_cli(feedback_model)
     cmd.append(f"agent.code.max_tokens={code_max_tokens}")
     cmd.append(f"agent.feedback.max_tokens={feedback_max_tokens}")
+    try:
+        reuse = safe_read_json(Path(task.run_dir) / "reuse_decision.json", {}) if task.run_dir else {}
+        hot = reuse.get("hot_start") if isinstance(reuse, dict) and reuse.get("action") == "hot_start" else None
+        if isinstance(hot, dict) and hot.get("task_json_path") and hot.get("model_json_path"):
+            cmd.append("coldstart.use_coldstart=true")
+            cmd.append(f"coldstart.task_json_path={_as_cli_str(hot['task_json_path'])}")
+            cmd.append(f"coldstart.model_json_path={_as_cli_str(hot['model_json_path'])}")
+            cmd.append(f"agent.steps={max(1, int(hot.get('steps') or am.steps))}")
+    except Exception:
+        logging.getLogger(__name__).exception("Could not apply algorithm package hot start for task %s", task.id)
     return cmd
 
 
@@ -3797,20 +3818,33 @@ def _start_task_thread(task_id: str) -> None:
         if not ok_ar:
             return
 
-        ok = _run_automl_stage(
-            task_id=task_id,
-            task=task,
-            gs=gs,
-            autorealize_dir=autorealize_dir,
-            automl_logs_root=automl_logs_root,
-            automl_workspaces_root=automl_workspaces_root,
-            exp_name=ml_exp_name,
-            ml_log_dir=ml_log_dir,
-            ml_ws_dir=ml_ws_dir,
-            env=env,
-            algoevolve_service_base=algoevolve_base,
-            req_timeout=req_timeout,
-        )
+        task = store.get(task_id)
+        reuse_action = _apply_package_reuse(task, autorealize_dir, ml_log_dir, ml_ws_dir)
+        if reuse_action == "direct":
+            store.set_status(
+                task_id,
+                status="running",
+                phase="automl_completed",
+                auto_ml_log_dir=str(ml_log_dir),
+                auto_ml_workspace_dir=str(ml_ws_dir),
+                last_error=None,
+            )
+            ok = True
+        else:
+            ok = _run_automl_stage(
+                task_id=task_id,
+                task=task,
+                gs=gs,
+                autorealize_dir=autorealize_dir,
+                automl_logs_root=automl_logs_root,
+                automl_workspaces_root=automl_workspaces_root,
+                exp_name=ml_exp_name,
+                ml_log_dir=ml_log_dir,
+                ml_ws_dir=ml_ws_dir,
+                env=env,
+                algoevolve_service_base=algoevolve_base,
+                req_timeout=req_timeout,
+            )
         if not ok:
             return
 
@@ -3838,6 +3872,7 @@ def _start_task_thread(task_id: str) -> None:
             return
 
         store.set_status(task_id, status="completed", phase="completed")
+        _distill_algorithm_package(task_id)
     except HTTPException as e:
         # Background thread exceptions were previously swallowed by Python's
         # threading runtime; surface them in task status for the UI.
@@ -3846,6 +3881,71 @@ def _start_task_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="start_failed", last_error=msg)
     except Exception as e:
         store.set_status(task_id, status="failed", phase="start_failed", last_error=f"任务启动异常: {e}")
+
+
+def _app_version() -> str:
+    try:
+        return (APP_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _distill_algorithm_package(task_id: str) -> None:
+    """Persist a reusable package card without letting failures affect completion."""
+
+    def worker() -> None:
+        try:
+            task = store.get(task_id)
+            algorithm_library.distill_task_package(task, version=_app_version())
+        except Exception:
+            logging.getLogger(__name__).exception("Algorithm package distillation failed for task %s", task_id)
+
+    threading.Thread(target=worker, name=f"package-card-{task_id}", daemon=True).start()
+
+
+def _apply_package_reuse(task: TaskModel, autorealize_dir: Path, ml_log_dir: Path, ml_ws_dir: Path) -> str:
+    """Return direct / hot / normal for the upcoming AutoML stage."""
+    if not autorealize_dir.is_dir():
+        return "normal"
+    try:
+        decision = algorithm_library.decide_reuse(task, autorealize_dir)
+    except Exception:
+        logging.getLogger(__name__).exception("Algorithm package matching failed for task %s", task.id)
+        return "normal"
+    action = str(decision.get("action") or "normal")
+    if action == "direct_reuse":
+        card = next(
+            (row for row in algorithm_library.load_cards() if row.get("package_id") == decision.get("package_id")),
+            None,
+        )
+        if card is None:
+            return "normal"
+        result = algorithm_library.run_direct_reuse(
+            card,
+            task,
+            autorealize_dir,
+            ml_ws_dir,
+            ml_log_dir,
+            float(decision.get("thresholds", {}).get("score_tolerance", 0.10)),
+        )
+        if result.get("ok"):
+            decision["result"] = result
+            algorithm_library.write_json(Path(task.run_dir) / "reuse_decision.json", decision)
+            return "direct"
+        decision["action"] = "hot_start"
+        decision["reason"] = f"{decision.get('reason')}；直接复用降级：{result.get('reason')}"
+        decision["direct_reuse_error"] = result.get("reason")
+        hot = algorithm_library.prepare_hot_start(
+            decision,
+            Path(card["_package_dir"]) / "solution",
+            Path(task.run_dir),
+            task.config.auto_ml,
+        )
+        decision["hot_start"] = hot
+        decision["estimated_saved_calls"] = max(0, int(task.config.auto_ml.steps) - int(hot["steps"]))
+        algorithm_library.write_json(Path(task.run_dir) / "reuse_decision.json", decision)
+        return "hot"
+    return "hot" if action == "hot_start" else "normal"
 
 
 def _run_automl_stage(
@@ -4238,6 +4338,7 @@ def _monitor_recovered_automl_job(
         report_dir=str(layout["report_dir"]),
         last_error=None,
     )
+    _distill_algorithm_package(task_id)
 
 
 def _recover_persisted_automl_jobs() -> None:
@@ -4590,6 +4691,7 @@ def _rerun_autoreport_thread(task_id: str, checkpoint_task: TaskModel | None = N
         if not ok:
             return
         store.set_status(task_id, status="completed", phase="report_completed", report_dir=str(report_dir), last_error=None)
+        _distill_algorithm_package(task_id)
     except HTTPException as e:
         detail = getattr(e, "detail", None)
         msg = str(detail) if detail is not None else str(e)
@@ -4936,6 +5038,7 @@ def _resume_task_thread(task_id: str, checkpoint_task: TaskModel | None = None) 
             if not ok_report:
                 return
             store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
+            _distill_algorithm_package(task_id)
             return
 
     resume_log_dir = Path(task.auto_ml_log_dir).expanduser().resolve() if task.auto_ml_log_dir else None
@@ -4975,22 +5078,34 @@ def _resume_task_thread(task_id: str, checkpoint_task: TaskModel | None = None) 
         auto_ml_workspace_dir=str(ml_ws_dir),
         last_error=None,
     )
-    ok = _run_automl_stage(
-        task_id=task_id,
-        task=task,
-        gs=gs,
-        autorealize_dir=autorealize_dir,
-        automl_logs_root=automl_logs_root,
-        automl_workspaces_root=automl_workspaces_root,
-        exp_name=exp_name,
-        ml_log_dir=ml_log_dir,
-        ml_ws_dir=ml_ws_dir,
-        env=env,
-        algoevolve_service_base=algoevolve_base,
-        req_timeout=req_timeout,
-        resume_existing=can_resume_automl,
-        append_resume_budget=can_resume_automl and resume_from_completed,
-    )
+    reuse_action = "normal" if can_resume_automl else _apply_package_reuse(task, autorealize_dir, ml_log_dir, ml_ws_dir)
+    if reuse_action == "direct":
+        ok = True
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl_completed",
+            auto_ml_log_dir=str(ml_log_dir),
+            auto_ml_workspace_dir=str(ml_ws_dir),
+            last_error=None,
+        )
+    else:
+        ok = _run_automl_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_logs_root=automl_logs_root,
+            automl_workspaces_root=automl_workspaces_root,
+            exp_name=exp_name,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            env=env,
+            algoevolve_service_base=algoevolve_base,
+            req_timeout=req_timeout,
+            resume_existing=can_resume_automl,
+            append_resume_budget=can_resume_automl and resume_from_completed,
+        )
     if not ok:
         return
     ok_report = _run_report_stage(
@@ -5008,6 +5123,7 @@ def _resume_task_thread(task_id: str, checkpoint_task: TaskModel | None = None) 
     if not ok_report:
         return
     store.set_status(task_id, status="completed", phase="completed", run_dir=str(run_dir), last_error=None)
+    _distill_algorithm_package(task_id)
 
 
 def _open_directory(path: Path) -> tuple[bool, str | None]:
@@ -5790,6 +5906,10 @@ def _build_local_report_snapshot(task: TaskModel) -> dict[str, Any]:
         "event_stream_path": str(report_dir / event_name),
         "report": safe_read_json(report_dir / report_json_name, {}),
         "report_markdown": (report_dir / report_md_name).read_text(encoding="utf-8", errors="ignore") if (report_dir / report_md_name).exists() else "",
+        # Optional business-facing view written next to the technical report.
+        "producer_report_markdown": (report_dir / "producer_report.md").read_text(encoding="utf-8", errors="ignore") if (report_dir / "producer_report.md").exists() else "",
+        "producer_report_facts": safe_read_json(report_dir / "producer_facts.json", {}),
+        "producer_report_text": safe_read_json(report_dir / "producer_text.json", {}),
         "resolved_config": resolved,
         "stdout": safe_read_text_tail(report_dir / "_service_stdout.log", limit=text_tail),
         "stderr": safe_read_text_tail(report_dir / "_service_stderr.log", limit=text_tail),
@@ -5862,7 +5982,7 @@ def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
     gs = get_global_settings()
     _ar_base, _algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
     try:
-        return _json_post(
+        snapshot = _json_post(
             report_base,
             "/snapshot",
             {"output_dir": report_dir},
@@ -5874,6 +5994,16 @@ def _read_report_snapshot(task: TaskModel) -> dict[str, Any]:
         if local:
             return local
         raise
+    # The AutoReport service does not know about the optional business-facing view;
+    # Gateway reads it from the same report directory so both snapshot paths expose it.
+    if isinstance(snapshot, dict) and "producer_report_markdown" not in snapshot:
+        producer_path = Path(report_dir).expanduser().resolve() / "producer_report.md"
+        snapshot["producer_report_markdown"] = (
+            producer_path.read_text(encoding="utf-8", errors="ignore") if producer_path.exists() else ""
+        )
+        snapshot["producer_report_facts"] = safe_read_json(producer_path.with_name("producer_facts.json"), {})
+        snapshot["producer_report_text"] = safe_read_json(producer_path.with_name("producer_text.json"), {})
+    return snapshot
 
 
 def _pick_dir_tkinter(initial_path: str, title: str) -> tuple[str | None, str]:
@@ -6887,13 +7017,18 @@ def task_snapshot(task_id: str, view: Literal["full", "summary"] = "full",
         "auto_ml": ml,
         "auto_report": report,
         "automl_readiness": automl_readiness,
+        "reuse_decision": safe_read_json(Path(getattr(task, "run_dir", "") or "") / "reuse_decision.json", {}) if getattr(task, "run_dir", "") else {},
         "snapshot_errors": snapshot_errors,
     }
 
 
 def _task_summary_snapshot(task: TaskModel, *, section: str = "overview") -> dict[str, Any]:
     """Shared-filesystem overview with no Core RPC or developer artifact reads."""
-    result: dict[str, Any] = {"task": task.model_dump(), "snapshot_errors": {}}
+    result: dict[str, Any] = {
+        "task": task.model_dump(),
+        "reuse_decision": safe_read_json(Path(getattr(task, "run_dir", "") or "") / "reuse_decision.json", {}) if getattr(task, "run_dir", "") else {},
+        "snapshot_errors": {},
+    }
     for key, builder in (
         ("auto_realize", _build_local_autorealize_snapshot),
         ("auto_ml", _build_local_automl_snapshot),
@@ -6918,6 +7053,9 @@ def _task_summary_snapshot(task: TaskModel, *, section: str = "overview") -> dic
             generation, runtime = resolved.get("generation") or {}, resolved.get("runtime") or {}
             result["auto_report"] = {
                 "report_markdown": text_artifact(directory / str(generation.get("report_markdown_filename") or "report.md")),
+                "producer_report_markdown": text_artifact(directory / "producer_report.md"),
+                "producer_report_facts": safe_read_json(directory / "producer_facts.json", {}),
+                "producer_report_text": safe_read_json(directory / "producer_text.json", {}),
             }
     except Exception as exc:
         result["auto_report"] = {}

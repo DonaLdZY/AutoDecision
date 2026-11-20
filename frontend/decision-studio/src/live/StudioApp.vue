@@ -4,7 +4,7 @@ import Icon from '../components/Icon.vue'
 import Chat from './Chat.vue'
 import ConversationHistory from './ConversationHistory.vue'
 import ConversationActionDialog from './ConversationActionDialog.vue'
-import { conversationAction, conversationHistory } from './conversationManagement'
+import { conversationAction, conversationHistory, openConversationHistory } from './conversationManagement'
 import Projects from './Projects.vue'
 import Packages from './Packages.vue'
 import Tasks from './Tasks.vue'
@@ -17,14 +17,18 @@ import TaskDetail from './TaskDetail.vue'
 import PackageDetail from './PackageDetail.vue'
 import Modal from './Modal.vue'
 import ResearchForm from './ResearchForm.vue'
+import Notices from './Notices.vue'
+import NewConversation from './NewConversation.vue'
+import { unreadNotices } from './notices'
 import { formatDuration } from './presentation'
-import { taskWorkflow } from './taskWorkflow'
 import {
   state,
   ui,
-  project,
   invocations,
   tasks,
+  conversations,
+  selectConversation,
+  openNewConversation,
   unassigned,
   request,
   refresh,
@@ -40,19 +44,50 @@ import './storage.css'
 import './conversations.css'
 const nav = [
   { id: 'projects', label: '项目数据', icon: 'database' },
-  { id: 'tasks', label: '研发任务', icon: 'branch' },
-  { id: 'packages', label: '算法模型包', icon: 'package' },
-  { id: 'chat', label: '决策对话', icon: 'chat' },
+  { id: 'tasks', label: '研究计划', icon: 'branch' },
+  { id: 'packages', label: '算法包', icon: 'package' },
+  { id: 'chat', label: '对话', icon: 'chat' },
   { id: 'invocations', label: '调用记录', icon: 'history' },
   { id: 'storage', label: '本地存储', icon: 'folder' },
 ]
-const title = computed(() => nav.find((n) => n.id === ui.page)?.label || '工作空间设置')
+const title = computed(() =>
+  ui.page === 'notices' ? '研究通知' : nav.find((n) => n.id === ui.page)?.label || '工作空间设置',
+)
 const hasActiveWork = computed(
   () =>
     state.tasks.some((task) => task.status === 'running') ||
     state.invocations.some((invocation) => invocation.status === 'running'),
 )
-const pendingDeliveries = computed(() => tasks.value.filter(task => taskWorkflow(task, state.task_deliveries?.[task.id]).pendingDelivery))
+// 侧栏「对话」：按项目数据分文件夹，最近活跃的文件夹和对话排在前面；折叠状态记在本机。
+const FOLDER_LIMIT = 6
+const collapsed = ref(new Set<string>(JSON.parse(localStorage.getItem('studio.chat.collapsed') || '[]') as string[]))
+const activity = (c: { created_at?: number; updated_at?: number }) => c.updated_at || c.created_at || 0
+const chatFolders = computed(() =>
+  state.projects
+    .map((p) => {
+      const items = conversations.value.filter((c) => c.project_id === p.id).sort((a, b) => activity(b) - activity(a))
+      return { project: p, items, latest: items.length ? activity(items[0]!) : 0 }
+    })
+    .filter((folder) => folder.items.length)
+    .sort((a, b) => b.latest - a.latest),
+)
+function toggleFolder(id: string) {
+  const next = new Set(collapsed.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  collapsed.value = next
+  localStorage.setItem('studio.chat.collapsed', JSON.stringify([...next]))
+}
+function openChat(id: string) {
+  selectConversation(id)
+  navigate('chat')
+}
+function onShortcut(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && state.projects.length) {
+    event.preventDefault()
+    openNewConversation()
+  }
+}
 const detail = ref<{ kind: string; id: string } | null>(null)
 watch(storageRevision, () => {
   detail.value = null
@@ -111,8 +146,9 @@ function open(kind: string, id: string) {
     researchOpen.value = true
     return
   }
-  taskTab.value = kind === 'delivery' ? 3 : 0
-  detail.value = { kind: kind === 'delivery' ? 'task' : kind, id }
+  // report：直达研究结论；有结论页时任务详情默认打开它，没有就打开工作汇报（第 5 个标签）。
+  taskTab.value = kind === 'delivery' ? 3 : kind === 'report' && !state.research_briefs?.[id] ? 4 : 0
+  detail.value = { kind: kind === 'delivery' || kind === 'report' ? 'task' : kind, id }
 }
 function navigateFromDetail(page: string) {
   detail.value = null
@@ -147,6 +183,7 @@ function onVisibilityChange() {
 onMounted(async () => {
   disposed = false
   mobileQuery.addEventListener('change', onViewportChange)
+  window.addEventListener('keydown', onShortcut)
   document.addEventListener('visibilitychange', onVisibilityChange)
   await refresh()
   if (hasActiveWork.value) schedulePoll()
@@ -155,6 +192,7 @@ onUnmounted(() => {
   disposed = true
   clearPoll()
   mobileQuery.removeEventListener('change', onViewportChange)
+  window.removeEventListener('keydown', onShortcut)
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 watch(hasActiveWork, (active) => {
@@ -174,7 +212,7 @@ async function importTasks() {
 }
 </script>
 <template>
-  <div class="studio-shell live-studio" :style="{ '--project-color': project?.color || '#386BFA' }">
+  <div class="studio-shell live-studio" style="--project-color: #386bfa">
     <button
       v-if="ui.mobile && mobileViewport"
       class="nav-backdrop"
@@ -195,18 +233,23 @@ async function importTasks() {
       <a class="brand" href="#projects" @click="closeNavigation"
         ><img src="/favicon.svg" alt="" /><span>AutoDecision<small>DECISION WORKSPACE</small></span></a
       >
-      <button class="sidebar-project-context" @click="navigate('projects')">
-        <span class="sidebar-project-swatch" aria-hidden="true" />
-        <span>
-          <small>当前数据项目</small>
-          <strong>{{ project?.name || '请先选择项目' }}</strong>
-        </span>
+      <button
+        class="sidebar-project-context sidebar-notices"
+        :class="{ active: ui.page === 'notices' }"
+        @click="navigate('notices')"
+      >
+        <Icon name="bell" :size="18" />
+        <span><strong>研究通知</strong></span>
+        <span v-if="unreadNotices" class="nav-count">{{ unreadNotices }}</span>
         <Icon name="right" :size="15" />
+      </button>
+      <button class="new-chat" :disabled="!state.projects.length" @click="openNewConversation()">
+        <Icon name="plus" :size="18" /><span>新建对话</span><kbd>⌘ K</kbd>
       </button>
       <div class="nav-label">工作空间</div>
       <nav class="main-nav">
         <button
-          v-for="n in nav.slice(0, 4)"
+          v-for="n in nav.slice(0, 3)"
           :key="n.id"
           :class="{ active: ui.page === n.id }"
           @click="navigate(n.id)"
@@ -215,11 +258,56 @@ async function importTasks() {
           <span v-if="n.id === 'tasks' && tasks.some((t) => t.status === 'running')" class="nav-count">{{
             tasks.filter((t) => t.status === 'running').length
           }}</span>
-          <span v-if="n.id === 'chat' && state.conversations.length" class="nav-count">{{
-            state.conversations.filter((c) => c.project_id === ui.projectId).length
-          }}</span>
         </button>
       </nav>
+      <div class="recent-section chat-folders">
+        <div class="nav-label chat-folders-label">
+          对话<button class="icon-btn" aria-label="对话历史" title="对话历史" @click="openConversationHistory()">
+            <Icon name="history" :size="13" />
+          </button>
+        </div>
+        <p v-if="!chatFolders.length" class="chat-folders-empty">还没有对话</p>
+        <div v-for="folder in chatFolders" :key="folder.project.id" class="chat-folder">
+          <div class="chat-folder-head">
+            <button
+              class="chat-folder-toggle"
+              :aria-expanded="!collapsed.has(folder.project.id)"
+              @click="toggleFolder(folder.project.id)"
+            >
+              <Icon name="chevron" :size="12" :class="{ folded: collapsed.has(folder.project.id) }" /><Icon
+                name="folder"
+                :size="14"
+              /><span>{{ folder.project.name }}</span>
+            </button>
+            <button
+              class="icon-btn"
+              :aria-label="`在 ${folder.project.name} 下新建对话`"
+              :title="`在 ${folder.project.name} 下新建对话`"
+              @click="openNewConversation(folder.project.id)"
+            >
+              <Icon name="plus" :size="13" />
+            </button>
+          </div>
+          <template v-if="!collapsed.has(folder.project.id)">
+            <button
+              v-for="c in folder.items.slice(0, FOLDER_LIMIT)"
+              :key="c.id"
+              class="recent-item chat-folder-item"
+              :class="{ selected: c.id === ui.conversationId && ui.page === 'chat' }"
+              @click="openChat(c.id)"
+            >
+              <Icon name="chat" :size="14" /><span>{{ c.title || '新的对话' }}</span>
+            </button>
+            <button
+              v-if="folder.items.length > FOLDER_LIMIT"
+              class="recent-item chat-folder-item chat-folder-more"
+              @click="openConversationHistory()"
+            >
+              <span>全部 {{ folder.items.length }} 个对话</span>
+            </button>
+          </template>
+        </div>
+      </div>
       <div class="sidebar-bottom">
         <nav class="workspace-utilities" aria-label="工作空间工具">
           <button
@@ -266,7 +354,7 @@ async function importTasks() {
             @click="ui.mobile = true"
           >
             <Icon name="menu" /></button
-          ><Icon :name="nav.find((n) => n.id === ui.page)?.icon || 'settings'" /><span>工作空间</span
+          ><Icon :name="ui.page === 'notices' ? 'bell' : nav.find((n) => n.id === ui.page)?.icon || 'settings'" /><span>工作空间</span
           ><span class="slash">/</span><strong>{{ title }}</strong>
         </div>
         <div class="topbar-actions">
@@ -295,14 +383,12 @@ async function importTasks() {
           导入已有任务
         </button>
       </div>
-      <div v-if="ui.online && pendingDeliveries.length" class="live-banner delivery-reminder" role="status">
-        <Icon name="package" :size="18" />
-        <span>当前项目有 {{ pendingDeliveries.length }} 项研发已结束，待交付或发布后才能在对话中复用。</span>
-        <button class="btn primary small" @click="open('delivery', pendingDeliveries[0]!.id)">处理待交付成果</button>
-        <button v-if="ui.page !== 'tasks'" class="text-btn" @click="navigate('tasks')">查看任务列表</button>
-      </div>
+
       <main class="main-content" :class="{ 'chat-main': ui.page === 'chat' }">
-        <Chat v-if="ui.page === 'chat'" @open="open" /><Projects
+        <Notices v-if="ui.page === 'notices'" @open="open" /><Chat
+          v-else-if="ui.page === 'chat'"
+          @open="open"
+        /><Projects
           v-else-if="ui.page === 'projects'"
         /><Packages v-else-if="ui.page === 'packages'" @open="open" @navigate="navigate" /><Tasks
           v-else-if="ui.page === 'tasks'"
@@ -318,8 +404,8 @@ async function importTasks() {
           <div v-if="!invocations.length" class="live-empty">
             <Icon name="history" :size="28" />
             <h2>还没有调用记录</h2>
-            <p>从对话或模型包详情发起一次调用。</p>
-            <button class="btn primary small" @click="navigate('packages')">查看可用模型包</button>
+            <p>从对话或算法包详情发起一次调用。</p>
+            <button class="btn primary small" @click="navigate('packages')">查看可用算法包</button>
           </div>
           <button
             v-for="i in invocations"
@@ -330,7 +416,7 @@ async function importTasks() {
             <span class="square-icon"><Icon name="workflow" /></span>
             <div>
               <h3>{{ i.title }}</h3>
-              <p>{{ date(i.created_at) }} · {{ i.package_ids.length }} 个模型包</p>
+              <p>{{ date(i.created_at) }} · {{ i.package_ids.length }} 个算法包</p>
             </div>
             <span class="tag" :class="i.status === 'completed' ? 'success' : 'warning'">{{
               status(i.status)
@@ -345,7 +431,7 @@ async function importTasks() {
     </div>
     <Modal
       v-if="detail"
-      :title="detail.kind === 'task' ? '研发工作区' : detail.kind === 'package' ? '算法模型包' : '调用详情'"
+      :title="detail.kind === 'task' ? '研究计划' : detail.kind === 'package' ? '算法包' : '调用详情'"
       wide
       @close="detail = null"
       ><TaskDetail
@@ -365,11 +451,12 @@ async function importTasks() {
       :key="storageDialog.action + JSON.stringify(storageDialog.resources)"
     />
     <ConversationHistory v-if="conversationHistory.open" />
+    <Modal v-if="ui.newChat" title="新建对话" @close="ui.newChat = false"><NewConversation /></Modal>
     <ConversationActionDialog
       v-if="conversationAction.items.length"
       :key="conversationAction.action + JSON.stringify(conversationAction.items)"
     />
-    <Modal v-if="researchOpen" title="创建研发任务" @close="researchOpen = false">
+    <Modal v-if="researchOpen" title="新建研究计划" @close="researchOpen = false">
       <ResearchForm
         @done="
           (id) => {
@@ -384,10 +471,10 @@ async function importTasks() {
         <h2>关于 AutoDecision</h2>
         <p>
           创建或导入数据项目 → 对话提出需求 → 检查能力与输入 →
-          调用已发布模型；能力不足时创建研发任务，完成后审核发布。
+          调用已发布模型；能力不足时新建研究计划，完成后审核发布。
         </p>
         <p>
-          关闭浏览器不会停止研发任务。远程 LLM
+          关闭浏览器不会停止研究计划。远程 LLM
           会接收规划所需的项目说明、能力卡、目录表头与最近消息；推理在本机运行。
         </p>
         <p>完成、发布与业务达标分别记录。组合计划需要核对每一步实际输入输出。</p>

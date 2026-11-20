@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Modal from './Modal.vue'
 import InvokeForm from './InvokeForm.vue'
@@ -7,22 +7,22 @@ import ResearchForm from './ResearchForm.vue'
 import ChatResult from './ChatResult.vue'
 import MarkdownView from './MarkdownView.vue'
 import ConversationMenu from './ConversationMenu.vue'
-import { openConversationHistory } from './conversationManagement'
 import { projectDescription, usageSummary } from './presentation'
 import {
   state,
   ui,
   project,
   chatDrafts,
-  selectConversation,
   conversations,
   packages,
-  tasks,
+  tasks as allTasks,
+  taskProjectId,
   conversation,
   request,
   refresh,
   run,
   newConversation,
+  openNewConversation,
   navigate,
   download,
   phase,
@@ -35,7 +35,6 @@ const input = computed({
       chatDrafts[ui.conversationId || `new:${ui.projectId}`] = value
     },
   }),
-  tabs = ref<HTMLElement>(),
   scroller = ref<HTMLElement>(),
   packagePickerOpen = ref(false),
   packageQuery = ref(''),
@@ -43,6 +42,21 @@ const input = computed({
   research = ref(''),
   researchPlan = ref<Plan | null>(null)
 const selected = computed(() => packages.value.find((p) => p.id === ui.packageId))
+const suggestions = computed(() => {
+  const ids = conversation.value?.task_ids || []
+  const headline = ids.map((id) => state.research_briefs?.[id]?.headline).find(Boolean)
+  if (!ids.length) return ['这份数据能做哪些研究？', '有哪些可以复用的算法包？']
+  return [
+    ...(headline ? [`为什么说「${headline}」？`] : ['主要结论是什么？']),
+    '这些结论的依据在哪里？',
+    '下一步该怎么做？',
+  ]
+})
+// 对话页只看当前对话所属数据下的研究计划。
+const tasks = computed(() => allTasks.value.filter((t) => taskProjectId(t.id) === ui.projectId))
+const basedOn = computed(() =>
+  (conversation.value?.task_ids || []).map((id) => state.tasks.find((t) => t.id === id)?.task_name).filter(Boolean),
+)
 const filteredPackages = computed(() => {
   const query = packageQuery.value.trim().toLocaleLowerCase()
   if (!query) return packages.value
@@ -163,40 +177,6 @@ function researchDone(id: string) {
   closeResearch()
   emit('open', 'task', id)
 }
-function revealCurrentTab() {
-  tabs.value
-    ?.querySelector<HTMLElement>('.conversation-tab.active')
-    ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-}
-const tabResize = new ResizeObserver(revealCurrentTab)
-onMounted(() => {
-  if (tabs.value) tabResize.observe(tabs.value)
-})
-onUnmounted(() => tabResize.disconnect())
-watch(
-  () => [ui.conversationId, conversations.value.length],
-  async () => {
-    await nextTick()
-    revealCurrentTab()
-  },
-  { immediate: true },
-)
-function tabKeys(event: KeyboardEvent) {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-  event.preventDefault()
-  const values = conversations.value
-  const index = values.findIndex((item) => item.id === ui.conversationId)
-  const next =
-    event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? values.length - 1
-        : (index + (event.key === 'ArrowRight' ? 1 : -1) + values.length) % values.length
-  const item = values[next]
-  if (!item) return
-  selectConversation(item.id)
-  void nextTick(() => tabs.value?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus())
-}
 function handleComposerKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
@@ -207,56 +187,19 @@ function handleComposerKeydown(event: KeyboardEvent) {
 <template>
   <div class="chat-layout">
     <section class="chat-column">
-      <div class="conversation-tabbar">
-        <div ref="tabs" class="conversation-tabs-scroll" role="tablist" aria-label="决策对话">
-          <article
-            v-for="c in conversations"
-            :key="c.id"
-            class="conversation-tab"
-            :class="{ active: c.id === ui.conversationId }"
-            :data-conversation="c.id"
-          >
-            <button
-              class="conversation-tab-button"
-              role="tab"
-              :id="`conversation-tab-${c.id}`"
-              :aria-selected="c.id === ui.conversationId"
-              :tabindex="c.id === ui.conversationId ? 0 : -1"
-              aria-controls="decision-conversation-panel"
-              :title="c.title"
-              @keydown="tabKeys"
-              @click="selectConversation(c.id)"
-            >
-              <Icon name="chat" :size="14" /><span>{{ c.title || '新的决策对话' }}</span>
-            </button>
-            <ConversationMenu :item="c" />
-          </article>
-        </div>
-        <div class="conversation-tab-actions">
-          <button
-            class="icon-btn"
-            :disabled="!project || !!ui.busy"
-            aria-label="新建对话"
-            :title="!project ? '请先选择或创建数据项目' : ui.busy ? '当前正在处理上一项操作' : '新建对话'"
-            @click="newConversation"
-          >
-            <Icon name="plus" :size="17" />
-          </button>
-          <button class="icon-btn" aria-label="对话历史" title="对话历史" @click="openConversationHistory()">
-            <Icon name="history" :size="17" />
-          </button>
-        </div>
-      </div>
       <div
         class="conversation-workspace"
-        role="tabpanel"
+        role="region"
         id="decision-conversation-panel"
-        :aria-labelledby="conversation ? `conversation-tab-${conversation.id}` : undefined"
+        :aria-label="conversation?.title || '对话'"
       >
         <div class="conversation-heading">
-          <div class="eyebrow">{{ project?.name || 'AutoDecision' }}</div>
+          <div class="eyebrow">
+            {{ project?.name || 'AutoDecision'
+            }}<template v-if="basedOn.length"> · 基于 {{ basedOn.join('、') }}</template>
+          </div>
           <div class="conversation-title">
-            <h1 :title="conversation?.title">{{ conversation?.title || '决策对话' }}</h1>
+            <h1 :title="conversation?.title">{{ conversation?.title || '对话' }}</h1>
             <button
               class="icon-btn"
               :disabled="!conversation"
@@ -272,34 +215,38 @@ function handleComposerKeydown(event: KeyboardEvent) {
           <div v-if="publishedCapabilityNotice" class="chat-capability-banner" role="status">
             <div class="chat-capability-icon"><Icon name="package" :size="18" /></div>
             <div class="chat-capability-copy">
-              <strong>当前项目已有 {{ packages.length }} 个已发布模型包，可直接复用</strong>
+              <strong>当前项目已有 {{ packages.length }} 个已发布算法包，可直接复用</strong>
               <p v-if="publishedCapabilityNotice.staleCount">
                 本对话中有
                 {{ publishedCapabilityNotice.staleCount }}
                 条消息是在发布前生成的旧状态；其中“没有可复用能力”的判断已被当前能力目录纠正，不能作为现在的结论。
               </p>
-              <p v-else>当前能力目录已更新；如果要调用，请先核对模型包输入与预测基准。</p>
+              <p v-else>当前能力目录已更新；如果要调用，请先核对算法包输入与预测基准。</p>
             </div>
             <button type="button" class="btn secondary small" @click="openCurrentPackages">
-              查看当前模型包<Icon name="arrow" />
+              查看当前算法包<Icon name="arrow" />
             </button>
           </div>
           <div v-if="!conversation?.messages.length" class="chat-empty">
             <div class="empty-project-mark"><Icon name="workflow" :size="30" /></div>
-            <h2>{{ project?.name || '数据项目' }}</h2>
+            <h2>{{ conversation ? project?.name || '数据项目' : '开始一段对话' }}</h2>
             <p v-if="selected">已选择 {{ selected.name }}</p>
-            <button v-if="!project" class="btn primary" @click="navigate('projects')">
-              创建数据项目<Icon name="arrow" />
+            <p v-else-if="basedOn.length">基于 {{ basedOn.join('、') }}</p>
+            <button v-if="!state.projects.length" class="btn primary" @click="navigate('projects')">
+              导入项目数据<Icon name="arrow" />
             </button>
-            <div v-else class="starter-grid">
+            <button v-else-if="!conversation" class="btn primary" @click="openNewConversation()">
+              新建对话<Icon name="arrow" />
+            </button>
+            <div v-else-if="!basedOn.length" class="starter-grid">
               <button v-if="packages.length" type="button" @click="openCurrentPackages">
-                <Icon name="package" :size="22" /><strong>查看可用模型包</strong>
+                <Icon name="package" :size="22" /><strong>查看可用算法包</strong>
               </button>
               <button v-else type="button" @click="input = '这个项目有哪些可以复用的决策能力？'">
                 <Icon name="package" :size="22" /><strong>查询可复用能力</strong>
               </button>
-              <button type="button" @click="openResearch('为该项目研发新能力')">
-                <Icon name="flask" :size="22" /><strong>新建研发任务</strong>
+              <button type="button" @click="openResearch('为该项目开展新的研究')">
+                <Icon name="flask" :size="22" /><strong>新建研究计划</strong>
               </button>
             </div>
           </div>
@@ -313,12 +260,15 @@ function handleComposerKeydown(event: KeyboardEvent) {
                 <div class="assistant-label">AutoDecision</div>
                 <div v-if="isStaleCapabilityMessage(m)" class="message-correction-note" role="note">
                   <Icon name="refresh" :size="14" /><span
-                    >历史状态：这条消息生成于模型包发布前，当前能力目录已经更新。</span
+                    >历史状态：这条消息生成于算法包发布前，当前能力目录已经更新。</span
                   >
-                  <button type="button" class="text-btn" @click="openCurrentPackages">查看当前模型包</button>
+                  <button type="button" class="text-btn" @click="openCurrentPackages">查看当前算法包</button>
                 </div>
                 <MarkdownView :text="m.text" class="message-text" />
-                <div v-if="m.plan" class="action-card">
+                <div
+                  v-if="m.plan && (m.plan.action !== 'clarify' || m.plan.steps.length || m.plan.missing_inputs.length)"
+                  class="action-card"
+                >
                   <div class="action-heading">
                     <span class="square-icon"
                       ><Icon :name="m.plan.action === 'research' ? 'flask' : 'workflow'"
@@ -327,9 +277,9 @@ function handleComposerKeydown(event: KeyboardEvent) {
                       <h3>
                         {{
                           m.plan.action === 'reuse'
-                            ? '建议复用以下模型包'
+                            ? '建议复用以下算法包'
                             : m.plan.action === 'research'
-                              ? '新建研发任务'
+                              ? '新建研究计划'
                               : '补充输入与目标'
                         }}
                       </h3>
@@ -359,20 +309,20 @@ function handleComposerKeydown(event: KeyboardEvent) {
                       class="btn primary small"
                       @click="researchFromMessage(m)"
                     >
-                      配置研发任务</button
+                      配置研究计划</button
                     ><button v-else class="btn secondary small" @click="navigate('packages')">
-                      查看模型包</button
+                      查看算法包</button
                     ><button
                       v-if="m.plan.action !== 'research'"
                       class="btn secondary small"
                       @click="researchFromMessage(m)"
                     >
-                      改为新研发<Icon name="flask" :size="14" />
+                      改为新研究<Icon name="flask" :size="14" />
                     </button>
                   </footer>
                 </div>
                 <div v-if="publicationCandidates(m).length" class="action-card">
-                  <h3>已有研发成果待发布</h3>
+                  <h3>已有研究成果待发布</h3>
                   <p>先审核现有交付的用途、输入和试算结果，发布后即可在对话中复用。</p>
                   <div
                     v-for="candidate in publicationCandidates(m)"
@@ -420,10 +370,16 @@ function handleComposerKeydown(event: KeyboardEvent) {
           </div>
         </div>
         <div class="composer-area">
+          <div v-if="conversation" class="suggestion-row">
+            <span>试着问</span
+            ><button v-for="q in suggestions" :key="q" type="button" :disabled="!!ui.busy" @click="input = q">
+              {{ q }}<Icon name="up" :size="12" />
+            </button>
+          </div>
           <form class="composer" @submit.prevent="send">
             <div v-if="selected" class="pinned-package">
               <Icon name="package" />{{ selected.name }} · v{{ selected.version
-              }}<button type="button" class="icon-btn" aria-label="移除指定模型包" @click="ui.packageId = ''">
+              }}<button type="button" class="icon-btn" aria-label="移除指定算法包" @click="ui.packageId = ''">
                 <Icon name="x" />
               </button>
             </div>
@@ -433,15 +389,13 @@ function handleComposerKeydown(event: KeyboardEvent) {
               v-model="input"
               :disabled="!project"
               rows="2"
-              placeholder="描述目标、可用输入与业务约束…"
+              placeholder="输入问题或目标…"
               @keydown="handleComposerKeydown"
             />
             <div class="composer-toolbar">
               <div>
-                <button type="button" class="context-pill" @click="navigate('projects')">
-                  <Icon name="database" :size="14" />项目数据</button
-                ><button type="button" class="context-pill" @click="packagePickerOpen = true">
-                  <Icon name="package" :size="14" />{{ selected ? '更换指定包' : '指定模型包' }}
+                <button type="button" class="context-pill" @click="packagePickerOpen = true">
+                  <Icon name="package" :size="14" />{{ selected ? '更换指定包' : '指定算法包' }}
                 </button>
               </div>
               <div>
@@ -473,25 +427,13 @@ function handleComposerKeydown(event: KeyboardEvent) {
                 </button>
               </div>
             </div>
-            <p class="composer-hint" :class="{ warning: !project || !ui.online }">
-              {{
-                !project
-                  ? '请先创建或选择数据项目。'
-                  : !ui.online
-                    ? '本地服务未连接，请点击顶部“重新连接”后再发送。'
-                    : ui.busy
-                      ? '正在处理上一项操作，请稍候。'
-                      : !input.trim()
-                        ? '输入目标后即可发送；Enter 发送，Shift+Enter 换行。'
-                        : '可直接描述目标、输入与业务约束。'
-              }}
-            </p>
+            <p v-if="!ui.online" class="composer-hint warning">本地服务未连接</p>
           </form>
         </div>
       </div>
     </section>
     <aside class="context-rail">
-      <div class="rail-label">当前项目上下文<Icon name="sliders" :size="15" /></div>
+      <div class="rail-label">对话上下文<Icon name="sliders" :size="15" /></div>
       <div class="rail-project">
         <span class="square-icon"><Icon name="database" :size="22" /></span>
         <h3>{{ project?.name || '尚未选择项目' }}</h3>
@@ -500,7 +442,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
       </div>
       <div class="rail-section">
         <div class="rail-section-title">
-          <h3>可复用模型包</h3>
+          <h3>可复用算法包</h3>
           <span>{{ packages.length }}</span>
         </div>
         <button v-for="p in packages" :key="p.id" class="rail-table" @click="emit('open', 'package', p.id)">
@@ -513,7 +455,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
       </div>
       <div class="rail-section">
         <div class="rail-section-title">
-          <h3>研发任务</h3>
+          <h3>研究计划</h3>
           <span>{{ tasks.length }}</span>
         </div>
         <button
@@ -527,19 +469,19 @@ function handleComposerKeydown(event: KeyboardEvent) {
             <strong>{{ t.task_name }}</strong
             ><small>{{ phase(t.phase) }}</small>
           </div></button
-        ><button class="text-btn" :disabled="!project" @click="openResearch('为该项目研发新能力')">
-          新建研发任务<Icon name="plus" :size="14" />
+        ><button class="text-btn" :disabled="!project" @click="openResearch('为该项目开展新的研究')">
+          新建研究计划<Icon name="plus" :size="14" />
         </button>
       </div>
     </aside>
-    <Modal v-if="packagePickerOpen" title="指定本次使用的模型包" wide @close="packagePickerOpen = false">
+    <Modal v-if="packagePickerOpen" title="指定本次使用的算法包" wide @close="packagePickerOpen = false">
       <div class="package-picker">
-        <p>指定后，本次决策只会使用所选模型包；不指定则由系统自动匹配。</p>
+        <p>指定后，本次决策只会使用所选算法包；不指定则由系统自动匹配。</p>
         <label class="live-search">
           <Icon name="search" /><input
             v-model="packageQuery"
-            aria-label="搜索模型包"
-            placeholder="按名称或研发任务搜索"
+            aria-label="搜索算法包"
+            placeholder="按名称或研究计划搜索"
           />
         </label>
         <div v-if="filteredPackages.length" class="package-picker-list">
@@ -555,15 +497,15 @@ function handleComposerKeydown(event: KeyboardEvent) {
             <Icon name="package" />
             <span
               ><strong>{{ p.name }}</strong
-              ><small>v{{ p.version }} · {{ p.task_name || '已发布模型包' }}</small></span
+              ><small>v{{ p.version }} · {{ p.task_name || '已发布算法包' }}</small></span
             >
             <Icon v-if="ui.packageId === p.id" name="check" />
           </button>
         </div>
         <div v-else class="package-picker-empty">
-          <p>{{ packages.length ? '没有匹配的模型包。' : '当前项目还没有已发布模型包。' }}</p>
+          <p>{{ packages.length ? '没有匹配的算法包。' : '当前项目还没有已发布算法包。' }}</p>
           <button v-if="!packages.length" type="button" class="text-btn" @click="openPackages">
-            查看模型包与研发成果<Icon name="arrow" />
+            查看算法包与研究成果<Icon name="arrow" />
           </button>
         </div>
         <footer class="package-picker-footer">
@@ -577,7 +519,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
         :suggested-steps="plan.steps"
         :conversation-id="conversation?.id || ''"
         @done="invoked" /></Modal
-    ><Modal v-if="research" title="创建研发任务" @close="closeResearch"
+    ><Modal v-if="research" title="新建研究计划" @close="closeResearch"
       ><ResearchForm
         :goal="research"
         :conversation-id="conversation?.id || ''"

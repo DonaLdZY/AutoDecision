@@ -1120,3 +1120,35 @@ def test_workspace_delivery_guidance_survives_corrupt_metadata_without_scanning_
     overview = response.json()['task_deliveries'][task.id]
     assert overview['state'] == 'needs_attention'
     assert '重新生成' in overview['detail']
+
+
+def test_conversation_is_based_on_research_plans_of_its_data(live, monkeypatch):
+    client, root, tmp = live
+    p, other = project(client, root), project(client, root)
+    task = client.post(f"/api/studio/projects/{p['id']}/tasks", json={'task_name': 'spindle', 'output_root': str(tmp / 'runs'), 'auto_ml': {'steps': 4}}).json()
+    run_dir = tmp / 'runs' / 'spindle-run'
+    (run_dir / 'report').mkdir(parents=True)
+    (run_dir / 'report' / 'producer_text.json').write_text(json.dumps({
+        'headline': '长句结论', 'brief': {'headline': '扭矩是首要故障信号'},
+        'findings': [{'title': '扭矩', 'conclusion': '扭矩越高风险越高', 'advice': '纳入点检'}],
+        'next_steps': ['影子运行'],
+    }, ensure_ascii=False), encoding='utf-8')
+    app.store.set_status(task['id'], status='completed', run_dir=str(run_dir))
+
+    briefs = client.get('/api/studio/state').json()['research_briefs']
+    assert briefs == {task['id']: {'headline': '扭矩是首要故障信号'}}
+    rejected = client.post('/api/studio/conversations', json={'project_id': other['id'], 'task_ids': [task['id']]})
+    assert rejected.status_code == 400
+    c = client.post('/api/studio/conversations', json={'project_id': p['id'], 'task_ids': [task['id'], task['id']]}).json()
+    assert c['task_ids'] == [task['id']]
+
+    seen = {}
+    def fake_plan(g, context, model):
+        seen.update(context)
+        return {'action': 'clarify', 'reply': '依据研究计划回答', 'steps': [], 'goal': '', 'missing_inputs': []}, {}, 'fake'
+    monkeypatch.setattr(decision_studio, 'request_plan', fake_plan)
+    response = client.post(f"/api/studio/conversations/{c['id']}/messages", json={'text': '为什么扭矩重要', 'request_id': 'why'})
+    assert response.status_code == 200, response.text
+    plans = seen['research_plans']
+    assert plans[0]['task_name'] == 'spindle' and plans[0]['headline'] == '扭矩是首要故障信号'
+    assert plans[0]['findings'] == [{'title': '扭矩', 'conclusion': '扭矩越高风险越高', 'advice': '纳入点检'}]

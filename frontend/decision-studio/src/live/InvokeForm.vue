@@ -147,7 +147,7 @@ async function execute() {
         <p>{{ schemas[i]?.output_description || '请核对包内冻结合同与实现；尚未登记结构化输出说明。' }}</p>
       </details>
       <label
-        >调用哪个模型包<select v-model="step.package_id">
+        >调用哪个算法包<select v-model="step.package_id">
           <option v-for="p in packages" :key="p.id" :value="p.id">{{ p.name }} · v{{ p.version }}</option>
         </select></label
       ><label
@@ -214,7 +214,7 @@ async function execute() {
       :disabled="steps.length >= 4 || !!ui.busy"
       @click="addStep"
     >
-      添加下游模型包步骤</button
+      添加下游算法包步骤</button
     ><label
       >每步超时（秒，1–120）<input v-model.number="timeout" type="number" min="1" max="120" required /></label>
     </details>
