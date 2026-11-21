@@ -1554,13 +1554,23 @@ def install(g):
         # Existing Pydantic defaults and normalization are authoritative.
         with database(g) as db:
             project = db.get('projects', project_id)
+            # A plan started from chat remembers its conversation so producer
+            # consent (e.g. requirement degradation) is asked there.
+            conversation_id = str(payload.pop('conversation_id', '') or '')
             try:
                 selected = research_directory(project, payload.get('input_root'))
                 config = g.TaskConfigPayload.model_validate({**payload, 'input_root': selected})
             except ValidationError:
                 raise HTTPException(422, '研发任务配置格式无效，请检查参数类型与范围')
             task = g.store.create(config)
-            db.put('links', {'id': task.id, 'project_id': project_id})
+            link = {'id': task.id, 'project_id': project_id}
+            if conversation_id:
+                try:
+                    db.get('conversations', conversation_id)
+                    link['conversation_id'] = conversation_id
+                except HTTPException:
+                    pass  # A missing or archived conversation only loses the chat prompt.
+            db.put('links', link)
         return task.model_dump()
 
     @app.put('/api/studio/tasks/{task_id}')

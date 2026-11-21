@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Modal from './Modal.vue'
 import ResearchForm from './ResearchForm.vue'
-import { taskWorkflow } from './taskWorkflow'
+import { degradationChanges, taskWorkflow } from './taskWorkflow'
 import { tasks, state, ui, status, phase, date, taskProjectId } from './store'
 import { summarizeGoal } from './presentation'
 const emit = defineEmits<{ open: [kind: string, id: string]; navigate: [page: string] }>(),
@@ -27,7 +27,10 @@ const filtered = computed(() =>
 )
 function tag(t: (typeof tasks.value)[number]) {
   if (t.status !== 'completed')
-    return { tone: t.status === 'running' ? 'info' : 'neutral', label: status(t.status) }
+    return {
+      tone: t.status === 'running' ? 'info' : t.status === 'awaiting_input' ? 'warning' : 'neutral',
+      label: status(t.status),
+    }
   return taskWorkflow(t, state.task_deliveries?.[t.id]).stage === 'published'
     ? { tone: 'success', label: '已发布算法包' }
     : { tone: 'success', label: '已完成' }
@@ -92,6 +95,9 @@ function tag(t: (typeof tasks.value)[number]) {
         <div class="plan-title">
           <h3>{{ t.task_name }}</h3>
           <span class="tag" :class="tag(t).tone">{{ tag(t).label }}</span>
+          <span v-if="t.degradation?.status === 'applied'" class="tag warning"
+            >已降级 · {{ degradationChanges(t.degradation) }} 项</span
+          >
         </div>
         <p v-if="t.status === 'completed' && state.research_briefs?.[t.id]" class="plan-headline">
           {{ state.research_briefs[t.id]!.headline }}

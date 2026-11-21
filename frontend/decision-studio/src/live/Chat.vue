@@ -7,6 +7,7 @@ import ResearchForm from './ResearchForm.vue'
 import ChatResult from './ChatResult.vue'
 import MarkdownView from './MarkdownView.vue'
 import ConversationMenu from './ConversationMenu.vue'
+import DegradationCard from './DegradationCard.vue'
 import { projectDescription, usageSummary } from './presentation'
 import {
   state,
@@ -51,6 +52,13 @@ const suggestions = computed(() => {
     '这些结论的依据在哪里？',
     '下一步该怎么做？',
   ]
+})
+// 从这段对话发起、遇到需求降级的研究计划，降级确认显示在对话里。
+const degradations = computed(() => {
+  const id = conversation.value?.id
+  if (!id) return []
+  const own = new Set(state.links.filter((l) => l.conversation_id === id).map((l) => l.id))
+  return state.tasks.filter((t) => own.has(t.id) && t.degradation)
 })
 // 对话页只看当前对话所属数据下的研究计划。
 const tasks = computed(() => allTasks.value.filter((t) => taskProjectId(t.id) === ui.projectId))
@@ -365,6 +373,12 @@ function handleComposerKeydown(event: KeyboardEvent) {
               </div></template
             >
           </div>
+          <DegradationCard
+            v-for="t in degradations"
+            :key="t.id"
+            :task="t"
+            :conversation-id="conversation?.id"
+          />
           <div v-if="ui.busy === 'chat'" class="typing-message" role="status">
             <img src="/favicon.svg" alt="" /><span class="typing-dots"><i /><i /><i /></span>正在生成回复…
           </div>

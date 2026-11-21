@@ -23,6 +23,8 @@ const goal = ref(props.goal || ''),
   report = ref(true),
   reportMinutes = ref(20),
   reuseMode = ref<'auto' | 'hot_start_only' | 'off'>('auto'),
+  // 从对话发起的研究计划，需求做不到时先在对话里问生产者。
+  degradationPolicy = ref<'auto' | 'ask' | 'strict'>(props.conversationId ? 'ask' : 'auto'),
   webResearch = ref(false),
   webResearchQuery = ref('')
 const projectId = ref(ui.projectId),
@@ -141,7 +143,8 @@ async function create() {
     const t = await request(`/studio/projects/${projectId.value}/tasks`, {
       input_root: inputRoot.value,
       task_name: name.value.trim() + '__' + Date.now().toString(36),
-      auto_realize: { task_hint: goal.value },
+      auto_realize: { task_hint: goal.value, degradation_policy: degradationPolicy.value },
+      conversation_id: props.conversationId || '',
       auto_ml: {
         goal: goal.value,
         eval: [metric.value, constraints.value].filter(Boolean).join('\n硬约束：\n'),
@@ -244,6 +247,11 @@ async function create() {
           <option value="auto">自动（直接复用或热启动）</option>
           <option value="hot_start_only">只允许热启动</option>
           <option value="off">关闭</option>
+        </select></label>
+        <label>需求做不到时<select v-model="degradationPolicy" aria-label="需求做不到时">
+          <option value="auto">自动降级并在报告中声明</option>
+          <option value="ask">先问我</option>
+          <option value="strict">直接停止</option>
         </select></label>
         <label v-if="report">报告单次请求时限（分钟）<input v-model.number="reportMinutes" type="number" min="1" max="60" required /></label>
       </div>

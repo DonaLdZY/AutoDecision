@@ -148,7 +148,7 @@ export interface Workspace {
   packages: Package[]
   invocations: Invocation[]
   tasks: Task[]
-  links: { id: string; project_id: string }[]
+  links: { id: string; project_id: string; conversation_id?: string }[]
   task_deliveries?: Record<string, DeliveryOverview>
   research_briefs?: Record<string, { headline: string }>
 }
@@ -339,6 +339,7 @@ export function status(value: unknown) {
         autorealize_completed: '数据分析已完成',
         failed: '失败',
         stopped: '已停止',
+        awaiting_input: '待确认降级',
         interrupted: '已中断',
         interrupted_resumable: '可恢复中断',
         interrupted_incomplete: '不完整中断',
@@ -365,6 +366,11 @@ export function phase(value: unknown) {
         completed: '流程完成',
         review_repair: '合同审查与修补',
         review_repair_failed: '合同修补未通过',
+        degradation_planning: '规划需求降级',
+        degradation_applying: '按降级口径重新定义',
+        awaiting_degradation_consent: '待确认降级',
+        degradation_rejected: '未同意降级',
+        degradation_failed: '降级后继续失败',
       } as Record<string, string>
     )[key] || (key ? '处理中' : '等待开始')
   )

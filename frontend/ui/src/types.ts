@@ -5,6 +5,7 @@
   direct_automl_from_description: boolean
   enable_vllm: boolean
   task_hint: string
+  degradation_policy?: 'auto' | 'ask' | 'strict'
   llm_timeout: number
   llm_concurrency: number
   optimize_llm_cost: boolean
@@ -158,6 +159,31 @@ export interface Task {
   auto_ml_service_job_id?: string | null
   report_dir?: string | null
   last_error?: string | null
+  degradation?: DegradationSummary | null
+}
+
+export interface DegradationItem {
+  category: string
+  action: string
+  /** 给生产者看的一句话（30 字以内）；旧记录可能没有。 */
+  brief?: string
+  original: string
+  degraded: string
+  impact: string
+}
+
+/** 输入审查未通过时的需求降级记录，后端 degradation.summary() 生成。 */
+export interface DegradationSummary {
+  status: 'proposed' | 'applying' | 'applied' | 'rejected' | 'planning_failed' | 'failed_after_degradation' | 'infeasible' | string
+  policy: 'auto' | 'ask' | 'strict' | string
+  count: number
+  core_goal: string
+  items: DegradationItem[]
+  approved_by: 'auto' | 'producer' | null
+  decided_at: number | null
+  conversation_id: string | null
+  infeasible_reason: string
+  outcome: string | null
 }
 
 export interface GlobalSettings {

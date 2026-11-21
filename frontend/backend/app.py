@@ -36,6 +36,7 @@ from replay import ReplayRecorder, bundle as build_replay_bundle, project as pro
 from report_recovery import validate_report_recovery
 from snapshot_reads import json_artifact, text_artifact
 import algorithm_library
+import degradation
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -342,6 +343,9 @@ class AutoRealizeConfigPayload(BaseModel):
     # Strict keeps the historical safety gate; continue_on_exhaustion records
     # the review findings as warnings and lets later stages run.
     review_gate_policy: Literal["strict", "continue_on_exhaustion"] = "strict"
+    # What to do when the AutoML input gate blocks: narrow the task and record
+    # every relaxed requirement (auto), wait for producer consent (ask), or stop.
+    degradation_policy: Literal["auto", "ask", "strict"] = "auto"
     cross_stage_memory_enabled: bool = True
     cross_stage_headroom_ratio: float = 0.72
     cross_stage_retrieval_enabled: bool = True
@@ -491,6 +495,7 @@ class TaskModel(BaseModel):
     parent_task_id: str | None = None
     execution_config: dict[str, Any] | None = None
     archived_at: float | None = None
+    degradation: dict[str, Any] | None = None
 
 
 class StartTaskRequest(BaseModel):
@@ -545,6 +550,19 @@ class FullRerunTaskRequest(BaseModel):
 
 class ResumeTaskRequest(BaseModel):
     task_id: str
+
+
+class DegradationPlanRequest(BaseModel):
+    task_id: str
+    # False (Studio button): always show the list and wait for consent.
+    # True: follow the plan's own degradation_policy, e.g. auto-approve and continue.
+    follow_task_policy: bool = False
+
+
+class DegradationDecisionRequest(BaseModel):
+    task_id: str
+    approve: bool
+    conversation_id: str = ""
 
 
 class GlobalSettingsModel(BaseModel):
@@ -813,6 +831,35 @@ class TaskStore:
             except Exception:
                 logging.getLogger(__name__).exception("Could not persist replay stage for task %s", task_id)
             return task
+
+    def set_degradation(self, task_id: str, summary: dict[str, Any] | None) -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            task.degradation = summary
+            task.updated_at = now_ts()
+            self._persist()
+
+    def apply_degraded_definition(self, task_id: str, task_hint: str) -> TaskModel:
+        """Bind an approved degraded task statement to an existing run."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            task.config.auto_realize.task_hint = task_hint
+            # Review rounds were already exhausted once; the degraded run records
+            # leftovers in the declaration instead of blocking again.
+            task.config.auto_realize.review_gate_policy = "continue_on_exhaustion"
+            # The degraded statement is far longer than a one-line goal, so the
+            # structured memory calls emit more; the default 180 s request
+            # timeout (stream deadline twice that) aborted them twice in practice.
+            task.config.auto_realize.llm_timeout = max(float(task.config.auto_realize.llm_timeout or 0), 600.0)
+            if isinstance(task.execution_config, dict):
+                task.execution_config = task.config.model_dump()
+            task.updated_at = now_ts()
+            self._persist()
+            return task.model_copy(deep=True)
 
     def recover_report(self, task_id: str) -> TaskModel:
         with self._lock:
@@ -1800,6 +1847,7 @@ def _automl_input_readiness(task: TaskModel) -> dict[str, Any]:
         "review_gate_policy": gate["policy"],
         "review_bypass_active": gate["review_bypass_active"],
         "can_repair_review": _review_repair_eligible(task),
+        "can_degrade": _degradation_eligibility(task)[0],
     }
 
 
@@ -3764,7 +3812,6 @@ def _start_task_thread(task_id: str) -> None:
         layout = _task_layout(task, output_root)
         run_dir = layout["task_root"]
         autorealize_dir = layout["autorealize_dir"]
-        automl_root = layout["automl_root"]
         automl_logs_root = layout["automl_logs_root"]
         automl_workspaces_root = layout["automl_workspaces_root"]
         report_dir = layout["report_dir"]
@@ -3789,11 +3836,7 @@ def _start_task_thread(task_id: str) -> None:
             )
             return
 
-        env = os.environ.copy()
-        llm = gs.llm
-        code_model = _selected_model(llm, "autoMlCode")
-        if code_model.get("apiKey"):
-            env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
+        env = _pipeline_env(gs)
 
         store.set_status(task_id, status="running", phase="autorealize", run_dir=str(run_dir), run_started_at=run_started_at, last_error=None)
         if _direct_mode_enabled(task):
@@ -3818,61 +3861,15 @@ def _start_task_thread(task_id: str) -> None:
         if not ok_ar:
             return
 
-        task = store.get(task_id)
-        reuse_action = _apply_package_reuse(task, autorealize_dir, ml_log_dir, ml_ws_dir)
-        if reuse_action == "direct":
-            store.set_status(
-                task_id,
-                status="running",
-                phase="automl_completed",
-                auto_ml_log_dir=str(ml_log_dir),
-                auto_ml_workspace_dir=str(ml_ws_dir),
-                last_error=None,
-            )
-            ok = True
-        else:
-            ok = _run_automl_stage(
-                task_id=task_id,
-                task=task,
-                gs=gs,
-                autorealize_dir=autorealize_dir,
-                automl_logs_root=automl_logs_root,
-                automl_workspaces_root=automl_workspaces_root,
-                exp_name=ml_exp_name,
-                ml_log_dir=ml_log_dir,
-                ml_ws_dir=ml_ws_dir,
-                env=env,
-                algoevolve_service_base=algoevolve_base,
-                req_timeout=req_timeout,
-            )
-        if not ok:
+        paths = {**layout, "ml_exp_name": ml_exp_name, "ml_log_dir": ml_log_dir, "ml_ws_dir": ml_ws_dir}
+        if not _definition_gate_with_degradation(
+            task_id, gs=gs, paths=paths, input_root=input_root, ar_base=ar_base, req_timeout=req_timeout,
+        ):
             return
-
-        # The service may resolve the requested experiment name to a
-        # timestamped directory. Read the persisted result before reporting.
-        task = store.get(task_id)
-        ml_log_dir, ml_ws_dir = _effective_automl_stage_paths(
-            task,
-            fallback_log_dir=ml_log_dir,
-            fallback_workspace_dir=ml_ws_dir,
+        _run_after_definition(
+            task_id, gs=gs, paths=paths, env=env,
+            algoevolve_base=algoevolve_base, report_base=report_base, req_timeout=req_timeout,
         )
-        ok_report = _run_report_stage(
-            task_id=task_id,
-            task=task,
-            gs=gs,
-            autorealize_dir=autorealize_dir,
-            automl_root=automl_root,
-            ml_log_dir=ml_log_dir,
-            ml_ws_dir=ml_ws_dir,
-            report_dir=report_dir,
-            report_base=report_base,
-            req_timeout=req_timeout,
-        )
-        if not ok_report:
-            return
-
-        store.set_status(task_id, status="completed", phase="completed")
-        _distill_algorithm_package(task_id)
     except HTTPException as e:
         # Background thread exceptions were previously swallowed by Python's
         # threading runtime; surface them in task status for the UI.
@@ -3881,6 +3878,336 @@ def _start_task_thread(task_id: str) -> None:
         store.set_status(task_id, status="failed", phase="start_failed", last_error=msg)
     except Exception as e:
         store.set_status(task_id, status="failed", phase="start_failed", last_error=f"任务启动异常: {e}")
+
+
+def _pipeline_env(gs: GlobalSettingsModel) -> dict[str, str]:
+    env = os.environ.copy()
+    code_model = _selected_model(gs.llm, "autoMlCode")
+    if code_model.get("apiKey"):
+        env["DEEPSEEK_API_KEY"] = str(code_model["apiKey"])
+    return env
+
+
+def _run_after_definition(
+    task_id: str,
+    *,
+    gs: GlobalSettingsModel,
+    paths: dict[str, Any],
+    env: dict[str, str],
+    algoevolve_base: str,
+    report_base: str,
+    req_timeout: int,
+) -> None:
+    """Package reuse, AutoML, report and distillation after an accepted task definition."""
+    autorealize_dir = paths["autorealize_dir"]
+    automl_root = paths["automl_root"]
+    automl_logs_root = paths["automl_logs_root"]
+    automl_workspaces_root = paths["automl_workspaces_root"]
+    report_dir = paths["report_dir"]
+    ml_exp_name, ml_log_dir, ml_ws_dir = paths["ml_exp_name"], paths["ml_log_dir"], paths["ml_ws_dir"]
+    task = store.get(task_id)
+    reuse_action = _apply_package_reuse(task, autorealize_dir, ml_log_dir, ml_ws_dir)
+    if reuse_action == "direct":
+        store.set_status(
+            task_id,
+            status="running",
+            phase="automl_completed",
+            auto_ml_log_dir=str(ml_log_dir),
+            auto_ml_workspace_dir=str(ml_ws_dir),
+            last_error=None,
+        )
+        ok = True
+    else:
+        ok = _run_automl_stage(
+            task_id=task_id,
+            task=task,
+            gs=gs,
+            autorealize_dir=autorealize_dir,
+            automl_logs_root=automl_logs_root,
+            automl_workspaces_root=automl_workspaces_root,
+            exp_name=ml_exp_name,
+            ml_log_dir=ml_log_dir,
+            ml_ws_dir=ml_ws_dir,
+            env=env,
+            algoevolve_service_base=algoevolve_base,
+            req_timeout=req_timeout,
+        )
+    if not ok:
+        return
+
+    # The service may resolve the requested experiment name to a
+    # timestamped directory. Read the persisted result before reporting.
+    task = store.get(task_id)
+    ml_log_dir, ml_ws_dir = _effective_automl_stage_paths(
+        task,
+        fallback_log_dir=ml_log_dir,
+        fallback_workspace_dir=ml_ws_dir,
+    )
+    ok_report = _run_report_stage(
+        task_id=task_id,
+        task=task,
+        gs=gs,
+        autorealize_dir=autorealize_dir,
+        automl_root=automl_root,
+        ml_log_dir=ml_log_dir,
+        ml_ws_dir=ml_ws_dir,
+        report_dir=report_dir,
+        report_base=report_base,
+        req_timeout=req_timeout,
+    )
+    if not ok_report:
+        return
+
+    _append_degradation_declaration(task_id, paths)
+    store.set_status(task_id, status="completed", phase="completed")
+    _distill_algorithm_package(task_id)
+
+
+def _degradation_model_caller(gs: GlobalSettingsModel) -> Callable[[str, str], str]:
+    model = _selected_model(gs.llm or {}, "autoRealize", fallback_role="autoMlCode")
+    base = str(model.get("baseUrl") or "").rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    if not model.get("model") or parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise degradation.DegradationError("没有可用的任务定义模型，无法规划降级")
+    endpoint = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
+    headers = {"Content-Type": "application/json"}
+    if model.get("apiKey"):
+        headers["Authorization"] = "Bearer " + str(model["apiKey"])
+    thinking = _model_thinking_cli(model)
+
+    def call(system: str, user: str) -> str:
+        body: dict[str, Any] = {
+            "model": model["model"],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": 16384,
+            "response_format": {"type": "json_object"},
+        }
+        if thinking in {"true", "false"}:
+            body["thinking"] = {"type": "enabled" if thinking == "true" else "disabled"}
+        data = decision_studio_module._provider_json(
+            sys.modules[__name__], endpoint, body, headers, stage="gateway.degradation_plan", timeout=300,
+        )
+        return str(data["choices"][0]["message"]["content"])
+
+    return call
+
+
+def _record_degradation(task_id: str, task_root: Path, ledger: dict[str, Any]) -> None:
+    degradation.write_ledger(task_root, ledger)
+    store.set_degradation(task_id, degradation.summary(ledger))
+
+
+def _definition_gate_with_degradation(
+    task_id: str,
+    *,
+    gs: GlobalSettingsModel,
+    paths: dict[str, Any],
+    input_root: Path,
+    ar_base: str,
+    req_timeout: int,
+    policy_override: str | None = None,
+) -> bool:
+    """Return True when AutoML may start; False when the task failed, stopped or awaits consent."""
+    task = store.get(task_id)
+    policy = policy_override or task.config.auto_realize.degradation_policy
+    if policy == "strict" or _direct_mode_enabled(task):
+        return True  # _run_automl_stage keeps the historical gate.
+    autorealize_dir, task_root = paths["autorealize_dir"], paths["task_root"]
+    gate = _automl_gate_decision(task, autorealize_dir)
+    if not gate["blocking_issues"]:
+        return True
+    existing = degradation.read_ledger(task_root)
+    if existing and existing.get("status") in {degradation.APPLYING, degradation.APPLIED}:
+        return True  # One degradation round only; the normal gate reports what is left.
+
+    blockers = list(gate["blocking_issues"])
+    original_hint = task.config.auto_realize.task_hint
+    store.set_status(task_id, status="running", phase="degradation_planning", last_error=None)
+    try:
+        evidence = degradation.collect_evidence(
+            autorealize_dir=autorealize_dir, gate=gate, task_hint=original_hint, input_root=input_root,
+        )
+        plan, attempts = degradation.request_plan(evidence, _degradation_model_caller(gs))
+    except Exception as exc:  # an unexpected artifact shape must not look like a start failure
+        if not isinstance(exc, degradation.DegradationError):
+            logging.getLogger(__name__).exception("Degradation planning crashed for task %s", task_id)
+            exc = degradation.DegradationError(f"{type(exc).__name__}: {exc}")
+        ledger = degradation.new_ledger(
+            task_id=task_id, policy=policy, gate=gate, original_task_hint=original_hint, plan={}, attempts=[],
+        )
+        ledger["status"], ledger["outcome"] = degradation.PLANNING_FAILED, str(exc)
+        _record_degradation(task_id, task_root, ledger)
+        store.set_status(
+            task_id, status="failed", phase="prepare_automl_input_failed",
+            last_error=f"AutoML 输入审查未通过，降级规划也失败：{exc}。原审查问题：" + "; ".join(blockers),
+        )
+        return False
+    if store.get(task_id).status == "stopped":
+        return False
+
+    ledger = degradation.new_ledger(
+        task_id=task_id, policy=policy, gate=gate, original_task_hint=original_hint, plan=plan, attempts=attempts,
+    )
+    if not plan["feasible"]:
+        ledger["status"], ledger["outcome"] = degradation.INFEASIBLE, plan["infeasible_reason"]
+        _record_degradation(task_id, task_root, ledger)
+        store.set_status(
+            task_id, status="failed", phase="prepare_automl_input_failed",
+            last_error=f"现有数据无法完成核心目标，降级也无法继续：{plan['infeasible_reason']}",
+        )
+        return False
+    if policy == "ask":
+        _record_degradation(task_id, task_root, ledger)
+        store.set_status(task_id, status="awaiting_input", phase="awaiting_degradation_consent", last_error=None)
+        return False
+    degradation.approve(ledger, by="auto")
+    _record_degradation(task_id, task_root, ledger)
+    return _apply_degradation(
+        task_id, ledger=ledger, gs=gs, paths=paths, input_root=input_root, ar_base=ar_base, req_timeout=req_timeout,
+    )
+
+
+def _apply_degradation(
+    task_id: str,
+    *,
+    ledger: dict[str, Any],
+    gs: GlobalSettingsModel,
+    paths: dict[str, Any],
+    input_root: Path,
+    ar_base: str,
+    req_timeout: int,
+) -> bool:
+    """Rerun task definition with the approved degraded statement and re-check the gate."""
+    task_root, autorealize_dir = paths["task_root"], paths["autorealize_dir"]
+    store.set_status(task_id, status="running", phase="degradation_applying", last_error=None)
+    archived = degradation.archive_definition(task_root)
+    ledger["archived_definition"] = str(archived) if archived else None
+    _record_degradation(task_id, task_root, ledger)
+    task = store.apply_degraded_definition(task_id, ledger["degraded_task_hint"])
+    autorealize_dir.mkdir(parents=True, exist_ok=True)
+    ok = _run_autorealize_stage(
+        task_id=task_id, task=task, gs=gs, input_root=input_root,
+        run_dir=task_root, ar_base=ar_base, req_timeout=req_timeout,
+    )
+    if not ok:
+        current = store.get(task_id)
+        if current.status != "stopped":
+            ledger["status"] = degradation.FAILED_AFTER
+        ledger["outcome"] = current.last_error or "降级后的任务定义没有完成"
+        _record_degradation(task_id, task_root, ledger)
+        return False
+    gate = _automl_gate_decision(store.get(task_id), autorealize_dir)
+    if gate["blocking_issues"]:
+        ledger["status"], ledger["outcome"] = degradation.FAILED_AFTER, "; ".join(gate["blocking_issues"])
+        _record_degradation(task_id, task_root, ledger)
+        store.set_status(
+            task_id, status="failed", phase="prepare_automl_input_failed",
+            last_error="降级后仍未通过 AutoML 输入审查：" + "; ".join(gate["blocking_issues"]),
+        )
+        return False
+    ledger["status"], ledger["outcome"] = degradation.APPLIED, "降级后的任务定义已通过输入审查"
+    _record_degradation(task_id, task_root, ledger)
+    return True
+
+
+def _append_degradation_declaration(task_id: str, paths: dict[str, Any]) -> None:
+    ledger = degradation.read_ledger(paths["task_root"])
+    if not ledger or ledger.get("status") != degradation.APPLIED:
+        return
+    task = store.get(task_id)
+    report_dir = Path(task.report_dir).expanduser().resolve() if task.report_dir else paths["report_dir"]
+    try:
+        gate = _automl_gate_decision(task, paths["autorealize_dir"])
+        degradation.append_declaration(report_dir, ledger, gate)
+    except Exception:
+        logging.getLogger(__name__).exception("Could not append degradation declaration for task %s", task_id)
+
+
+def _existing_run_paths(task: TaskModel) -> dict[str, Any]:
+    layout = _task_layout(task, resolve_output_root(task.output_root))
+    if not task.run_dir or Path(task.run_dir).expanduser().resolve() != layout["task_root"].resolve():
+        raise HTTPException(status_code=409, detail="任务目录与记录不一致，无法继续降级后的研究")
+    ml_exp_name, ml_log_dir, ml_ws_dir = _build_automl_paths(
+        task, automl_logs_root=layout["automl_logs_root"], automl_workspaces_root=layout["automl_workspaces_root"],
+    )
+    return {**layout, "ml_exp_name": ml_exp_name, "ml_log_dir": ml_log_dir, "ml_ws_dir": ml_ws_dir}
+
+
+def _degradation_eligibility(task: TaskModel) -> tuple[bool, str]:
+    """Whether a stopped task blocked at the AutoML input gate can be degraded in place."""
+    if task.status == "running" or task.status == "awaiting_input":
+        return False, "研究计划正在运行或等待确认"
+    if not task.run_dir:
+        return False, "研究计划还没有运行记录"
+    root = Path(task.run_dir).expanduser().resolve()
+    if task.auto_ml_log_dir or any((root / "automl").glob("logs/*")) or any((root / "automl").glob("workspaces/*")):
+        return False, "已经进入方案搜索的研究计划不能再降级"
+    ledger = degradation.read_ledger(root) or {}
+    if ledger.get("status") == degradation.FAILED_AFTER and (ledger.get("approval") or {}).get("approved", True) \
+            and ledger.get("degraded_task_hint"):
+        # Approved plan whose rerun broke (e.g. a provider timeout): retry it as approved.
+        return True, "retry"
+    if not (root / "autorealize" / "description.md").is_file():
+        return False, "任务定义还没有完成，无法规划降级"
+    if ledger.get("status") in {degradation.PROPOSED, degradation.APPLYING, degradation.APPLIED}:
+        return False, "这个研究计划已经有降级记录"
+    if not _automl_gate_decision(task, root / "autorealize")["blocking_issues"]:
+        return False, "输入审查已通过，不需要降级"
+    return True, ""
+
+
+def _plan_degradation_thread(task_id: str, follow_task_policy: bool = False) -> None:
+    """Plan a degradation on an existing blocked definition; by default wait for producer consent."""
+    try:
+        task = store.get(task_id)
+        gs = get_global_settings()
+        ar_base, algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        paths = _existing_run_paths(task)
+        if not _definition_gate_with_degradation(
+            task_id, gs=gs, paths=paths, input_root=Path(task.input_root).expanduser().resolve(),
+            ar_base=ar_base, req_timeout=req_timeout, policy_override=None if follow_task_policy else "ask",
+        ):
+            return
+        ledger = degradation.read_ledger(paths["task_root"]) or {}
+        if ledger.get("status") != degradation.APPLIED:
+            # strict policy keeps the historical gate: nothing was degraded.
+            store.set_status(task_id, status="failed", phase="prepare_automl_input_failed",
+                             last_error="研究计划设置为「需求做不到时直接停止」，没有降级。")
+            return
+        _run_after_definition(
+            task_id, gs=gs, paths=paths, env=_pipeline_env(gs),
+            algoevolve_base=algoevolve_base, report_base=report_base, req_timeout=req_timeout,
+        )
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        store.set_status(task_id, status="failed", phase="degradation_failed", last_error=str(detail if detail is not None else e))
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="degradation_failed", last_error=f"降级规划异常: {e}")
+
+
+def _resume_after_degradation_thread(task_id: str) -> None:
+    try:
+        task = store.get(task_id)
+        gs = get_global_settings()
+        ar_base, algoevolve_base, report_base, req_timeout = _service_base_urls(gs)
+        input_root = Path(task.input_root).expanduser().resolve()
+        paths = _existing_run_paths(task)
+        ledger = degradation.read_ledger(paths["task_root"])
+        if not ledger or ledger.get("status") != degradation.APPLYING:
+            raise HTTPException(status_code=409, detail="降级清单不是待执行状态")
+        if not _apply_degradation(
+            task_id, ledger=ledger, gs=gs, paths=paths, input_root=input_root, ar_base=ar_base, req_timeout=req_timeout,
+        ):
+            return
+        _run_after_definition(
+            task_id, gs=gs, paths=paths, env=_pipeline_env(gs),
+            algoevolve_base=algoevolve_base, report_base=report_base, req_timeout=req_timeout,
+        )
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        store.set_status(task_id, status="failed", phase="degradation_failed", last_error=str(detail if detail is not None else e))
+    except Exception as e:
+        store.set_status(task_id, status="failed", phase="degradation_failed", last_error=f"降级后继续研究异常: {e}")
 
 
 def _app_version() -> str:
@@ -6685,6 +7012,71 @@ def rerun_autorealize(payload: RerunAutoRealizeRequest) -> dict[str, Any]:
     thread = threading.Thread(target=_rerun_autorealize_thread, args=(payload.task_id, payload.preserve_cache), daemon=True)
     thread.start()
     return {"status": "started", "task_id": payload.task_id, "mode": "autorealize_only"}
+
+
+@app.get("/api/tasks/{task_id}/degradation")
+def task_degradation(task_id: str) -> dict[str, Any]:
+    task = store.get(task_id)
+    if not task.run_dir:
+        raise HTTPException(status_code=404, detail="这个研究计划还没有运行记录")
+    root = Path(task.run_dir).expanduser().resolve()
+    ledger = degradation.read_ledger(root)
+    if not ledger:
+        raise HTTPException(status_code=404, detail="这个研究计划没有降级记录")
+    declaration = ""
+    if ledger.get("status") == degradation.APPLIED:
+        declaration = degradation.render_declaration(ledger, _automl_gate_decision(task, root / "autorealize"))
+    return {"summary": degradation.summary(ledger), "ledger": ledger, "declaration_markdown": declaration}
+
+
+@app.post("/api/tasks/degradation/plan")
+def plan_degradation(payload: DegradationPlanRequest) -> dict[str, Any]:
+    with store._lock:
+        task = store.get(payload.task_id)
+        eligible, reason = _degradation_eligibility(task)
+        if not eligible:
+            raise HTTPException(status_code=409, detail=reason)
+        # A running task without a handle is reaped as a zombie; hold one until a stage attaches its own.
+        store.attach_handle(task.id, RuntimeHandle(process=None, source="stage_transition", started_at=now_ts()))
+        if reason == "retry":
+            root = Path(task.run_dir).expanduser().resolve()
+            ledger = degradation.read_ledger(root) or {}
+            ledger["retries"] = [*ledger.get("retries", []), {"at": now_ts(), "previous_outcome": ledger.get("outcome")}]
+            ledger["status"], ledger["outcome"] = degradation.APPLYING, None
+            degradation.refresh_hint(ledger)
+            _record_degradation(task.id, root, ledger)
+            store.set_status(task.id, status="running", phase="degradation_applying", last_error=None)
+            target, args = _resume_after_degradation_thread, (payload.task_id,)
+        else:
+            store.set_status(task.id, status="running", phase="degradation_planning", last_error=None)
+            target, args = _plan_degradation_thread, (payload.task_id, payload.follow_task_policy)
+    threading.Thread(target=target, args=args, daemon=True).start()
+    return {"status": "started", "task_id": payload.task_id, "mode": "retry" if reason == "retry" else "plan"}
+
+
+@app.post("/api/tasks/degradation/decide")
+def decide_degradation(payload: DegradationDecisionRequest) -> dict[str, Any]:
+    with store._lock:
+        task = store.get(payload.task_id)
+        if task.status != "awaiting_input" or task.phase != "awaiting_degradation_consent" or not task.run_dir:
+            raise HTTPException(status_code=409, detail="这个研究计划当前没有待确认的降级")
+        root = Path(task.run_dir).expanduser().resolve()
+        ledger = degradation.read_ledger(root)
+        if not ledger or ledger.get("status") != degradation.PROPOSED:
+            raise HTTPException(status_code=409, detail="降级清单已处理或不存在，请刷新后再看")
+        if not payload.approve:
+            degradation.reject(ledger, conversation_id=payload.conversation_id)
+            _record_degradation(task.id, root, ledger)
+            store.set_status(task.id, status="stopped", phase="degradation_rejected",
+                             last_error="生产者未同意降级，研究已停止。")
+            return {"status": "stopped", "task_id": task.id, "degradation": degradation.summary(ledger)}
+        degradation.approve(ledger, by="producer", conversation_id=payload.conversation_id)
+        _record_degradation(task.id, root, ledger)
+        store.attach_handle(task.id, RuntimeHandle(process=None, source="stage_transition", started_at=now_ts()))
+        store.set_status(task.id, status="running", phase="degradation_applying", last_error=None)
+    thread = threading.Thread(target=_resume_after_degradation_thread, args=(payload.task_id,), daemon=True)
+    thread.start()
+    return {"status": "started", "task_id": payload.task_id, "degradation": degradation.summary(ledger)}
 
 
 @app.post("/api/tasks/repair-review-and-resume")

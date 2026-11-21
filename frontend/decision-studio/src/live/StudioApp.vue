@@ -146,6 +146,10 @@ function open(kind: string, id: string) {
     researchOpen.value = true
     return
   }
+  if (kind === 'conversation') {
+    openChat(id)
+    return
+  }
   // report：直达研究结论；有结论页时任务详情默认打开它，没有就打开工作汇报（第 5 个标签）。
   taskTab.value = kind === 'delivery' ? 3 : kind === 'report' && !state.research_briefs?.[id] ? 4 : 0
   detail.value = { kind: kind === 'delivery' || kind === 'report' ? 'task' : kind, id }

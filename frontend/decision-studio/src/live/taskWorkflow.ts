@@ -8,12 +8,17 @@ export interface DeliveryOverview {
   detail?: string
 }
 interface TaskState { id: string; status: string; phase: string }
+// 需求降级里会改变需求、需要生产者知道的项；「审查未收敛」是系统内部口径统一，不计入。
+export function degradationChanges(d?: { items?: { category: string }[] } | null) {
+  return (d?.items || []).filter((item) => item.category !== '审查未收敛').length
+}
 export function taskWorkflow(task: TaskState, overview?: DeliveryOverview) {
-  const stage = task.status === 'running' ? 'running' : overview?.state ||
+  const stage = task.status === 'running' ? 'running' : task.status === 'awaiting_input' ? 'awaiting_consent' : overview?.state ||
     (task.status === 'completed' ? 'awaiting_delivery' : task.status === 'idle' ? 'not_started' : 'needs_attention')
   const views = {
     not_started: { label: '待启动', detail: '保存的是研究草稿，检查启动条件后开始执行。', action: '查看任务', tone: 'neutral' },
     running: { label: '研究中', detail: '任务仍在执行，完成后继续检查交付与发布。', action: '查看进度', tone: 'info' },
+    awaiting_consent: { label: '待确认降级', detail: '原需求有部分做不到，确认是否按降级口径继续。', action: '查看降级清单', tone: 'warning' },
     needs_attention: { label: '需要处理', detail: overview?.detail || '本次运行尚未完成，请检查失败原因和可恢复的成果。', action: '查看并处理', tone: 'warning' },
     awaiting_delivery: { label: '研究完成 · 待交付', detail: '研究已结束，尚未发布为对话可调用的能力。请检查成果、生成交付包并核对发布。', action: '检查并交付成果', tone: 'warning' },
     awaiting_report: { label: '待生成报告与交付包', detail: '已有研究记录，报告与交付材料尚未就绪。请在交付页检查原因并生成材料。', action: '处理报告与交付', tone: 'warning' },

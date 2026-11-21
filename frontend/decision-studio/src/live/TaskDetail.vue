@@ -9,6 +9,7 @@ import MarkdownView from './MarkdownView.vue'
 import ProducerReport from './ProducerReport.vue'
 import DecisionBrief from './DecisionBrief.vue'
 import EvaluationCriteria from './EvaluationCriteria.vue'
+import DegradationCard from './DegradationCard.vue'
 import {
   summarizeGoal,
   candidateSummary,
@@ -367,6 +368,16 @@ async function inspectSolution() {
 async function refreshTask() {
   await load()
 }
+// 卡在输入审查的研究计划：在现有任务定义上规划降级，生成清单后等生产者确认。
+async function degrade() {
+  await run('degradation-plan', async () => {
+    await request('/tasks/degradation/plan', { task_id: props.id })
+    recoveryKey = ''
+    await refresh()
+    await load()
+    poll()
+  })
+}
 async function poll() {
   clearPoll()
   if (disposed || document.hidden || task.value?.status !== 'running') return
@@ -604,6 +615,7 @@ async function publish() {
       <p v-else-if="recoveryGate && !recoveryGate.ready">{{ summarizeGoal(recoveryGate.detail, 320) }}</p>
       <p v-if="recoveryError" class="live-error" role="alert">恢复条件读取失败：{{ recoveryError }}</p>
       <div class="form-actions">
+        <button v-if="recoveryGate?.can_degrade" type="button" class="btn primary small" :disabled="!!ui.busy" @click="degrade">按降级继续</button>
         <button v-if="task.phase === 'report_failed'" type="button" class="btn primary small" :disabled="!!ui.busy" @click="prepare('rerun-autoreport')">重新生成报告与交付包</button>
         <button v-else-if="recoveryGate?.can_repair_review" type="button" class="btn primary small"
           :disabled="!!ui.busy" @click="prepare('repair-review-and-resume')">修复审查并继续</button>
@@ -724,6 +736,7 @@ async function publish() {
     </section>
     <ResearchProgress :task="task" :nodes="nodes" :best-id="snapshot?.auto_ml?.best_node_id" />
     </template>
+    <DegradationCard v-if="task.degradation" :task="task" compact />
     <nav class="live-tabs task-detail-tabs">
       <button v-for="(t, i) in tabs" :key="t" :class="{ active: tab === i }" @click="tab = i">
         {{ t }}
